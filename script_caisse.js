@@ -60,24 +60,24 @@ function initSheets() {
     cats.getRange(1,1,1,2).setFontWeight("bold");
     cats.getRange(2,1,5,2).setValues([["c1","Boissons"],["c2","Bières"],["c3","Snacks"],["c4","Sandwichs"],["c5","Divers"]]);
   }
-  // Produits (A=ID|B=Nom|C=Prix|D=Cat|E=Emoji|F=Photo|G=Barcode|H=Boisson|I=VenteAl|J=Unite|K=QteBase|L=Stock_s1|M=Stock_s2|N=Stock_s3|O=Stock_s4)
+  // Produits (A=ID|B=Nom|C=Prix|D=Cat|E=Emoji|F=Photo|G=Barcode|H=Boisson|I=VenteAl|J=Unite|K=QteBase|L=Stock_s1|M=Stock_s2|N=Stock_s3|O=Stock_s4|P=PrixAchatTTC)
   var prods = getOrCreate(ss,"Produits");
   if(prods.getLastRow()<=1){
-    prods.getRange(1,1,1,15).setValues([["ID","Nom","Prix","Categorie","Emoji","Photo","CodeBarres","EstBoisson","VenteAuLitre","Unite","QteBase","Stock_s1","Stock_s2","Stock_s3","Stock_s4"]]);
-    prods.getRange(1,1,1,15).setFontWeight("bold");
-    prods.getRange(2,1,12,15).setValues([
-      [1,"Coca-Cola 33cl",2,"Boissons","🥤","","5449000000996",true,false,"",1,48,36,24,12],
-      [2,"Eau plate 50cl",1,"Boissons","💧","","3560070976553",true,false,"",1,60,48,36,24],
-      [3,"Jus d'orange",2,"Boissons","🍊","","",true,false,"",1,24,18,12,6],
-      [4,"Café",1.5,"Boissons","☕","","",true,false,"",1,99,99,99,99],
-      [5,"Bière 33cl",3,"Bières","🍺","","5410228091013",true,false,"",1,72,48,36,24],
-      [6,"Bière pression 25cl",2.5,"Bières","🍺","","",true,true,"cl",25,200,150,100,50],
-      [7,"Vin rouge 15cl",2,"Boissons","🍷","","",true,true,"cl",15,150,100,80,50],
-      [8,"Chips",1.5,"Snacks","🥔","","5053990103525",false,false,"",1,30,20,25,10],
-      [9,"Hot-dog",3.5,"Sandwichs","🌭","","",false,false,"",1,12,10,8,5],
-      [10,"Sandwich jambon",4,"Sandwichs","🥪","","",false,false,"",1,10,8,6,4],
-      [11,"Programme",2,"Divers","📋","","",false,false,"",1,50,50,50,50],
-      [12,"Écharpe ANF",10,"Divers","🧣","","",false,false,"",1,20,10,5,5]
+    prods.getRange(1,1,1,16).setValues([["ID","Nom","Prix","Categorie","Emoji","Photo","CodeBarres","EstBoisson","VenteAuLitre","Unite","QteBase","Stock_s1","Stock_s2","Stock_s3","Stock_s4","PrixAchatTTC"]]);
+    prods.getRange(1,1,1,16).setFontWeight("bold");
+    prods.getRange(2,1,12,16).setValues([
+      [1,"Coca-Cola 33cl",2,"Boissons","🥤","","5449000000996",true,false,"",1,48,36,24,12,0.55],
+      [2,"Eau plate 50cl",1,"Boissons","💧","","3560070976553",true,false,"",1,60,48,36,24,0.25],
+      [3,"Jus d'orange",2,"Boissons","🍊","","",true,false,"",1,24,18,12,6,0.7],
+      [4,"Café",1.5,"Boissons","☕","","",true,false,"",1,99,99,99,99,0.3],
+      [5,"Bière 33cl",3,"Bières","🍺","","5410228091013",true,false,"",1,72,48,36,24,1.1],
+      [6,"Bière pression 25cl",2.5,"Bières","🍺","","",true,true,"cl",25,200,150,100,50,0.9],
+      [7,"Vin rouge 15cl",2,"Boissons","🍷","","",true,true,"cl",15,150,100,80,50,0.6],
+      [8,"Chips",1.5,"Snacks","🥔","","5053990103525",false,false,"",1,30,20,25,10,0.6],
+      [9,"Hot-dog",3.5,"Sandwichs","🌭","","",false,false,"",1,12,10,8,5,1.5],
+      [10,"Sandwich jambon",4,"Sandwichs","🥪","","",false,false,"",1,10,8,6,4,1.8],
+      [11,"Programme",2,"Divers","📋","","",false,false,"",1,50,50,50,50,0.4],
+      [12,"Écharpe ANF",10,"Divers","🧣","","",false,false,"",1,20,10,5,5,4]
     ]);
     prods.setFrozenRows(1);
   }
@@ -109,13 +109,14 @@ function getAllData(){
 
 function getProductsData(ss){
   var sh=ss.getSheetByName("Produits"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,15).getValues()
+  return sh.getRange(2,1,sh.getLastRow()-1,16).getValues()
     .filter(r=>r[0]).map(r=>({
       id:r[0],name:r[1],price:+r[2],cat:r[3],emoji:r[4],photo:r[5]||"",barcode:r[6]||"",
       drink:r[7]===true||r[7]==="TRUE"||r[7]==="true",
       sellByVolume:r[8]===true||r[8]==="TRUE"||r[8]==="true",
       unit:r[9]||"",baseQty:+r[10]||1,
-      stock:{s1:+r[11]||0,s2:+r[12]||0,s3:+r[13]||0,s4:+r[14]||0}
+      stock:{s1:+r[11]||0,s2:+r[12]||0,s3:+r[13]||0,s4:+r[14]||0},
+      costPrice:+r[15]||0
     }));
 }
 function getSitesData(ss){
@@ -139,17 +140,19 @@ function saveProduct(e){
   // Colonnes A:K = infos produit (jamais le stock, colonnes L:O)
   var meta=[p.id,p.name,+p.price,p.cat,p.emoji,p.photo||"",p.barcode||"",
     p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
+  var costPrice=+p.costPrice||0;
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
       // Mise à jour : on NE touche PAS aux colonnes de stock (L:O), pour ne jamais écraser
       // une modification de stock faite entre-temps par un autre appareil/utilisateur.
       sh.getRange(i+2,1,1,11).setValues([meta]);
+      sh.getRange(i+2,16).setValue(costPrice); // P = Prix d'achat TTC
       return{ok:true,action:"updated"};
     }}
   }
   // Création d'un nouveau produit : stock initialisé à 0 sur tous les sites
-  sh.appendRow(meta.concat([0,0,0,0]));
+  sh.appendRow(meta.concat([0,0,0,0,costPrice]));
   return{ok:true,action:"created"};
 }
 function deleteProduct(e){
