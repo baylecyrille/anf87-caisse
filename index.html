@@ -60,6 +60,18 @@ async function api(url,params){
   try{const r=await fetch(url+"?"+q,{redirect:"follow"});return await r.json();}
   catch(e){return{ok:false,error:e.message};}
 }
+// Pour les écritures (save/delete/update/transfer) : si Google Sheets refuse ou que la
+// connexion coupe, on prévient clairement au lieu de laisser la modif disparaître en
+// silence au prochain rafraîchissement automatique.
+async function apiWrite(url,params){
+  const r=await api(url,params);
+  if(!r.ok){
+    window.alert("⚠️ Échec de l'enregistrement sur Google Sheets :\n"+(r.error||"erreur inconnue")+
+      "\n\nVérifiez votre connexion puis réessayez. Tant que ce n'est pas enregistré côté serveur, "+
+      "l'actualisation automatique peut annuler ce changement à l'écran.");
+  }
+  return r;
+}
 
 // ═══ APP ROOT ═══
 function App(){
@@ -142,7 +154,7 @@ function App(){
     setProducts(upd);LS.set("anf87_products",upd);
     if(caisseUrl){
       const member=cart.some(i=>i.free)?(LS.get("anf87_last_member")||""):"";
-      await api(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
+      await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
         total:(splitPart||cartTotal).toFixed(2),payment:JSON.stringify(payment),
         items:encodeURIComponent(JSON.stringify(cart.map(i=>({id:i.id,qty:stockAmount(i)})))),
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
@@ -952,7 +964,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave}){
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:v<=10?"#EAB308":T.green;
   const updateQty=async(prod,site,newQty)=>{
     const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[site]:Math.max(0,newQty)}});
-    onSave(upd);if(caisseUrl)await api(caisseUrl,{action:"updateStock",id:prod.id,site,qty:Math.max(0,newQty),mode:"set"});
+    onSave(upd);if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:prod.id,site,qty:Math.max(0,newQty),mode:"set"});
   };
   const cats=[...new Set(products.map(p=>p.cat))];
   return(<div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
@@ -1023,7 +1035,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
     const newQty=(scannedProd.stock[site]||0)+(+qty);
     const upd=products.map(p=>p.id!==scannedProd.id?p:{...p,stock:{...p.stock,[site]:newQty}});
     onSave(upd);
-    if(caisseUrl)await api(caisseUrl,{action:"updateStock",id:scannedProd.id,site,qty:+qty,mode:"delta"});
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:scannedProd.id,site,qty:+qty,mode:"delta"});
     setMsg(`✅ +${qty} ${scannedProd.name} sur ${sites.find(s=>s.id===site)?.name}`);
     setScannedProd(null);setQty("");
     setTimeout(()=>setMsg(""),3000);
@@ -1082,7 +1094,7 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
     const upd=products.map(p=>{const q=+qtys[p.id]||0;if(!q)return p;
       return{...p,stock:{...p.stock,[from]:Math.max(0,(p.stock[from]||0)-q),[to]:(p.stock[to]||0)+q}};});
     onSave(upd);
-    if(caisseUrl)await api(caisseUrl,{action:"transferStock",from,to,items:encodeURIComponent(JSON.stringify(items))});
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"transferStock",from,to,items:encodeURIComponent(JSON.stringify(items))});
     setMsg(`✅ Transfert effectué: ${items.length} produit(s) de ${sites.find(s=>s.id===from)?.name} vers ${sites.find(s=>s.id===to)?.name}`);
     setQtys({});setTimeout(()=>setMsg(""),4000);
   };
@@ -1252,13 +1264,13 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
     const id=uid();const stock=Object.fromEntries(sites.map(s=>[s.id,0]));
     const p={...newP,id,price:+newP.price,costPrice:+newP.costPrice||0,drink:!!newP.drink,sellByVolume:!!newP.sellByVolume,baseQty:+newP.baseQty||1,stock};
     const arr=[...products,p];onSave(arr);
-    if(caisseUrl)await api(caisseUrl,{action:"saveProduct",id,...flattenProd(p,sites)});
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveProduct",id,...flattenProd(p,sites)});
     setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1});
   };
   const saveEdit=async()=>{const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
-    if(caisseUrl)await api(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites)});setEdit(null);};
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites)});setEdit(null);};
   const delProd=async(id)=>{if(!window.confirm("Supprimer ?"))return;onSave(products.filter(p=>p.id!==id));
-    if(caisseUrl)await api(caisseUrl,{action:"deleteProduct",id});};
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
     drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
@@ -1308,11 +1320,11 @@ function CatsAdmin({categories,onSave,caisseUrl}){
   const [newName,setNewName]=useState("");
   const [editId,setEditId]=useState(null);const [editName,setEditName]=useState("");
   const add=async()=>{if(!newName.trim())return;const id="c"+uid();const arr=[...categories,{id,name:newName.trim()}];
-    onSave(arr);if(caisseUrl)await api(caisseUrl,{action:"saveCategory",id,name:newName.trim()});setNewName("");};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id,name:newName.trim()});setNewName("");};
   const saveEdit=async()=>{const arr=categories.map(c=>c.id===editId?{...c,name:editName}:c);
-    onSave(arr);if(caisseUrl)await api(caisseUrl,{action:"saveCategory",id:editId,name:editName});setEditId(null);};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id:editId,name:editName});setEditId(null);};
   const del=async(id)=>{if(!window.confirm("Supprimer cette catégorie ?"))return;
-    onSave(categories.filter(c=>c.id!==id));if(caisseUrl)await api(caisseUrl,{action:"deleteCategory",id});};
+    onSave(categories.filter(c=>c.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteCategory",id});};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>+ Nouvelle catégorie</div>
@@ -1341,10 +1353,10 @@ function SitesAdmin({sites,onSave,caisseUrl}){
   const [editS,setEditS]=useState(null);
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const add=async()=>{if(!newS.name)return;const id="s"+uid().slice(-4);const arr=[...sites,{...newS,id}];
-    onSave(arr);if(caisseUrl)await api(caisseUrl,{action:"saveSite",id,...newS});setNewS({name:"",village:"",color:"#CC0000"});};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS});setNewS({name:"",village:"",color:"#CC0000"});};
   const saveEdit=async()=>{const arr=sites.map(s=>s.id===editS.id?editS:s);
-    onSave(arr);if(caisseUrl)await api(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color});setEditS(null);};
-  const del=async(id)=>{if(!window.confirm("Supprimer ?"))return;onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await api(caisseUrl,{action:"deleteSite",id});};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color});setEditS(null);};
+  const del=async(id)=>{if(!window.confirm("Supprimer ?"))return;onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteSite",id});};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>+ Nouveau site</div>
@@ -1386,11 +1398,11 @@ function UsersAdmin({users,onSave,caisseUrl}){
   const [editU,setEditU]=useState(null);
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const add=async()=>{if(!newU.name||!newU.pin)return;const id="u"+uid();const arr=[...users,{...newU,id}];
-    onSave(arr);if(caisseUrl)await api(caisseUrl,{action:"saveUser",id,...newU});setNewU({name:"",pin:"",role:"cashier"});};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id,...newU});setNewU({name:"",pin:"",role:"cashier"});};
   const saveEdit=async()=>{const arr=users.map(u=>u.id===editU.id?editU:u);
-    onSave(arr);if(caisseUrl)await api(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role});setEditU(null);};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role});setEditU(null);};
   const del=async(id)=>{if(users.length<=1){alert("Impossible de supprimer le dernier utilisateur");return;}
-    if(!window.confirm("Supprimer ?"))return;onSave(users.filter(u=>u.id!==id));if(caisseUrl)await api(caisseUrl,{action:"deleteUser",id});};
+    if(!window.confirm("Supprimer ?"))return;onSave(users.filter(u=>u.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteUser",id});};
   const roleLabel={admin:"🔑 Admin",cashier:"💳 Caissier"};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:"#E3F2FD",borderRadius:12,padding:12,marginBottom:14,fontSize:13,color:"#1565C0"}}>ℹ️ <strong>Admin</strong> : accès complet. <strong>Caissier</strong> : accès caisse uniquement. Si aucun utilisateur, connexion libre.</div>
