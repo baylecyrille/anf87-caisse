@@ -119,7 +119,9 @@ function App(){
       return[...prev,{id:p.id,name:p.name,price:p.price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
   };
   const addVolumeToCart=(prod,qty,unit,price)=>{
-    setCart(prev=>[...prev,{id:prod.id+"-"+Date.now(),name:prod.name+" "+qty+unit,price,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,qty:1,free:false,unit:unit}]);
+    // vol = quantité réellement servie (en cl/g/etc.) à décompter du stock du fût/cubi/paquet.
+    // qty reste le nombre de "portions identiques" (pour les boutons +/- et le calcul du prix).
+    setCart(prev=>[...prev,{id:prod.id+"-"+Date.now(),name:prod.name+" "+qty+unit,price,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,qty:1,vol:qty,free:false,unit:unit}]);
     setVolumeProd(null);
   };
   const removeFromCart=id=>setCart(prev=>{const ex=prev.find(i=>i.id===id);
@@ -132,14 +134,17 @@ function App(){
   const cartCount=cart.reduce((s,i)=>s+i.qty,0);
 
   const finalizeSale=async(payment,splitPart)=>{
+    // Pour un article vendu au volume (fût, cubi, paquet café...), on décompte qty*vol
+    // (ex: 2 verres de 30cl = 60cl décomptés), pas juste qty (qui vaudrait 2).
+    const stockAmount=item=>item.vol?item.qty*item.vol:item.qty;
     const upd=products.map(p=>{const item=cart.find(i=>i.id===p.id||i.id.toString().startsWith(p.id+"-"));
-      if(!item)return p;return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-item.qty)}};});
+      if(!item)return p;return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-stockAmount(item))}};});
     setProducts(upd);LS.set("anf87_products",upd);
     if(caisseUrl){
       const member=cart.some(i=>i.free)?(LS.get("anf87_last_member")||""):"";
       await api(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
         total:(splitPart||cartTotal).toFixed(2),payment:JSON.stringify(payment),
-        items:encodeURIComponent(JSON.stringify(cart.map(i=>({id:i.id,qty:i.qty})))),
+        items:encodeURIComponent(JSON.stringify(cart.map(i=>({id:i.id,qty:stockAmount(i)})))),
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
       syncAll(); // reflète immédiatement le stock réel (utile à plusieurs caisses)
     }
@@ -1193,10 +1198,18 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>{label}</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
         <input style={inp} placeholder="Nom" value={data.name} onChange={e=>setData({...data,name:e.target.value})}/>
-        <input style={inp} placeholder="Prix" type="number" step="0.50" value={data.price} onChange={e=>setData({...data,price:e.target.value})}/>
+        <input style={inp} placeholder="Prix de vente" type="number" step="0.50" value={data.price} onChange={e=>setData({...data,price:e.target.value})}/>
+        <input style={inp} placeholder="Prix d'achat TTC" type="number" step="0.01" value={data.costPrice||""} onChange={e=>setData({...data,costPrice:e.target.value})}/>
         <input style={inp} placeholder="Emoji" value={data.emoji} onChange={e=>setData({...data,emoji:e.target.value})}/>
-        <input style={inp} placeholder="Code-barres EAN" value={data.barcode||""} onChange={e=>setData({...data,barcode:e.target.value})}/>
+        <input style={{...inp,gridColumn:"1 / -1"}} placeholder="Code-barres EAN" value={data.barcode||""} onChange={e=>setData({...data,barcode:e.target.value})}/>
       </div>
+      {data.price&&data.costPrice?(()=>{
+        const margeUnit=+data.price-+data.costPrice, margePct=+data.costPrice>0?(margeUnit/+data.costPrice*100):0;
+        return(<div style={{background:margeUnit>=0?"#E8F5E9":"#FFEBEE",borderRadius:8,padding:"7px 10px",marginBottom:7,
+          fontSize:12,color:margeUnit>=0?"#2E7D32":T.red,fontWeight:600,display:"flex",justifyContent:"space-between"}}>
+          <span>Marge unitaire</span><span>{fmt(margeUnit)} ({margePct.toFixed(0)}%)</span>
+        </div>);
+      })():null}
       <select value={data.cat} onChange={e=>setData({...data,cat:e.target.value})} style={{...inp}}>
         {categories.map(c=><option key={c.id}>{c.name}</option>)}
       </select>
@@ -1229,7 +1242,7 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
 
 function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
   const [edit,setEdit]=useState(null);
-  const [newP,setNewP]=useState({name:"",price:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1});
+  const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1});
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
   const handlePhoto=(e,setter)=>{const f=e.target.files[0];if(!f)return;
@@ -1237,30 +1250,50 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
 
   const addProd=async()=>{if(!newP.name||!newP.price)return;
     const id=uid();const stock=Object.fromEntries(sites.map(s=>[s.id,0]));
-    const p={...newP,id,price:+newP.price,drink:!!newP.drink,sellByVolume:!!newP.sellByVolume,baseQty:+newP.baseQty||1,stock};
+    const p={...newP,id,price:+newP.price,costPrice:+newP.costPrice||0,drink:!!newP.drink,sellByVolume:!!newP.sellByVolume,baseQty:+newP.baseQty||1,stock};
     const arr=[...products,p];onSave(arr);
     if(caisseUrl)await api(caisseUrl,{action:"saveProduct",id,...flattenProd(p,sites)});
-    setNewP({name:"",price:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1});
+    setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1});
   };
   const saveEdit=async()=>{const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
     if(caisseUrl)await api(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites)});setEdit(null);};
   const delProd=async(id)=>{if(!window.confirm("Supprimer ?"))return;onSave(products.filter(p=>p.id!==id));
     if(caisseUrl)await api(caisseUrl,{action:"deleteProduct",id});};
-  const flattenProd=(p,sites)=>({name:p.name,price:p.price,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
+  const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
     drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
+  const totalStockValue=products.reduce((s,p)=>s+(p.costPrice||0)*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
+  const totalPotentialMargin=products.reduce((s,p)=>s+((p.price||0)-(p.costPrice||0))*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
+
   return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
+    <div style={{display:"flex",gap:8,marginBottom:12}}>
+      <div style={{flex:1,background:T.dark,borderRadius:12,padding:"12px 14px",color:"white"}}>
+        <div style={{fontSize:11,opacity:.7}}>💰 Valeur du stock (achat)</div>
+        <div style={{fontSize:18,fontWeight:900}}>{fmt(totalStockValue)}</div>
+      </div>
+      <div style={{flex:1,background:T.green,borderRadius:12,padding:"12px 14px",color:"white"}}>
+        <div style={{fontSize:11,opacity:.85}}>📈 Marge potentielle</div>
+        <div style={{fontSize:18,fontWeight:900}}>{fmt(totalPotentialMargin)}</div>
+      </div>
+    </div>
     <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} handlePhoto={handlePhoto}/>
-    {products.map(p=><div key={p.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
+    {products.map(p=>{
+      const margeUnit=(p.price||0)-(p.costPrice||0);
+      const margePct=p.costPrice>0?(margeUnit/p.costPrice*100):null;
+      const stockTotal=Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0);
+      return(<div key={p.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
       {p.photo?<img src={p.photo} style={{width:32,height:32,borderRadius:7,objectFit:"cover",flexShrink:0}}/>
         :<span style={{fontSize:24,flexShrink:0}}>{p.emoji}</span>}
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
         <div style={{fontSize:11,color:T.mid}}>{p.cat} • {fmt(p.price)}{p.drink?" • 🍺":""}{p.sellByVolume?" • au "+p.unit:""}</div>
+        {p.costPrice>0&&<div style={{fontSize:10,color:margeUnit>=0?"#2E7D32":T.red,fontWeight:600,marginTop:1}}>
+          Achat {fmt(p.costPrice)} • Marge {fmt(margeUnit)}{margePct!=null?` (${margePct.toFixed(0)}%)`:""} • Stock: {fmt(p.costPrice*stockTotal)}
+        </div>}
       </div>
       <button onClick={()=>setEdit({...p})} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
       <button onClick={()=>delProd(p.id)} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
-    </div>)}
+    </div>);})}
     {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>✏️ Modifier {edit.name}</div>
