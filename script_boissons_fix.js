@@ -16,23 +16,35 @@ function doGet(e){
 
 // ── getMember : retourne les infos du membre en JSON ──
 function getMember(e){
-  var person=e.parameter.person||null, id=e.parameter.id||null;
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sheet=ss.getActiveSheet();
-  var data=sheet.getDataRange().getValues();
-  for(var i=1;i<data.length;i++){
-    var rowId=data[i][COL_ID].toString().toLowerCase();
-    var rowNom=data[i][COL_NOM].toString().toLowerCase();
-    var found=(id&&rowId===id.toLowerCase())||(person&&rowNom===person.toLowerCase());
-    if(!found)continue;
-    var maximum=+data[i][COL_MAXIMUM]||26, compteur=+data[i][COL_COMPTEUR]||0;
-    return ContentService.createTextOutput(JSON.stringify({
-      ok:true, nom:data[i][COL_NOM], id:data[i][COL_ID],
-      compteur:compteur, maximum:maximum, solde:maximum-compteur,
-      licence:data[i][COL_LICENCE].toString().toLowerCase()
-    })).setMimeType(ContentService.MimeType.JSON);
+  try{
+    var person=e.parameter.person||null, id=e.parameter.id||null;
+    // On cible la 1ère feuille du classeur (celle des membres) explicitement, plutôt que
+    // "la feuille active" : si quelqu'un a l'onglet "Historique" ouvert dans Google Sheets
+    // au même moment, getActiveSheet() pointait vers la mauvaise feuille et cassait le scan.
+    var ss=SpreadsheetApp.getActiveSpreadsheet(), sheet=ss.getSheets()[0];
+    var data=sheet.getDataRange().getValues();
+    for(var i=1;i<data.length;i++){
+      if(!data[i][COL_ID])continue;
+      var rowId=data[i][COL_ID].toString().toLowerCase();
+      var rowNom=data[i][COL_NOM].toString().toLowerCase();
+      var found=(id&&rowId===id.toLowerCase())||(person&&rowNom===person.toLowerCase());
+      if(!found)continue;
+      var maximum=+data[i][COL_MAXIMUM]||26, compteur=+data[i][COL_COMPTEUR]||0;
+      return ContentService.createTextOutput(JSON.stringify({
+        ok:true, nom:data[i][COL_NOM], id:data[i][COL_ID],
+        compteur:compteur, maximum:maximum, solde:maximum-compteur,
+        licence:(data[i][COL_LICENCE]||"").toString().toLowerCase()
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+    return ContentService.createTextOutput(JSON.stringify({ok:false,error:"Membre introuvable"}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }catch(err){
+    // En cas d'erreur inattendue, on renvoie TOUJOURS du JSON valide : sinon Apps Script
+    // renvoie une page d'erreur HTML, le fetch().json() de l'appli plante et affiche
+    // "Erreur de connexion" sans que la vraie cause soit visible.
+    return ContentService.createTextOutput(JSON.stringify({ok:false,error:err.toString()}))
+      .setMimeType(ContentService.MimeType.JSON);
   }
-  return ContentService.createTextOutput(JSON.stringify({ok:false,error:"Membre introuvable"}))
-    .setMimeType(ContentService.MimeType.JSON);
 }
 
 // ── logDetails : reçoit appareil+GPS, écrit dans Historique ──
@@ -68,7 +80,7 @@ function handleRequest(e){
   var person=e.parameter.person||null, id=e.parameter.id||null, action=e.parameter.action||"menu";
   var qty=Math.max(1,+e.parameter.qty||1), scriptUrl=ScriptApp.getService().getUrl();
   if(!person&&!id)return HtmlService.createHtmlOutput(buildPage("","","","",buildError("QR code invalide"),""));
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sheet=ss.getActiveSheet(), data=sheet.getDataRange().getValues();
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sheet=ss.getSheets()[0], data=sheet.getDataRange().getValues();
   var now=new Date(), tz=Session.getScriptTimeZone();
   var dateStr=Utilities.formatDate(now,tz,"dd/MM/yyyy"), heureStr=Utilities.formatDate(now,tz,"HH:mm:ss");
   var baseUrl=scriptUrl+"?"+(person?"person="+encodeURIComponent(person):"id="+encodeURIComponent(id));

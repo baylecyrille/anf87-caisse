@@ -3,9 +3,19 @@
 //  Sheets: Produits | Sites | Categories | Ventes | Utilisateurs
 // ═══════════════════════════════════════════════════════
 
+// Actions qui ÉCRIVENT dans le classeur : protégées par un verrou pour éviter
+// les conflits quand 2-3 utilisateurs utilisent la caisse en même temps.
+var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","saveCategory",
+  "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","initSheets"];
+
 function doGet(e) {
   var p = e.parameter, action = p.action || "getAll", result;
+  var lock = null;
   try {
+    if (WRITE_ACTIONS.indexOf(action) !== -1) {
+      lock = LockService.getScriptLock();
+      lock.waitLock(15000); // attend jusqu'à 15s si un autre utilisateur écrit en même temps
+    }
     switch(action) {
       case "getAll":          result = getAllData(); break;
       case "saveProduct":     result = saveProduct(e); break;
@@ -24,6 +34,7 @@ function doGet(e) {
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
+  finally { if (lock) lock.releaseLock(); }
   return ContentService.createTextOutput(JSON.stringify(result))
     .setMimeType(ContentService.MimeType.JSON);
 }
@@ -125,14 +136,21 @@ function getUsersData(ss){
 
 function saveProduct(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), p=e.parameter;
-  var row=[p.id,p.name,+p.price,p.cat,p.emoji,p.photo||"",p.barcode||"",
-    p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1,
-    +p.stock_s1||0,+p.stock_s2||0,+p.stock_s3||0,+p.stock_s4||0];
+  // Colonnes A:K = infos produit (jamais le stock, colonnes L:O)
+  var meta=[p.id,p.name,+p.price,p.cat,p.emoji,p.photo||"",p.barcode||"",
+    p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){sh.getRange(i+2,1,1,15).setValues([row]);return{ok:true,action:"updated"};}}
+    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      // Mise à jour : on NE touche PAS aux colonnes de stock (L:O), pour ne jamais écraser
+      // une modification de stock faite entre-temps par un autre appareil/utilisateur.
+      sh.getRange(i+2,1,1,11).setValues([meta]);
+      return{ok:true,action:"updated"};
+    }}
   }
-  sh.appendRow(row); return{ok:true,action:"created"};
+  // Création d'un nouveau produit : stock initialisé à 0 sur tous les sites
+  sh.appendRow(meta.concat([0,0,0,0]));
+  return{ok:true,action:"created"};
 }
 function deleteProduct(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), id=e.parameter.id;
