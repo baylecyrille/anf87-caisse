@@ -768,11 +768,14 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
   const [applied,setApplied]=useState(false);
   const [scanning,setScanning]=useState(false);
   const videoRef=useRef(null);const streamRef=useRef(null);
+  const justScannedRef=useRef(false);
   const drinkItems=cart.filter(i=>i.drink&&!i.free);
   const qtyB=drinkItems.reduce((s,i)=>s+i.qty,0);
-  const paidAfter=cart.reduce((s,i)=>s+(i.free||i.drink?0:i.price*i.qty),0);
+  const paidAfter=cart.reduce((s,i)=>s+(i.free?0:i.price*i.qty),0);
 
   useEffect(()=>{ if(scanning)startCam(); return()=>stopCam(); },[scanning]);
+  // Après un scan QR réussi, on vérifie le solde automatiquement (pas besoin de cliquer la loupe).
+  useEffect(()=>{ if(justScannedRef.current){ justScannedRef.current=false; fetchMember(); } },[name]);
 
   const startCam=async()=>{
     try{
@@ -784,6 +787,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
           if(!videoRef.current)return;
           try{const codes=await det.detect(videoRef.current);
             if(codes.length>0){clearInterval(int);stopCam();setScanning(false);
+              justScannedRef.current=true;
               try{const u=new URL(codes[0].rawValue.replace(/ /g,"%20"));
                 const p=u.searchParams.get("person");
                 setName(p||codes[0].rawValue);
@@ -795,37 +799,87 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
   };
   const stopCam=()=>{if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null;}};
 
-  const fetchMember=async()=>{
-    if(!name.trim()||!boissonsUrl)return;
-    setLoading(true);
+  const fetchMember=async(silent)=>{
+    if(!name.trim()||!boissonsUrl)return null;
+    if(!silent)setLoading(true);
+    let info=null;
     try{
       const url=boissonsUrl.trim()+"?action=getmember&person="+encodeURIComponent(name.trim());
       const r=await fetch(url,{redirect:"follow"});
-      if(!r.ok){setMemberInfo({error:"Erreur serveur ("+r.status+")"});setLoading(false);return;}
-      const d=await r.json();
-      if(d.ok)setMemberInfo(d); else setMemberInfo({error:d.error||"Membre introuvable"});
+      if(!r.ok){info={error:"Erreur serveur ("+r.status+")"};}
+      else{
+        const d=await r.json();
+        info=d.ok?d:{error:d.error||"Membre introuvable"};
+      }
     }catch(e){
       // Erreur réseau réelle (URL invalide/mal configurée, déploiement inaccessible, hors-ligne...)
-      setMemberInfo({error:"Erreur de connexion : "+(e.message||"vérifiez l'URL du script Boissons dans ⚙️ Configuration")});
+      info={error:"Erreur de connexion : "+(e.message||"vérifiez l'URL du script Boissons dans ⚙️ Configuration")};
     }
-    setLoading(false);
+    setMemberInfo(info);
+    if(!silent)setLoading(false);
+    return info;
   };
+
+  // Solde connu pour le nom actuellement saisi (utilisé pour désactiver le bouton
+  // et pour plafonner le nombre de boissons réellement offertes).
+  const knownSolde=memberInfo&&!memberInfo.error?memberInfo.solde:null;
+  const maxReached=knownSolde!=null&&knownSolde<=0;
+  const freeQtyPlanned=knownSolde!=null?Math.min(qtyB,knownSolde):qtyB;
+  // Valeur exacte de ce qui sera réellement offert une fois plafonné au solde restant
+  // (les lignes de boissons peuvent avoir des prix différents, donc pas une simple règle de trois).
+  const plannedFreeValue=(()=>{
+    let left=freeQtyPlanned,total=0;
+    for(const i of drinkItems){ if(left<=0)break; const q=Math.min(i.qty,left); total+=q*i.price; left-=q; }
+    return total;
+  })();
 
   const apply=async()=>{
     if(!name.trim())return;
+    setLoading(true);
+    // On revérifie toujours le solde juste avant de valider (il peut avoir changé
+    // depuis la dernière recherche, ou n'avoir jamais été recherché après un scan).
+    const info=await fetchMember(true);
+    if(!info||info.error){setLoading(false);return;} // le message d'erreur est déjà affiché
+    const solde=info.solde||0;
+    if(solde<=0){setLoading(false);return;} // maximum déjà atteint, on ne valide rien
     LS.set("anf87_last_member",name.trim());
-    setCart(prev=>prev.map(i=>i.drink&&!i.free?{...i,free:true}:i));
-    // Envoyer device info + mise à jour compteur
-    const ua=encodeURIComponent(navigator.userAgent);
-    if(boissonsUrl){
-      // On appelle d'abord scan pour mettre à jour le compteur
-      const scanUrl=boissonsUrl+"?action=scan&qty="+qtyB+"&person="+encodeURIComponent(name.trim());
-      fetch(scanUrl,{mode:"no-cors",redirect:"follow"}).catch(()=>{new Image().src=scanUrl;});
+
+    // On ne rend gratuit que jusqu'à `solde` boissons — s'il en reste moins que demandé,
+    // on découpe la ligne concernée entre part offerte et part restant à payer.
+    let remaining=Math.min(qtyB,solde);
+    const actuallyFree=remaining;
+    let leftoverDrinkCost=0; // ce qui reste à payer sur les boissons non couvertes par le solde
+    const nonDrinkTotal=cart.reduce((s,i)=>i.drink?s:s+i.price*i.qty,0);
+    const newCart=[];
+    cart.forEach(item=>{
+      if(!item.drink||item.free){newCart.push(item);return;}
+      if(remaining<=0){newCart.push(item);leftoverDrinkCost+=item.price*item.qty;return;}
+      const freeQty=Math.min(item.qty,remaining);
+      remaining-=freeQty;
+      if(freeQty>=item.qty){newCart.push({...item,free:true});}
+      else{
+        const paidQty=item.qty-freeQty;
+        newCart.push({...item,qty:paidQty});
+        newCart.push({...item,id:item.id+"-offert-"+Date.now(),qty:freeQty,free:true});
+        leftoverDrinkCost+=item.price*paidQty;
+      }
+    });
+    setCart(newCart);
+
+    // Mise à jour du compteur côté serveur : on attend la confirmation au lieu d'un
+    // fire-and-forget silencieux, pour prévenir si ça n'a pas pu être enregistré.
+    const scanUrl=boissonsUrl.trim()+"?action=scan&qty="+actuallyFree+"&person="+encodeURIComponent(name.trim());
+    try{
+      await fetch(scanUrl,{redirect:"follow"});
+    }catch(e){
+      window.alert("⚠️ La mise à jour du compteur de boissons offertes a échoué ("+(e.message||"connexion")+
+        "). Les boissons ont bien été retirées du total ici, mais le solde du membre risque de ne pas être à jour sur Google Sheets — vérifiez.");
     }
+    setLoading(false);
     setApplied(true);
-    // Si total restant = 0, finaliser automatiquement
-    const newTotal=cart.reduce((s,i)=>s+(i.drink||i.free?0:i.price*i.qty),0);
-    if(newTotal<=0.001){setTimeout(()=>onFinalize({type:"free_drinks",member:name.trim()}),1200);}
+    // Si toutes les boissons ont pu être offertes et qu'il ne reste rien d'autre à payer,
+    // on finalise la vente automatiquement.
+    if(nonDrinkTotal+leftoverDrinkCost<=0.001){setTimeout(()=>onFinalize({type:"free_drinks",member:name.trim()}),1200);}
   };
 
   const ov={position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:300,display:"flex",alignItems:"flex-end",justifyContent:"center"};
@@ -869,7 +923,8 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
                   </div>
                 ))}
               </div>
-              {memberInfo.solde<qtyB&&<div style={{marginTop:8,color:T.orange,fontWeight:700,fontSize:12}}>⚠ Solde insuffisant ({memberInfo.solde} disponible sur {qtyB} demandées)</div>}
+              {memberInfo.solde<=0&&<div style={{marginTop:8,color:T.red,fontWeight:700,fontSize:12}}>🚫 Maximum atteint — plus aucune boisson offerte disponible pour ce membre</div>}
+              {memberInfo.solde>0&&memberInfo.solde<qtyB&&<div style={{marginTop:8,color:T.orange,fontWeight:700,fontSize:12}}>⚠ Solde insuffisant : seules {memberInfo.solde} sur {qtyB} boisson(s) seront offertes, le reste sera à payer</div>}
             </div>
           }
         </div>}
@@ -880,15 +935,16 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
             <span>{i.emoji} {i.name} ×{i.qty}</span><span style={{fontWeight:700}}>{fmt(i.price*i.qty)}</span>
           </div>)}
           <div style={{borderTop:`1px dashed ${T.border}`,marginTop:8,paddingTop:8,display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:14}}>
-            <span>Total offert</span><span style={{color:T.orange}}>{fmt(drinkItems.reduce((s,i)=>s+i.price*i.qty,0))}</span>
+            <span>{knownSolde!=null&&freeQtyPlanned<qtyB?`Offert (${freeQtyPlanned}/${qtyB})`:"Total offert"}</span>
+            <span style={{color:T.orange}}>{fmt(plannedFreeValue)}</span>
           </div>
         </div>
         <div style={{display:"flex",gap:8}}>
           <button onClick={onClose} style={{flex:1,padding:"13px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
-          <button onClick={apply} disabled={!name.trim()}
-            style={{flex:2,padding:"13px",background:name.trim()?T.orange:"#ccc",color:"white",border:"none",
-              borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:14}}>
-            ✓ Valider les boissons offertes
+          <button onClick={apply} disabled={!name.trim()||maxReached||loading}
+            style={{flex:2,padding:"13px",background:(!name.trim()||maxReached)?"#ccc":T.orange,color:"white",border:"none",
+              borderRadius:10,cursor:(!name.trim()||maxReached)?"not-allowed":"pointer",fontWeight:700,fontSize:14}}>
+            {maxReached?"🚫 Maximum atteint":loading?"⏳ Vérification...":"✓ Valider les boissons offertes"}
           </button>
         </div>
       </>:(
