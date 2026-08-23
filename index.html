@@ -12,6 +12,7 @@
 <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+<script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body,#root{height:100%;overflow:hidden}
@@ -64,8 +65,14 @@ function parsePresets(str){
 }
 async function api(url,params){
   if(!url)return{ok:false,error:"URL non configurée"};
-  const q=Object.entries(params).map(([k,v])=>k+"="+encodeURIComponent(v)).join("&");
-  try{const r=await fetch(url+"?"+q,{redirect:"follow"});return await r.json();}
+  try{
+    // POST plutôt que GET : une photo produit en base64 peut faire 100+ Ko une fois encodée,
+    // ce qui dépasse largement la longueur d'URL acceptée par les navigateurs/Apps Script en GET
+    // (c'était la cause du "Failed to fetch" à l'enregistrement d'un produit avec photo).
+    const body=new URLSearchParams(Object.entries(params).map(([k,v])=>[k,String(v)]));
+    const r=await fetch(url,{method:"POST",body,redirect:"follow"});
+    return await r.json();
+  }
   catch(e){return{ok:false,error:e.message};}
 }
 // Pour les écritures (save/delete/update/transfer) : si Google Sheets refuse ou que la
@@ -170,7 +177,7 @@ function App(){
       const member=cart.some(i=>i.free)?(LS.get("anf87_last_member")||""):"";
       await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
         total:(splitPart||cartTotal).toFixed(2),payment:JSON.stringify(payment),
-        items:encodeURIComponent(JSON.stringify(cart.map(i=>({id:i.id,qty:stockAmount(i)})))),
+        items:JSON.stringify(cart.map(i=>({id:i.id,qty:stockAmount(i)}))),
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
       syncAll(); // reflète immédiatement le stock réel (utile à plusieurs caisses)
     }
@@ -767,7 +774,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
   const [loading,setLoading]=useState(false);
   const [applied,setApplied]=useState(false);
   const [scanning,setScanning]=useState(false);
-  const videoRef=useRef(null);const streamRef=useRef(null);
+  const videoRef=useRef(null);const readerRef=useRef(null);
   const justScannedRef=useRef(false);
   const drinkItems=cart.filter(i=>i.drink&&!i.free);
   const qtyB=drinkItems.reduce((s,i)=>s+i.qty,0);
@@ -778,26 +785,30 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
   useEffect(()=>{ if(justScannedRef.current){ justScannedRef.current=false; fetchMember(); } },[name]);
 
   const startCam=async()=>{
+    // ZXing plutôt que l'API BarcodeDetector native : celle-ci n'existe pas du tout sur
+    // iPhone/iPad (Safari) et est peu fiable sur beaucoup d'Android — c'était la cause
+    // du scan qui "s'ouvre mais ne reconnaît rien". ZXing fonctionne partout.
+    if(!window.ZXing){ return; }
     try{
-      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
-      streamRef.current=s; if(videoRef.current){videoRef.current.srcObject=s;videoRef.current.play();}
-      if("BarcodeDetector" in window){
-        const det=new BarcodeDetector({formats:["qr_code"]});
-        const int=setInterval(async()=>{
-          if(!videoRef.current)return;
-          try{const codes=await det.detect(videoRef.current);
-            if(codes.length>0){clearInterval(int);stopCam();setScanning(false);
-              justScannedRef.current=true;
-              try{const u=new URL(codes[0].rawValue.replace(/ /g,"%20"));
-                const p=u.searchParams.get("person");
-                setName(p||codes[0].rawValue);
-              }catch{setName(codes[0].rawValue);}
-            }}catch{}
-        },200);
-      }
+      const reader=new ZXing.BrowserQRCodeReader();
+      readerRef.current=reader;
+      await reader.decodeFromConstraints(
+        {video:{facingMode:"environment"}}, videoRef.current,
+        (result)=>{
+          if(!result)return;
+          stopCam();setScanning(false);
+          justScannedRef.current=true;
+          const raw=result.getText();
+          try{const u=new URL(raw.replace(/ /g,"%20"));
+            const p=u.searchParams.get("person");
+            setName(p||raw);
+          }catch{setName(raw);}
+        }
+      );
     }catch{}
   };
-  const stopCam=()=>{if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null;}};
+  const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
+
 
   const fetchMember=async(silent)=>{
     if(!name.trim()||!boissonsUrl)return null;
@@ -964,19 +975,26 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
 
 // ═══ SCANNER CODE-BARRES ═══
 function ScannerModal({products,siteId,onFound,onClose}){
-  const videoRef=useRef(null);const streamRef=useRef(null);
+  const videoRef=useRef(null);const readerRef=useRef(null);
   const [found,setFound]=useState(null);const [manual,setManual]=useState("");const [msg,setMsg]=useState("Pointez sur le code-barres");
-  useEffect(()=>{startCam();return()=>{if(streamRef.current)streamRef.current.getTracks().forEach(t=>t.stop());};},[]);
+  useEffect(()=>{startCam();return()=>stopCam();},[]);
   const startCam=async()=>{
-    try{const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
-      streamRef.current=s;if(videoRef.current){videoRef.current.srcObject=s;videoRef.current.play();}
-      if("BarcodeDetector" in window){const det=new BarcodeDetector({formats:["ean_13","ean_8","code_128","code_39"]});
-        const int=setInterval(async()=>{if(!videoRef.current)return;
-          try{const codes=await det.detect(videoRef.current);if(codes.length>0){clearInterval(int);handle(codes[0].rawValue);}}catch{}
-        },200);
-      }else setMsg("Saisir manuellement ↓");
+    // ZXing plutôt que l'API BarcodeDetector native, absente sur iPhone/iPad (Safari)
+    // et peu fiable sur beaucoup d'Android — cause du scan qui s'ouvrait sans jamais détecter.
+    if(!window.ZXing){setMsg("Saisir manuellement ↓");return;}
+    try{
+      const hints=new Map();
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,
+        [ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.EAN_8,ZXing.BarcodeFormat.CODE_128,ZXing.BarcodeFormat.CODE_39]);
+      const reader=new ZXing.BrowserMultiFormatReader(hints);
+      readerRef.current=reader;
+      await reader.decodeFromConstraints(
+        {video:{facingMode:"environment"}}, videoRef.current,
+        (result)=>{ if(result)handle(result.getText()); }
+      );
     }catch{setMsg("Caméra indisponible — saisir manuellement ↓");}
   };
+  const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
   const handle=code=>{const p=products.find(pr=>pr.barcode===code.trim());
     if(p)setFound(p);else{setMsg("⚠ Produit introuvable: "+code);setTimeout(()=>setMsg("Pointez sur le code-barres"),2500);}};
   const handleManual=()=>{const p=products.find(pr=>pr.barcode===manual.trim()||pr.name.toLowerCase().includes(manual.toLowerCase()));
@@ -986,7 +1004,7 @@ function ScannerModal({products,siteId,onFound,onClose}){
     <div style={{background:T.card,borderRadius:18,width:"100%",maxWidth:360,overflow:"hidden"}}>
       <div style={{background:T.dark,padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <span style={{color:"white",fontWeight:700,fontSize:15}}>📷 Scanner un produit</span>
-        <button onClick={()=>{if(streamRef.current)streamRef.current.getTracks().forEach(t=>t.stop());onClose();}} style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,0.7)",fontSize:20}}>✕</button>
+        <button onClick={()=>{stopCam();onClose();}} style={{background:"none",border:"none",cursor:"pointer",color:"rgba(255,255,255,0.7)",fontSize:20}}>✕</button>
       </div>
       {!found?<>
         <div style={{position:"relative",background:"#000",height:200}}>
@@ -1013,7 +1031,7 @@ function ScannerModal({products,siteId,onFound,onClose}){
           <div style={{fontSize:12,color:T.mid,marginBottom:18}}>Stock: {found.stock[siteId]||0} unités</div>
           <div style={{display:"flex",gap:8}}>
             <button onClick={()=>{setFound(null);setManual("");}} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Autre</button>
-            <button onClick={()=>{onFound(found);if(streamRef.current)streamRef.current.getTracks().forEach(t=>t.stop());onClose();}}
+            <button onClick={()=>{onFound(found);stopCam();onClose();}}
               style={{flex:2,padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>
               + Ajouter
             </button>
@@ -1094,26 +1112,35 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave}){
 }
 
 function StockEntry({products,sites,caisseUrl,onSave}){
-  const videoRef=useRef(null);const streamRef=useRef(null);
+  const videoRef=useRef(null);const readerRef=useRef(null);
   const [scannedProd,setScannedProd]=useState(null);
   const [site,setSite]=useState(sites[0]?.id||"s1");
   const [qty,setQty]=useState("");const [msg,setMsg]=useState("");const [scanning,setScanning]=useState(false);
 
   useEffect(()=>{if(scanning)startCam();return()=>stopCam();},[scanning]);
   const startCam=async()=>{
-    try{const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
-      streamRef.current=s;if(videoRef.current){videoRef.current.srcObject=s;videoRef.current.play();}
-      if("BarcodeDetector" in window){const det=new BarcodeDetector({formats:["ean_13","ean_8","code_128"]});
-        const int=setInterval(async()=>{if(!videoRef.current)return;
-          try{const codes=await det.detect(videoRef.current);
-            if(codes.length>0){clearInterval(int);stopCam();setScanning(false);
-              const p=products.find(pr=>pr.barcode===codes[0].rawValue.trim());
-              if(p)setScannedProd(p);else setMsg("⚠ Produit non trouvé: "+codes[0].rawValue);
-            }}catch{}},200);
-      }
+    // ZXing plutôt que l'API BarcodeDetector native, absente sur iPhone/iPad (Safari)
+    // et peu fiable sur beaucoup d'Android — cause du scan qui s'ouvrait sans jamais détecter.
+    if(!window.ZXing){setMsg("Caméra non disponible sur cet appareil — utilisez la liste ci-dessous");return;}
+    try{
+      const hints=new Map();
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,
+        [ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.EAN_8,ZXing.BarcodeFormat.CODE_128]);
+      const reader=new ZXing.BrowserMultiFormatReader(hints);
+      readerRef.current=reader;
+      await reader.decodeFromConstraints(
+        {video:{facingMode:"environment"}}, videoRef.current,
+        (result)=>{
+          if(!result)return;
+          stopCam();setScanning(false);
+          const code=result.getText();
+          const p=products.find(pr=>pr.barcode===code.trim());
+          if(p)setScannedProd(p);else setMsg("⚠ Produit non trouvé: "+code);
+        }
+      );
     }catch{setMsg("Caméra non disponible");}
   };
-  const stopCam=()=>{if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null;}};
+  const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
 
   const validate=async()=>{
     if(!scannedProd||!qty)return;
@@ -1179,7 +1206,7 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
     const upd=products.map(p=>{const q=+qtys[p.id]||0;if(!q)return p;
       return{...p,stock:{...p.stock,[from]:Math.max(0,(p.stock[from]||0)-q),[to]:(p.stock[to]||0)+q}};});
     onSave(upd);
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"transferStock",from,to,items:encodeURIComponent(JSON.stringify(items))});
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"transferStock",from,to,items:JSON.stringify(items)});
     setMsg(`✅ Transfert effectué: ${items.length} produit(s) de ${sites.find(s=>s.id===from)?.name} vers ${sites.find(s=>s.id===to)?.name}`);
     setQtys({});setTimeout(()=>setMsg(""),4000);
   };

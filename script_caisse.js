@@ -10,6 +10,12 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
+// L'appli envoie maintenant ses requêtes en POST (une photo produit en base64 peut
+// dépasser la longueur d'URL maximale autorisée en GET). doPost réutilise exactement
+// la même logique que doGet : Apps Script remplit e.parameter de la même façon pour
+// les deux types de requêtes.
+function doPost(e) { return doGet(e); }
+
 function doGet(e) {
   var p = e.parameter, action = p.action || "getAll", result;
   var lock = null;
@@ -99,6 +105,10 @@ function initSheets() {
   return {ok:true, message:"Feuilles initialisées avec succès !"};
 }
 
+function safeDecodeItems(raw){
+  raw = raw || "[]";
+  try { return decodeURIComponent(raw); } catch(e) { return raw; }
+}
 function getOrCreate(ss,name){
   var s=ss.getSheetByName(name); if(!s)s=ss.insertSheet(name); return s;
 }
@@ -219,7 +229,7 @@ function transferStock(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), p=e.parameter;
   var colFrom={s1:12,s2:13,s3:14,s4:15}[p.from], colTo={s1:12,s2:13,s3:14,s4:15}[p.to];
   if(!colFrom||!colTo)return{ok:false,error:"Site invalide"};
-  var items; try{items=JSON.parse(decodeURIComponent(p.items||"[]"));}catch{return{ok:false,error:"Items invalides"};}
+  var items; try{items=JSON.parse(safeDecodeItems(p.items));}catch(err){return{ok:false,error:"Items invalides: "+err};}
   var ids=sh.getLastRow()>1?sh.getRange(2,1,sh.getLastRow()-1,1).getValues():[];
   var results=[];
   items.forEach(function(item){
@@ -238,7 +248,7 @@ function saveSale(e){
     p.site,p.siteName,+p.total,p.payment,p.items,p.member||"",+p.nbItems,p.caissier||"",p.splitPart||""]);
   // Décrémenter stock
   var prodSh=ss.getSheetByName("Produits"), col={s1:12,s2:13,s3:14,s4:15}[p.site];
-  var items; try{items=JSON.parse(decodeURIComponent(p.items||"[]"));}catch{items=[];}
+  var items; try{items=JSON.parse(safeDecodeItems(p.items));}catch(err){items=[];}
   if(col&&prodSh.getLastRow()>1){
     var pIds=prodSh.getRange(2,1,prodSh.getLastRow()-1,1).getValues();
     items.forEach(function(item){

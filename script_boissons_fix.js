@@ -13,6 +13,9 @@ function doGet(e){
   if(action==="getmember")return getMember(e);
   return handleRequest(e);
 }
+// Réutilise exactement la même logique pour les requêtes POST (au cas où l'appli
+// bascule un jour en POST pour ce script aussi — pas de risque à l'ajouter).
+function doPost(e){ return doGet(e); }
 
 // ── getMember : retourne les infos du membre en JSON ──
 function getMember(e){
