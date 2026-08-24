@@ -65,12 +65,20 @@ function parsePresets(str){
 }
 async function api(url,params){
   if(!url)return{ok:false,error:"URL non configurée"};
+  const entries=Object.entries(params).map(([k,v])=>[k,String(v)]);
+  const qs=entries.map(([k,v])=>k+"="+encodeURIComponent(v)).join("&");
   try{
-    // POST plutôt que GET : une photo produit en base64 peut faire 100+ Ko une fois encodée,
-    // ce qui dépasse largement la longueur d'URL acceptée par les navigateurs/Apps Script en GET
-    // (c'était la cause du "Failed to fetch" à l'enregistrement d'un produit avec photo).
-    const body=new URLSearchParams(Object.entries(params).map(([k,v])=>[k,String(v)]));
-    const r=await fetch(url,{method:"POST",body,redirect:"follow"});
+    let r;
+    if(qs.length>1800){
+      // Payload trop volumineux pour tenir dans une URL (ex: photo produit en base64) :
+      // on bascule en POST uniquement dans ce cas précis. Le GET classique reste la
+      // méthode par défaut pour tout le reste — c'est celle qui a le comportement le
+      // mieux connu et le plus fiable avec les déploiements Apps Script.
+      const body=new URLSearchParams(entries);
+      r=await fetch(url,{method:"POST",body,redirect:"follow"});
+    }else{
+      r=await fetch(url+"?"+qs,{redirect:"follow"});
+    }
     return await r.json();
   }
   catch(e){return{ok:false,error:e.message};}
@@ -80,6 +88,18 @@ async function api(url,params){
 // silence au prochain rafraîchissement automatique.
 async function apiWrite(url,params){
   const r=await api(url,params);
+  // Garde-fou : une réponse "ok:true" mais qui ressemble à une LECTURE (un tableau
+  // "products") pour une action d'ÉCRITURE signale que la requête n'a probablement
+  // pas été traitée comme prévu par le serveur (le paramètre action a pu se perdre
+  // en route) — sans ce contrôle, ça passerait pour un succès alors que rien n'a
+  // été enregistré, et l'actualisation automatique donnerait l'impression d'avoir
+  // "effacé" la modification.
+  const isWriteAction=params&&typeof params.action==="string"&&params.action!=="getAll"&&params.action!=="getSales";
+  const looksLikeReadResponse=r&&r.ok&&Array.isArray(r.products);
+  if(r.ok&&isWriteAction&&looksLikeReadResponse){
+    r.ok=false;
+    r.error="réponse inattendue du serveur (la requête n'a peut-être pas été traitée comme une écriture)";
+  }
   if(!r.ok){
     window.alert("⚠️ Échec de l'enregistrement sur Google Sheets :\n"+(r.error||"erreur inconnue")+
       "\n\nVérifiez votre connexion puis réessayez. Tant que ce n'est pas enregistré côté serveur, "+
@@ -834,8 +854,9 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
   // Solde connu pour le nom actuellement saisi (utilisé pour désactiver le bouton
   // et pour plafonner le nombre de boissons réellement offertes).
   const knownSolde=memberInfo&&!memberInfo.error?memberInfo.solde:null;
-  const maxReached=knownSolde!=null&&knownSolde<=0;
-  const freeQtyPlanned=knownSolde!=null?Math.min(qtyB,knownSolde):qtyB;
+  const licenceBlocked=memberInfo&&!memberInfo.error&&memberInfo.licence==="non";
+  const maxReached=(knownSolde!=null&&knownSolde<=0)||licenceBlocked;
+  const freeQtyPlanned=licenceBlocked?0:(knownSolde!=null?Math.min(qtyB,knownSolde):qtyB);
   // Valeur exacte de ce qui sera réellement offert une fois plafonné au solde restant
   // (les lignes de boissons peuvent avoir des prix différents, donc pas une simple règle de trois).
   const plannedFreeValue=(()=>{
@@ -852,6 +873,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
     const info=await fetchMember(true);
     if(!info||info.error){setLoading(false);return;} // le message d'erreur est déjà affiché
     const solde=info.solde||0;
+    if(info.licence==="non"){setLoading(false);return;} // licence non réglée : rien n'est offert
     if(solde<=0){setLoading(false);return;} // maximum déjà atteint, on ne valide rien
     LS.set("anf87_last_member",name.trim());
 
@@ -921,9 +943,16 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
         </div>
 
         {/* Infos membre */}
-        {memberInfo&&<div style={{background:memberInfo.error?"#FFF0F0":"#E8F5E9",borderRadius:12,padding:14,marginBottom:14,
-          border:`1px solid ${memberInfo.error?"#FFCDD2":"#A5D6A7"}`}}>
+        {memberInfo&&<div style={{background:memberInfo.error?"#FFF0F0":(licenceBlocked?"#FFF8E1":"#E8F5E9"),borderRadius:12,padding:14,marginBottom:14,
+          border:`1px solid ${memberInfo.error?"#FFCDD2":(licenceBlocked?"#FFE082":"#A5D6A7")}`}}>
           {memberInfo.error?<div style={{color:"#C62828",fontWeight:700,fontSize:14}}>❌ {memberInfo.error}</div>
+            :licenceBlocked?
+              <div>
+                <div style={{fontWeight:800,fontSize:15,color:"#E65100",marginBottom:6}}>{memberInfo.nom}</div>
+                <div style={{color:"#E65100",fontWeight:700,fontSize:13,lineHeight:1.4}}>
+                  🔒 Merci de régler la licence pour débloquer {qtyB>1?`les ${qtyB} boissons offertes`:"la boisson offerte"}.
+                </div>
+              </div>
             :<div>
               <div style={{fontWeight:800,fontSize:15,color:"#2E7D32",marginBottom:6}}>{memberInfo.nom}</div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
@@ -955,7 +984,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
           <button onClick={apply} disabled={!name.trim()||maxReached||loading}
             style={{flex:2,padding:"13px",background:(!name.trim()||maxReached)?"#ccc":T.orange,color:"white",border:"none",
               borderRadius:10,cursor:(!name.trim()||maxReached)?"not-allowed":"pointer",fontWeight:700,fontSize:14}}>
-            {maxReached?"🚫 Maximum atteint":loading?"⏳ Vérification...":"✓ Valider les boissons offertes"}
+            {licenceBlocked?"🔒 Licence à régler":maxReached?"🚫 Maximum atteint":loading?"⏳ Vérification...":"✓ Valider les boissons offertes"}
           </button>
         </div>
       </>:(

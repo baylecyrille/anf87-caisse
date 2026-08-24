@@ -121,6 +121,7 @@ function handleRequest(e){
     if(action==="scan"){
       var realQty=Math.min(qty,maximum-compteur), newC=compteur+realQty, newS=maximum-newC, newP=Math.round(newC/maximum*100);
       sheet.getRange(i+1,COL_COMPTEUR+1).setValue(newC); sheet.getRange(i+1,COL_SOLDE+1).setValue(newS);
+      SpreadsheetApp.flush(); // rend la mise à jour immédiatement visible (la caisse revérifie le solde juste après)
       var hr=logHist(ss,dateStr,heureStr,nom,membreId,"Scan +"+realQty,newC);
       var body="<div class='badge-plus'>+"+realQty+"</div><div class='tag-ok'>✅ "+realQty+" boisson"+(realQty>1?"s":"")+" enregistrée"+(realQty>1?"s":"")+"</div>"
         +buildStats(newC,newS,maximum,newP)+buildInfoScan(scriptUrl,hr,dateStr,heureStr)

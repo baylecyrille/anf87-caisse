@@ -42,7 +42,14 @@ function doGet(e) {
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
-  finally { if (lock) lock.releaseLock(); }
+  finally {
+    // On force l'écriture à être immédiatement visible côté serveur AVANT de relâcher
+    // le verrou et de répondre — sans ça, une lecture (sync automatique) qui arrive
+    // juste après peut retomber sur une version pas encore "commitée" de la feuille et
+    // donner l'impression que la modification vient d'être effacée.
+    if (WRITE_ACTIONS.indexOf(action) !== -1) { try { SpreadsheetApp.flush(); } catch(e2) {} }
+    if (lock) lock.releaseLock();
+  }
   return ContentService.createTextOutput(JSON.stringify(result))
     .setMimeType(ContentService.MimeType.JSON);
 }
