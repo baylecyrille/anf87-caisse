@@ -65,21 +65,22 @@ function parsePresets(str){
 }
 async function api(url,params){
   if(!url)return{ok:false,error:"URL non configurée"};
+  // GET uniquement : sur ce déploiement, le POST vers l'URL Apps Script renvoie une
+  // page de connexion Google (HTML) au lieu du JSON attendu — confirmé en testant
+  // l'URL directement dans le navigateur. Le GET, lui, fonctionne de façon fiable.
+  // C'est pour ça que les photos produits sont envoyées en plusieurs petits morceaux
+  // (voir uploadPhotoChunks) plutôt qu'en un seul gros paramètre.
   const entries=Object.entries(params).map(([k,v])=>[k,String(v)]);
   const qs=entries.map(([k,v])=>k+"="+encodeURIComponent(v)).join("&");
   try{
-    let r;
-    if(qs.length>1800){
-      // Payload trop volumineux pour tenir dans une URL (ex: photo produit en base64) :
-      // on bascule en POST uniquement dans ce cas précis. Le GET classique reste la
-      // méthode par défaut pour tout le reste — c'est celle qui a le comportement le
-      // mieux connu et le plus fiable avec les déploiements Apps Script.
-      const body=new URLSearchParams(entries);
-      r=await fetch(url,{method:"POST",body,redirect:"follow"});
-    }else{
-      r=await fetch(url+"?"+qs,{redirect:"follow"});
+    const r=await fetch(url+"?"+qs,{redirect:"follow"});
+    const text=await r.text();
+    try{ return JSON.parse(text); }
+    catch(e){
+      // Le serveur n'a pas répondu en JSON (page Google de connexion/permission,
+      // page d'erreur Apps Script...) — on le dit clairement au lieu de planter.
+      return{ok:false,error:"Réponse non-JSON du serveur (vérifiez les droits d'accès du déploiement Apps Script — doit être \"Tous\")"};
     }
-    return await r.json();
   }
   catch(e){return{ok:false,error:e.message};}
 }
@@ -901,11 +902,16 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
 
     // Mise à jour du compteur côté serveur : on attend la confirmation au lieu d'un
     // fire-and-forget silencieux, pour prévenir si ça n'a pas pu être enregistré.
+    // Petite nouvelle tentative automatique en cas d'aléa réseau ponctuel (wifi/4G
+    // de la buvette) avant d'afficher une vraie erreur à l'utilisateur.
     const scanUrl=boissonsUrl.trim()+"?action=scan&qty="+actuallyFree+"&person="+encodeURIComponent(name.trim());
-    try{
-      await fetch(scanUrl,{redirect:"follow"});
-    }catch(e){
-      window.alert("⚠️ La mise à jour du compteur de boissons offertes a échoué ("+(e.message||"connexion")+
+    let scanOk=false,lastErr=null;
+    for(let attempt=0;attempt<2&&!scanOk;attempt++){
+      try{ await fetch(scanUrl,{redirect:"follow"}); scanOk=true; }
+      catch(e){ lastErr=e; if(attempt===0)await new Promise(r=>setTimeout(r,1000)); }
+    }
+    if(!scanOk){
+      window.alert("⚠️ La mise à jour du compteur de boissons offertes a échoué ("+(lastErr?.message||"connexion")+
         "). Les boissons ont bien été retirées du total ici, mais le solde du membre risque de ne pas être à jour sur Google Sheets — vérifiez.");
     }
     setLoading(false);
@@ -1407,18 +1413,64 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
   const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:""});
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
+  // Redimensionne/compresse la photo côté navigateur avant de la stocker : une photo
+  // de téléphone peut peser plusieurs Mo, alors qu'une vignette 400px en JPEG suffit
+  // largement pour l'écran caisse — ça réduit fortement le nombre de morceaux à envoyer.
   const handlePhoto=(e,setter)=>{const f=e.target.files[0];if(!f)return;
-    const r=new FileReader();r.onload=ev=>setter(prev=>({...prev,photo:ev.target.result}));r.readAsDataURL(f);};
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const img=new Image();
+      img.onload=()=>{
+        const maxDim=400;
+        const scale=Math.min(1,maxDim/Math.max(img.width,img.height));
+        const w=Math.round(img.width*scale),h=Math.round(img.height*scale);
+        const canvas=document.createElement("canvas");canvas.width=w;canvas.height=h;
+        canvas.getContext("2d").drawImage(img,0,0,w,h);
+        setter(prev=>({...prev,photo:canvas.toDataURL("image/jpeg",0.7)}));
+      };
+      img.onerror=()=>setter(prev=>({...prev,photo:ev.target.result})); // repli : photo brute si le redimensionnement échoue
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(f);
+  };
+
+  // Envoie une photo (base64) en plusieurs petits morceaux par GET, car le POST ne
+  // fonctionne pas de façon fiable sur ce déploiement (confirmé : renvoie une page
+  // de connexion Google au lieu du JSON), et un GET avec toute la photo dépasse la
+  // longueur d'URL maximale acceptée.
+  const uploadPhotoIfNeeded=async(id,photoDataUrl)=>{
+    if(!photoDataUrl||!caisseUrl)return{ok:true,photoParam:photoDataUrl||""};
+    if(photoDataUrl.length<1200)return{ok:true,photoParam:photoDataUrl}; // assez court pour tenir dans un seul GET
+    const CHUNK=1200;
+    const chunks=[];
+    for(let i=0;i<photoDataUrl.length;i+=CHUNK)chunks.push(photoDataUrl.slice(i,i+CHUNK));
+    for(let i=0;i<chunks.length;i++){
+      const r=await api(caisseUrl,{action:"uploadPhotoChunk",id,idx:i,total:chunks.length,chunk:chunks[i]});
+      if(!r.ok)return{ok:false,error:r.error||"échec de l'envoi de la photo (morceau "+(i+1)+"/"+chunks.length+")"};
+    }
+    return{ok:true,photoParam:"__CHUNKED__",photoChunks:chunks.length};
+  };
 
   const addProd=async()=>{if(!newP.name||!newP.price)return;
     const id=uid();const stock=Object.fromEntries(sites.map(s=>[s.id,0]));
     const p={...newP,id,price:+newP.price,costPrice:+newP.costPrice||0,drink:!!newP.drink,sellByVolume:!!newP.sellByVolume,baseQty:+newP.baseQty||1,stock};
     const arr=[...products,p];onSave(arr);
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveProduct",id,...flattenProd(p,sites)});
+    if(caisseUrl){
+      const up=await uploadPhotoIfNeeded(id,p.photo);
+      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLe produit a été enregistré sans photo pour l'instant, réessayez d'ajouter la photo ensuite.");}
+      const extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
+      await apiWrite(caisseUrl,{action:"saveProduct",id,...flattenProd(p,sites),photo:up.ok?up.photoParam:"",...extra});
+    }
     setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:""});
   };
   const saveEdit=async()=>{const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites)});setEdit(null);};
+    if(caisseUrl){
+      const up=await uploadPhotoIfNeeded(edit.id,edit.photo);
+      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLes autres modifications ont été enregistrées, réessayez d'ajouter la photo ensuite.");}
+      const extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
+      await apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites),photo:up.ok?up.photoParam:edit.photo?"__CHUNKED__":"",...extra});
+    }
+    setEdit(null);};
   const delProd=async(id)=>{if(!window.confirm("Supprimer ?"))return;onSave(products.filter(p=>p.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",

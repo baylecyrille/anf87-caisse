@@ -6,14 +6,15 @@
 // Actions qui ÉCRIVENT dans le classeur : protégées par un verrou pour éviter
 // les conflits quand 2-3 utilisateurs utilisent la caisse en même temps.
 var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","saveCategory",
-  "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock"];
+  "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
-// L'appli envoie maintenant ses requêtes en POST (une photo produit en base64 peut
-// dépasser la longueur d'URL maximale autorisée en GET). doPost réutilise exactement
-// la même logique que doGet : Apps Script remplit e.parameter de la même façon pour
-// les deux types de requêtes.
+// doPost existe pour compatibilité mais n'est plus utilisé par l'appli : sur ce
+// déploiement, les requêtes POST vers l'URL Apps Script renvoient une page de
+// connexion Google (HTML) au lieu du JSON attendu. L'appli envoie donc tout en GET,
+// et découpe les photos produit (trop volumineuses pour un seul GET) en plusieurs
+// petits morceaux envoyés séparément — voir uploadPhotoChunk / saveProduct.
 function doPost(e) { return doGet(e); }
 
 function doGet(e) {
@@ -39,6 +40,7 @@ function doGet(e) {
       case "transferStock":   result = transferStock(e); break;
       case "getSales":        result = getSales(e); break;
       case "initSheets":      result = initSheets(); break;
+      case "uploadPhotoChunk":result = uploadPhotoChunk(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -157,8 +159,23 @@ function getUsersData(ss){
 
 function saveProduct(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), p=e.parameter;
+  var photo=p.photo||"";
+  if(photo==="__CHUNKED__"){
+    // La photo a été envoyée en plusieurs morceaux via uploadPhotoChunk (POST ne
+    // fonctionne pas de façon fiable sur ce déploiement, et une photo en un seul
+    // GET dépasse la longueur d'URL maximale). On la reconstitue ici.
+    var total=+p.photoChunks||0;
+    var cache=CacheService.getScriptCache(), parts=[];
+    for(var c=0;c<total;c++){
+      var part=cache.get("photo_"+p.id+"_"+c);
+      if(part===null)return{ok:false,error:"Photo incomplète (morceau "+(c+1)+"/"+total+" manquant ou expiré), réessayez."};
+      parts.push(part);
+    }
+    photo=parts.join("");
+    for(var c2=0;c2<total;c2++)cache.remove("photo_"+p.id+"_"+c2); // nettoyage
+  }
   // Colonnes A:K = infos produit (jamais le stock, colonnes L:O)
-  var meta=[p.id,p.name,+p.price,p.cat,p.emoji,p.photo||"",p.barcode||"",
+  var meta=[p.id,p.name,+p.price,p.cat,p.emoji,photo,p.barcode||"",
     p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
   var costPrice=+p.costPrice||0;
   var presets=(p.presets||"").toString();
@@ -176,6 +193,14 @@ function saveProduct(e){
   // Création d'un nouveau produit : stock initialisé à 0 sur tous les sites
   sh.appendRow(meta.concat([0,0,0,0,costPrice,presets]));
   return{ok:true,action:"created"};
+}
+// Reçoit un morceau de photo (base64) et le stocke temporairement (10 min) en attendant
+// que tous les morceaux soient arrivés ; saveProduct les réassemble ensuite via photoChunks.
+function uploadPhotoChunk(e){
+  var p=e.parameter;
+  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
+  CacheService.getScriptCache().put("photo_"+p.id+"_"+p.idx, p.chunk, 600);
+  return{ok:true};
 }
 function deleteProduct(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), id=e.parameter.id;
