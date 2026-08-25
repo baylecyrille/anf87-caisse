@@ -128,18 +128,42 @@ function getAllData(){
     categories:getCategoriesData(ss), users:getUsersData(ss), ts:Date.now()};
 }
 
+// Les 4 colonnes de stock (L à O) correspondent aux 4 premiers sites de l'onglet
+// "Sites", DANS L'ORDRE où ils y sont — pas à un identifiant fixe "s1/s2/s3/s4".
+// Ça permet de renommer ou recréer un site depuis Admin > Sites sans casser le stock
+// (avant ce correctif, un site dont l'ID n'était pas exactement s1/s2/s3/s4 provoquait
+// l'erreur "Site invalide" sur toute modification de stock).
+function siteColumn(ss, siteId){
+  if(!siteId)return null;
+  var sh=ss.getSheetByName("Sites");
+  if(!sh||sh.getLastRow()<=1)return null;
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){
+    if(ids[i][0].toString()===siteId.toString()){
+      if(i>=4)return null; // seuls les 4 premiers sites ont une colonne de stock dédiée
+      return 12+i; // 1er site -> L(12), 2e -> M(13), 3e -> N(14), 4e -> O(15)
+    }
+  }
+  return null;
+}
+
 function getProductsData(ss){
   var sh=ss.getSheetByName("Produits"); if(!sh||sh.getLastRow()<=1)return [];
+  var sites=getSitesData(ss); // pour associer chaque site à SA colonne de stock, dans l'ordre
   return sh.getRange(2,1,sh.getLastRow()-1,17).getValues()
-    .filter(r=>r[0]).map(r=>({
-      id:r[0],name:r[1],price:+r[2],cat:r[3],emoji:r[4],photo:r[5]||"",barcode:r[6]||"",
-      drink:r[7]===true||r[7]==="TRUE"||r[7]==="true",
-      sellByVolume:r[8]===true||r[8]==="TRUE"||r[8]==="true",
-      unit:r[9]||"",baseQty:+r[10]||1,
-      stock:{s1:+r[11]||0,s2:+r[12]||0,s3:+r[13]||0,s4:+r[14]||0},
-      costPrice:+r[15]||0,
-      presets:(r[16]||"").toString()
-    }));
+    .filter(r=>r[0]).map(r=>{
+      var stock={};
+      sites.forEach(function(s,i){ if(i<4) stock[s.id]=+r[11+i]||0; });
+      return {
+        id:r[0],name:r[1],price:+r[2],cat:r[3],emoji:r[4],photo:r[5]||"",barcode:r[6]||"",
+        drink:r[7]===true||r[7]==="TRUE"||r[7]==="true",
+        sellByVolume:r[8]===true||r[8]==="TRUE"||r[8]==="true",
+        unit:r[9]||"",baseQty:+r[10]||1,
+        stock:stock,
+        costPrice:+r[15]||0,
+        presets:(r[16]||"").toString()
+      };
+    });
 }
 function getSitesData(ss){
   var sh=ss.getSheetByName("Sites"); if(!sh||sh.getLastRow()<=1)return [];
@@ -249,7 +273,7 @@ function deleteUser(e){
 }
 function updateStock(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), p=e.parameter;
-  var col={s1:12,s2:13,s3:14,s4:15}[p.site]; if(!col)return{ok:false,error:"Site invalide"};
+  var col=siteColumn(ss,p.site); if(!col)return{ok:false,error:"Site invalide"};
   if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
       var cell=sh.getRange(i+2,col);
@@ -259,7 +283,7 @@ function updateStock(e){
 }
 function transferStock(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), p=e.parameter;
-  var colFrom={s1:12,s2:13,s3:14,s4:15}[p.from], colTo={s1:12,s2:13,s3:14,s4:15}[p.to];
+  var colFrom=siteColumn(ss,p.from), colTo=siteColumn(ss,p.to);
   if(!colFrom||!colTo)return{ok:false,error:"Site invalide"};
   var items; try{items=JSON.parse(safeDecodeItems(p.items));}catch(err){return{ok:false,error:"Items invalides: "+err};}
   var ids=sh.getLastRow()>1?sh.getRange(2,1,sh.getLastRow()-1,1).getValues():[];
@@ -279,7 +303,7 @@ function saveSale(e){
   sh.appendRow([saleId,Utilities.formatDate(now,tz,"dd/MM/yyyy"),Utilities.formatDate(now,tz,"HH:mm:ss"),
     p.site,p.siteName,+p.total,p.payment,p.items,p.member||"",+p.nbItems,p.caissier||"",p.splitPart||""]);
   // Décrémenter stock
-  var prodSh=ss.getSheetByName("Produits"), col={s1:12,s2:13,s3:14,s4:15}[p.site];
+  var prodSh=ss.getSheetByName("Produits"), col=siteColumn(ss,p.site);
   var items; try{items=JSON.parse(safeDecodeItems(p.items));}catch(err){items=[];}
   if(col&&prodSh.getLastRow()>1){
     var pIds=prodSh.getRange(2,1,prodSh.getLastRow()-1,1).getValues();
