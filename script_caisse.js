@@ -140,8 +140,11 @@ function siteColumn(ss, siteId){
   var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
   for(var i=0;i<ids.length;i++){
     if(ids[i][0].toString()===siteId.toString()){
-      if(i>=4)return null; // seuls les 4 premiers sites ont une colonne de stock dédiée
-      return 12+i; // 1er site -> L(12), 2e -> M(13), 3e -> N(14), 4e -> O(15)
+      // Les 4 premiers sites gardent leurs colonnes historiques L:O (12-15), pour ne
+      // jamais avoir à déplacer les données déjà enregistrées. Le 5e site et les
+      // suivants utilisent de nouvelles colonnes à partir de R (18) — après
+      // PrixAchatTTC (P) et Paliers (Q), donc sans jamais les décaler non plus.
+      return i<4 ? 12+i : 18+(i-4);
     }
   }
   return null;
@@ -150,10 +153,14 @@ function siteColumn(ss, siteId){
 function getProductsData(ss){
   var sh=ss.getSheetByName("Produits"); if(!sh||sh.getLastRow()<=1)return [];
   var sites=getSitesData(ss); // pour associer chaque site à SA colonne de stock, dans l'ordre
-  return sh.getRange(2,1,sh.getLastRow()-1,17).getValues()
+  var maxCol=sites.length>4 ? 18+(sites.length-4)-1 : 17;
+  return sh.getRange(2,1,sh.getLastRow()-1,maxCol).getValues()
     .filter(r=>r[0]).map(r=>{
       var stock={};
-      sites.forEach(function(s,i){ if(i<4) stock[s.id]=+r[11+i]||0; });
+      sites.forEach(function(s,i){
+        var col=i<4?12+i:18+(i-4);
+        stock[s.id]=+r[col-1]||0;
+      });
       return {
         id:r[0],name:r[1],price:+r[2],cat:r[3],emoji:r[4],photo:r[5]||"",barcode:r[6]||"",
         drink:r[7]===true||r[7]==="TRUE"||r[7]==="true",
@@ -215,7 +222,10 @@ function saveProduct(e){
     }}
   }
   // Création d'un nouveau produit : stock initialisé à 0 sur tous les sites
-  sh.appendRow(meta.concat([0,0,0,0,costPrice,presets]));
+  // (les 4 colonnes historiques L:O, plus une colonne par site au-delà du 4e).
+  var nbSites=getSitesData(ss).length;
+  var extraStock=nbSites>4?Array(nbSites-4).fill(0):[];
+  sh.appendRow(meta.concat([0,0,0,0,costPrice,presets]).concat(extraStock));
   return{ok:true,action:"created"};
 }
 // Reçoit un morceau de photo (base64) et le stocke temporairement (10 min) en attendant
