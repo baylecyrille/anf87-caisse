@@ -170,12 +170,17 @@ function App(){
     if(p.sellByVolume){setVolumeProd(p);return;}
     setCart(prev=>{const ex=prev.find(i=>i.id===p.id);
       if(ex)return prev.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i);
-      return[...prev,{id:p.id,name:p.name,price:p.price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
+      return[...prev,{id:p.id,pid:p.id,name:p.name,price:p.price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
   };
   const addVolumeToCart=(prod,qty,unit,price)=>{
     // vol = quantité réellement servie (en cl/g/etc.) à décompter du stock du fût/cubi/paquet.
     // qty reste le nombre de "portions identiques" (pour les boutons +/- et le calcul du prix).
-    setCart(prev=>[...prev,{id:prod.id+"-"+Date.now(),name:prod.name+" "+qty+unit,price,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,qty:1,vol:qty,free:false,unit:unit}]);
+    // pid = l'ID RÉEL du produit (contrairement à id, qui est un identifiant unique de
+    // ligne "prodId-horodatage" pour distinguer plusieurs services dans le panier) —
+    // c'est pid qu'il faut envoyer au serveur pour que le décompte de stock trouve la
+    // bonne ligne (avant ce correctif, le serveur recevait l'ID composite et ne
+    // trouvait donc jamais le produit : le stock des ventes au cl n'était jamais décompté).
+    setCart(prev=>[...prev,{id:prod.id+"-"+Date.now(),pid:prod.id,name:prod.name+" "+qty+unit,price,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,qty:1,vol:qty,free:false,unit:unit}]);
     setVolumeProd(null);
   };
   const removeFromCart=id=>setCart(prev=>{const ex=prev.find(i=>i.id===id);
@@ -191,14 +196,21 @@ function App(){
     // Pour un article vendu au volume (fût, cubi, paquet café...), on décompte qty*vol
     // (ex: 2 verres de 30cl = 60cl décomptés), pas juste qty (qui vaudrait 2).
     const stockAmount=item=>item.vol?item.qty*item.vol:item.qty;
-    const upd=products.map(p=>{const item=cart.find(i=>i.id===p.id||i.id.toString().startsWith(p.id+"-"));
-      if(!item)return p;return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-stockAmount(item))}};});
+    // On utilise pid (l'ID réel du produit) et on ADDITIONNE toutes les lignes du panier
+    // qui appartiennent au même produit — un produit peut apparaître sur plusieurs
+    // lignes (plusieurs services au verre, ou une ligne scindée entre part offerte et
+    // part payante par la carte boissons).
+    const upd=products.map(p=>{
+      const qtyTotal=cart.filter(i=>(i.pid||i.id)===p.id).reduce((s,i)=>s+stockAmount(i),0);
+      if(qtyTotal<=0)return p;
+      return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-qtyTotal)}};
+    });
     setProducts(upd);LS.set("anf87_products",upd);
     if(caisseUrl){
       const member=cart.some(i=>i.free)?(LS.get("anf87_last_member")||""):"";
       await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
         total:(splitPart||cartTotal).toFixed(2),payment:JSON.stringify(payment),
-        items:JSON.stringify(cart.map(i=>({id:i.id,qty:stockAmount(i)}))),
+        items:JSON.stringify(cart.map(i=>({id:i.pid||i.id,qty:stockAmount(i)}))),
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
       syncAll(); // reflète immédiatement le stock réel (utile à plusieurs caisses)
     }
@@ -627,7 +639,8 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBo
         <input value={given} onChange={e=>setGiven(e.target.value)} type="number" step="0.50" placeholder="0,00"
           style={{width:"100%",padding:"14px",fontSize:24,fontWeight:700,border:`2px solid ${T.border}`,borderRadius:12,textAlign:"right",marginBottom:10,outline:"none"}}/>
         <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:12}}>
-          {[paidTotal,Math.ceil(paidTotal),Math.ceil(paidTotal/5)*5,Math.ceil(paidTotal/10)*10].map((v,i)=>(
+          {/* Montants uniques (évite de proposer 2x la même valeur, ex: quand le total est déjà rond) */}
+          {[...new Set([paidTotal,Math.ceil(paidTotal),Math.ceil(paidTotal/5)*5,Math.ceil(paidTotal/10)*10])].map((v,i)=>(
             <button key={i} onClick={()=>setGiven(v.toFixed(2))} style={{padding:"10px 4px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,fontSize:12,fontWeight:700,cursor:"pointer"}}>{fmt(v)}</button>
           ))}
         </div>
@@ -636,7 +649,7 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBo
           <span style={{color:"#2E7D32",fontWeight:900,fontSize:26}}>{fmt(parseFloat(given.replace(",","."))-paidTotal)}</span>
         </div>}
         <button onClick={handleCash} disabled={!given||parseFloat(given.replace(",","."))<paidTotal}
-          style={{width:"100%",padding:15,background:given&&parseFloat(given.replace(",",".")>=paidTotal)?T.green:"#ccc",color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:"pointer"}}>
+          style={{width:"100%",padding:15,background:(given&&parseFloat(given.replace(",","."))>=paidTotal)?T.green:"#ccc",color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:"pointer"}}>
           ✓ Valider
         </button>
       </>}
@@ -794,6 +807,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
   const [memberInfo,setMemberInfo]=useState(null);
   const [loading,setLoading]=useState(false);
   const [applied,setApplied]=useState(false);
+  const [appliedSummary,setAppliedSummary]=useState(null); // {count,value} capturés au moment de la validation
   const [scanning,setScanning]=useState(false);
   const videoRef=useRef(null);const readerRef=useRef(null);
   const justScannedRef=useRef(false);
@@ -883,6 +897,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
     let remaining=Math.min(qtyB,solde);
     const actuallyFree=remaining;
     let leftoverDrinkCost=0; // ce qui reste à payer sur les boissons non couvertes par le solde
+    let freeValue=0; // valeur de ce qui est réellement offert, capturée pour l'affichage
     const nonDrinkTotal=cart.reduce((s,i)=>i.drink?s:s+i.price*i.qty,0);
     const newCart=[];
     cart.forEach(item=>{
@@ -890,12 +905,13 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       if(remaining<=0){newCart.push(item);leftoverDrinkCost+=item.price*item.qty;return;}
       const freeQty=Math.min(item.qty,remaining);
       remaining-=freeQty;
-      if(freeQty>=item.qty){newCart.push({...item,free:true});}
+      if(freeQty>=item.qty){newCart.push({...item,free:true});freeValue+=item.price*item.qty;}
       else{
         const paidQty=item.qty-freeQty;
         newCart.push({...item,qty:paidQty});
         newCart.push({...item,id:item.id+"-offert-"+Date.now(),qty:freeQty,free:true});
         leftoverDrinkCost+=item.price*paidQty;
+        freeValue+=item.price*freeQty;
       }
     });
     setCart(newCart);
@@ -911,9 +927,11 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       catch(e){ lastErr=e; if(attempt===0)await new Promise(r=>setTimeout(r,1000)); }
     }
     if(!scanOk){
+      setLoading(false);
       window.alert("⚠️ La mise à jour du compteur de boissons offertes a échoué ("+(lastErr?.message||"connexion")+
         "). Les boissons ont bien été retirées du total ici, mais le solde du membre risque de ne pas être à jour sur Google Sheets — vérifiez.");
     }
+    setAppliedSummary({count:actuallyFree,value:freeValue});
     setLoading(false);
     setApplied(true);
     // Si toutes les boissons ont pu être offertes et qu'il ne reste rien d'autre à payer,
@@ -996,8 +1014,8 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       </>:(
         <div style={{textAlign:"center",padding:"10px 0"}}>
           <div style={{fontSize:52,marginBottom:12}}>✅</div>
-          <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:4}}>{qtyB} boisson(s) offerte(s) à {name}</div>
-          <div style={{fontSize:13,color:T.mid,marginBottom:8}}>Compteur ANF 87 mis à jour</div>
+          <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:4}}>{appliedSummary?.count||0} boisson(s) offerte(s) à {name}</div>
+          <div style={{fontSize:13,color:T.mid,marginBottom:8}}>Compteur ANF 87 mis à jour {appliedSummary?.value?"— "+fmt(appliedSummary.value)+" offerts":""}</div>
           {paidAfter<=0.001
             ?<div style={{background:"#E8F5E9",borderRadius:12,padding:12,marginBottom:16,fontSize:14,color:"#2E7D32",fontWeight:700}}>✅ Total à 0€ — finalisation automatique...</div>
             :<button onClick={onClose} style={{width:"100%",padding:"14px",background:T.red,color:"white",border:"none",borderRadius:12,cursor:"pointer",fontWeight:700,fontSize:15}}>← Retour paiement ({fmt(paidAfter)} restants)</button>

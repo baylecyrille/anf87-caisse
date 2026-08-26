@@ -32,7 +32,10 @@ function getMember(e){
       var rowNom=data[i][COL_NOM].toString().toLowerCase();
       var found=(id&&rowId===id.toLowerCase())||(person&&rowNom===person.toLowerCase());
       if(!found)continue;
-      var maximum=+data[i][COL_MAXIMUM]||26, compteur=+data[i][COL_COMPTEUR]||0;
+      // Le maximum vient uniquement de la cellule "Maximum" de la feuille — plus de
+      // valeur par défaut à 26 imposée par le script (le maximum est variable et
+      // doit toujours refléter ce qui est réellement écrit dans le tableau).
+      var maximum=+data[i][COL_MAXIMUM]||0, compteur=+data[i][COL_COMPTEUR]||0;
       return ContentService.createTextOutput(JSON.stringify({
         ok:true, nom:data[i][COL_NOM], id:data[i][COL_ID],
         compteur:compteur, maximum:maximum, solde:maximum-compteur,
@@ -93,7 +96,7 @@ function handleRequest(e){
     var found=(id&&rowId===id.toLowerCase())||(person&&rowNom===person.toLowerCase());
     if(!found)continue;
     var nom=data[i][COL_NOM], membreId=data[i][COL_ID], compteur=+data[i][COL_COMPTEUR]||0;
-    var licence=data[i][COL_LICENCE].toString().toLowerCase(), maximum=+data[i][COL_MAXIMUM]||26, solde=maximum-compteur;
+    var licence=data[i][COL_LICENCE].toString().toLowerCase(), maximum=+data[i][COL_MAXIMUM]||0, solde=maximum-compteur;
     var pct=maximum>0?Math.round(compteur/maximum*100):0;
     if(licence==="non"){
       var hr=logHist(ss,dateStr,heureStr,nom,membreId,"Bloqué",compteur);
