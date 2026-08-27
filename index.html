@@ -1622,6 +1622,33 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
 
 function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
+  const videoRef=useRef(null);const readerRef=useRef(null);
+  const [scanningBarcode,setScanningBarcode]=useState(false);
+  const [scanMsg,setScanMsg]=useState("");
+
+  useEffect(()=>{ if(scanningBarcode)startBarcodeScan(); return()=>stopBarcodeScan(); },[scanningBarcode]);
+  const startBarcodeScan=async()=>{
+    // Même moteur (ZXing) que le scanner de l'écran caisse : BarcodeDetector natif
+    // n'existe pas sur iPhone/iPad (Safari) et est peu fiable sur beaucoup d'Android.
+    if(!window.ZXing){setScanMsg("Caméra non disponible sur cet appareil");return;}
+    try{
+      const hints=new Map();
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,
+        [ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.EAN_8,ZXing.BarcodeFormat.CODE_128,ZXing.BarcodeFormat.CODE_39]);
+      const reader=new ZXing.BrowserMultiFormatReader(hints);
+      readerRef.current=reader;
+      await reader.decodeFromConstraints(
+        {video:{facingMode:"environment"}}, videoRef.current,
+        (result)=>{
+          if(!result)return;
+          stopBarcodeScan();setScanningBarcode(false);
+          setData(prev=>({...prev,barcode:result.getText().trim()}));
+        }
+      );
+    }catch{setScanMsg("Caméra non disponible");}
+  };
+  const stopBarcodeScan=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
+
   return(
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:12}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>{label}</div>
@@ -1630,8 +1657,19 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
         <input style={inp} placeholder="Prix de vente" type="number" step="0.50" value={data.price} onChange={e=>setData({...data,price:e.target.value})}/>
         <input style={inp} placeholder="Prix d'achat TTC" type="number" step="0.01" value={data.costPrice||""} onChange={e=>setData({...data,costPrice:e.target.value})}/>
         <input style={inp} placeholder="Emoji" value={data.emoji} onChange={e=>setData({...data,emoji:e.target.value})}/>
-        <input style={{...inp,gridColumn:"1 / -1"}} placeholder="Code-barres EAN" value={data.barcode||""} onChange={e=>setData({...data,barcode:e.target.value})}/>
+        <div style={{gridColumn:"1 / -1",display:"flex",gap:7,marginBottom:7}}>
+          <input style={{...inp,marginBottom:0,flex:1}} placeholder="Code-barres EAN" value={data.barcode||""} onChange={e=>setData({...data,barcode:e.target.value})}/>
+          <button type="button" onClick={()=>{setScanMsg("");setScanningBarcode(s=>!s);}}
+            style={{padding:"0 14px",background:scanningBarcode?T.red:T.dark,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontSize:16,flexShrink:0}}>
+            {scanningBarcode?"✕":"📷"}
+          </button>
+        </div>
       </div>
+      {scanningBarcode&&<div style={{marginBottom:10}}>
+        <video ref={videoRef} style={{width:"100%",height:160,objectFit:"cover",borderRadius:10,background:"#000"}} muted playsInline/>
+        <div style={{fontSize:11,color:T.mid,textAlign:"center",marginTop:4}}>Pointez sur le code-barres du produit</div>
+        {scanMsg&&<div style={{fontSize:11,color:T.red,textAlign:"center",marginTop:2}}>{scanMsg}</div>}
+      </div>}
       {data.price&&data.costPrice?(()=>{
         const margeUnit=+data.price-+data.costPrice, margePct=+data.costPrice>0?(margeUnit/+data.costPrice*100):0;
         return(<div style={{background:margeUnit>=0?"#E8F5E9":"#FFEBEE",borderRadius:8,padding:"7px 10px",marginBottom:7,
