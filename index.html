@@ -73,6 +73,29 @@ function parseContainers(str){
     return{label,size};
   }).filter(c=>c&&c.label&&c.size>0);
 }
+// Combien de contenants pleins de cette taille tiennent dans le stock actuel (pour
+// "Ouvrir (2 Fûts 20L)" et l'équivalence affichée dans l'écran Contenants).
+const containerCount=(stock,size)=>size>0?Math.floor(stock/size):0;
+
+// Ouvre/ferme un contenant — utilisé à la fois depuis l'écran caisse (POS) et
+// l'écran Stock > Contenants, pour ne pas dupliquer la logique réseau.
+async function openContainerApi(caisseUrl,siteId,prod,choice,setContainers){
+  const r=await apiWrite(caisseUrl,{action:"openContainer",site:siteId,id:prod.id,label:choice.label,size:choice.size});
+  if(r.ok){
+    const now=new Date();
+    const dateStr=`${String(now.getDate()).padStart(2,"0")}/${String(now.getMonth()+1).padStart(2,"0")}/${now.getFullYear()} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+    setContainers(prev=>[...prev.filter(c=>!(c.site===siteId&&c.productId.toString()===prod.id.toString())),
+      {site:siteId,productId:prod.id,label:choice.label,size:choice.size,remaining:choice.size,openedAt:dateStr}]);
+  }
+  return r;
+}
+async function closeContainerApi(caisseUrl,siteId,prod,setContainers){
+  const r=await apiWrite(caisseUrl,{action:"closeContainer",site:siteId,id:prod.id});
+  if(r.ok){
+    setContainers(prev=>prev.filter(c=>!(c.site===siteId&&c.productId.toString()===prod.id.toString())));
+  }
+  return r;
+}
 async function api(url,params){
   if(!url)return{ok:false,error:"URL non configurée"};
   // GET uniquement : sur ce déploiement, le POST vers l'URL Apps Script renvoie une
@@ -274,7 +297,7 @@ function App(){
           addToCart={addToCart} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
           cartTotal={cartTotal} cartCount={cartCount}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
-          openCart={()=>setModal("cart")}/>}
+          openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>}
         {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
@@ -359,7 +382,80 @@ function SiteSelector({sites,siteId,onChange}){
 }
 
 // ═══ POS SCREEN ═══
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,cartTotal,cartCount,openPayment,openScanner,openCart}){
+// ═══ BANDEAU CONTENANTS (écran caisse, à côté du scanner) ═══
+function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
+  const [busyId,setBusyId]=useState(null);
+  const [pickerFor,setPickerFor]=useState(null); // productId dont on choisit la taille à ouvrir
+  const [closeConfirm,setCloseConfirm]=useState(null); // {prod,cont}
+
+  const volProducts=products.filter(p=>p.sellByVolume&&parseContainers(p.containers).length>0);
+  if(volProducts.length===0)return null;
+  const findCont=pid=>containers.find(c=>c.site===siteId&&c.productId.toString()===pid.toString());
+
+  const doOpen=async(prod,choice)=>{
+    setBusyId(prod.id);setPickerFor(null);
+    await openContainerApi(caisseUrl,siteId,prod,choice,setContainers);
+    setBusyId(null);
+  };
+  const doClose=async(prod,cont)=>{
+    setBusyId(prod.id);
+    await closeContainerApi(caisseUrl,siteId,prod,setContainers);
+    setBusyId(null);setCloseConfirm(null);
+  };
+
+  return(<div style={{display:"flex",gap:7,overflowX:"auto",marginTop:8,paddingBottom:2}}>
+    {volProducts.map(prod=>{
+      const cont=findCont(prod.id);
+      const presets=parseContainers(prod.containers);
+      const busy=busyId===prod.id;
+      const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
+      const gaugeColor=pct<=15?T.red:pct<=40?T.orange:T.green;
+      return(<div key={prod.id} style={{position:"relative",flexShrink:0}}>
+        <button disabled={busy}
+          onClick={()=>cont?setCloseConfirm({prod,cont}):(presets.length===1?doOpen(prod,presets[0]):setPickerFor(pickerFor===prod.id?null:prod.id))}
+          style={{display:"flex",flexDirection:"column",alignItems:"flex-start",gap:3,padding:"7px 12px",minWidth:118,
+            background:cont?"white":T.bg,border:`1.5px solid ${cont?gaugeColor:T.border}`,borderRadius:10,cursor:busy?"default":"pointer"}}>
+          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:700,color:T.dark}}>
+            <span>{prod.emoji}</span><span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:80}}>{prod.name}</span>
+          </div>
+          {busy?<span style={{fontSize:10,color:T.mid}}>⏳...</span>
+            :cont?<>
+              <div style={{height:6,width:"100%",background:T.border,borderRadius:3,overflow:"hidden"}}>
+                <div style={{height:"100%",width:pct+"%",background:gaugeColor}}/>
+              </div>
+              <span style={{fontSize:10,fontWeight:700,color:gaugeColor}}>🏁 Terminer ({cont.remaining}{prod.unit})</span>
+            </>
+            :<span style={{fontSize:10,fontWeight:700,color:T.mid}}>
+              {presets.length===1?`+ Ouvrir (${containerCount(prod.stock[siteId]||0,presets[0].size)} en stock)`:"+ Ouvrir…"}
+            </span>}
+        </button>
+        {pickerFor===prod.id&&<div style={{position:"absolute",top:"100%",left:0,marginTop:4,background:T.card,
+          border:`1px solid ${T.border}`,borderRadius:10,boxShadow:"0 4px 12px rgba(0,0,0,0.15)",zIndex:60,padding:6,minWidth:180}}>
+          {presets.map((c,i)=><button key={i} onClick={()=>doOpen(prod,c)}
+            style={{display:"block",width:"100%",textAlign:"left",padding:"7px 9px",background:"none",border:"none",cursor:"pointer",fontSize:12,borderRadius:7}}>
+            Ouvrir {c.label} <span style={{color:T.mid}}>({containerCount(prod.stock[siteId]||0,c.size)} en stock)</span>
+          </button>)}
+        </div>}
+      </div>);
+    })}
+    {closeConfirm&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+      onClick={e=>e.target===e.currentTarget&&setCloseConfirm(null)}>
+      <div style={{background:T.card,borderRadius:16,padding:22,width:"100%",maxWidth:360}}>
+        <div style={{fontWeight:800,fontSize:16,color:T.dark,marginBottom:8}}>🏁 Terminer {closeConfirm.cont.label} ?</div>
+        <div style={{fontSize:13,color:T.mid,lineHeight:1.5,marginBottom:14}}>
+          Il reste <b>{closeConfirm.cont.remaining}{closeConfirm.prod.unit}</b> dans la jauge. Cette quantité sera
+          déduite du stock de "{closeConfirm.prod.name}" pour corriger l'écart (pertes, verres renversés...).
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setCloseConfirm(null)} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={()=>doClose(closeConfirm.prod,closeConfirm.cont)} style={{flex:1,padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>Confirmer</button>
+        </div>
+      </div>
+    </div>}
+  </div>);
+}
+
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
@@ -382,6 +478,7 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer"}}>
           📷 Scanner code-barres
         </button>
+        <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
       </div>
 
       {/* Grille produits */}
@@ -1167,25 +1264,14 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
   const findCont=pid=>containers.find(c=>c.site===siteId&&c.productId.toString()===pid.toString());
 
   const doOpen=async(prod,choice)=>{
-    const key=siteId+"_"+prod.id;
-    setBusyKey(key);
-    const r=await apiWrite(caisseUrl,{action:"openContainer",site:siteId,id:prod.id,label:choice.label,size:choice.size});
-    if(r.ok){
-      const now=new Date();
-      const dateStr=`${String(now.getDate()).padStart(2,"0")}/${String(now.getMonth()+1).padStart(2,"0")}/${now.getFullYear()} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
-      setContainers(prev=>[...prev.filter(c=>!(c.site===siteId&&c.productId.toString()===prod.id.toString())),
-        {site:siteId,productId:prod.id,label:choice.label,size:choice.size,remaining:choice.size,openedAt:dateStr}]);
-    }
+    setBusyKey(siteId+"_"+prod.id);
+    await openContainerApi(caisseUrl,siteId,prod,choice,setContainers);
     setBusyKey(null);
   };
 
   const doClose=async(prod,cont)=>{
-    const key=siteId+"_"+prod.id;
-    setBusyKey(key);
-    const r=await apiWrite(caisseUrl,{action:"closeContainer",site:siteId,id:prod.id});
-    if(r.ok){
-      setContainers(prev=>prev.filter(c=>!(c.site===siteId&&c.productId.toString()===prod.id.toString())));
-    }
+    setBusyKey(siteId+"_"+prod.id);
+    await closeContainerApi(caisseUrl,siteId,prod,setContainers);
     setBusyKey(null);setCloseConfirm(null);
   };
 
@@ -1227,10 +1313,13 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
         </>:<>
           <div style={{fontSize:12,color:T.mid,marginBottom:8}}>Aucun contenant ouvert actuellement</div>
           <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
-            {presets.map((c,i)=><button key={i} disabled={busy} onClick={()=>doOpen(prod,c)}
-              style={{padding:"9px 12px",background:T.green,color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:600,fontSize:12}}>
-              {busy?"⏳...":"+ Ouvrir "+c.label}
-            </button>)}
+            {presets.map((c,i)=>{
+              const n=containerCount(prod.stock[siteId]||0,c.size);
+              return(<button key={i} disabled={busy} onClick={()=>doOpen(prod,c)}
+                style={{padding:"9px 12px",background:T.green,color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:600,fontSize:12}}>
+                {busy?"⏳...":"+ Ouvrir "+c.label+" ("+n+" en stock)"}
+              </button>);
+            })}
           </div>
         </>}
       </div>);
@@ -1306,6 +1395,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
   const [scannedProd,setScannedProd]=useState(null);
   const [site,setSite]=useState(sites[0]?.id||"s1");
   const [qty,setQty]=useState("");const [msg,setMsg]=useState("");const [scanning,setScanning]=useState(false);
+  const [contCounts,setContCounts]=useState({}); // label -> nombre de contenants reçus
 
   useEffect(()=>{if(scanning)startCam();return()=>stopCam();},[scanning]);
   const startCam=async()=>{
@@ -1325,7 +1415,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
           stopCam();setScanning(false);
           const code=result.getText();
           const p=products.find(pr=>pr.barcode===code.trim());
-          if(p)setScannedProd(p);else setMsg("⚠ Produit non trouvé: "+code);
+          if(p){setScannedProd(p);setContCounts({});}else setMsg("⚠ Produit non trouvé: "+code);
         }
       );
     }catch{setMsg("Caméra non disponible");}
@@ -1339,7 +1429,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
     onSave(upd);
     if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:scannedProd.id,site,qty:+qty,mode:"delta"});
     setMsg(`✅ +${qty} ${scannedProd.name} sur ${sites.find(s=>s.id===site)?.name}`);
-    setScannedProd(null);setQty("");
+    setScannedProd(null);setQty("");setContCounts({});
     setTimeout(()=>setMsg(""),3000);
   };
 
@@ -1356,7 +1446,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
     )}
     {!scanning&&<>
       <div style={{fontSize:12,color:T.mid,textAlign:"center",margin:"6px 0 10px"}}>— ou choisir dans la liste —</div>
-      <select value="" onChange={e=>{const p=products.find(pr=>pr.id.toString()===e.target.value);if(p){setScannedProd(p);setMsg("");}}}
+      <select value="" onChange={e=>{const p=products.find(pr=>pr.id.toString()===e.target.value);if(p){setScannedProd(p);setMsg("");setContCounts({});}}}
         style={{width:"100%",padding:"12px",border:`1px solid ${T.border}`,borderRadius:10,fontSize:14,marginBottom:14,outline:"none",color:T.dark}}>
         <option value="" disabled>Sélectionner un produit…</option>
         {products.map(p=><option key={p.id} value={p.id}>{p.emoji} {p.name}</option>)}
@@ -1374,7 +1464,29 @@ function StockEntry({products,sites,caisseUrl,onSave}){
       <select value={site} onChange={e=>setSite(e.target.value)} style={{width:"100%",padding:"11px",border:`1px solid ${T.border}`,borderRadius:10,fontSize:14,marginBottom:12,outline:"none"}}>
         {sites.map(s=><option key={s.id} value={s.id}>{s.name} (stock actuel: {scannedProd.stock[s.id]||0})</option>)}
       </select>
-      <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:6}}>Quantité reçue</label>
+      {scannedProd.sellByVolume&&parseContainers(scannedProd.containers).length>0&&(()=>{
+        const presets=parseContainers(scannedProd.containers);
+        const total=presets.reduce((s,c)=>s+(parseInt(contCounts[c.label])||0)*c.size,0);
+        return(<div style={{marginBottom:12}}>
+          <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:6}}>Contenants reçus (calcule automatiquement les cl)</label>
+          <div style={{border:`1px solid ${T.border}`,borderRadius:10,overflow:"hidden",marginBottom:8}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 70px 70px",background:T.bg,padding:"6px 10px",fontSize:11,fontWeight:700,color:T.mid}}>
+              <span>Contenant</span><span style={{textAlign:"center"}}>Nombre</span><span style={{textAlign:"right"}}>= cl</span>
+            </div>
+            {presets.map((c,i)=>(<div key={i} style={{display:"grid",gridTemplateColumns:"1fr 70px 70px",alignItems:"center",padding:"7px 10px",borderTop:`1px solid ${T.border}`}}>
+              <span style={{fontSize:13,color:T.dark}}>{c.label} <span style={{color:T.mid,fontSize:11}}>({c.size}cl)</span></span>
+              <input type="number" min="0" value={contCounts[c.label]||""} onChange={e=>setContCounts({...contCounts,[c.label]:e.target.value})}
+                style={{width:"100%",padding:"5px",border:`1px solid ${T.border}`,borderRadius:6,textAlign:"center",fontSize:13}}/>
+              <span style={{textAlign:"right",fontSize:13,fontWeight:600,color:T.dark}}>{(parseInt(contCounts[c.label])||0)*c.size}</span>
+            </div>))}
+          </div>
+          <button disabled={total<=0} onClick={()=>{setQty(String(total));}}
+            style={{width:"100%",padding:"10px",background:total>0?T.blue:"#ccc",color:"white",border:"none",borderRadius:9,cursor:total>0?"pointer":"default",fontWeight:700,fontSize:13}}>
+            Utiliser ce total : {total}cl
+          </button>
+        </div>);
+      })()}
+      <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:6}}>Quantité reçue{scannedProd.sellByVolume?" (cl, ou via le tableau ci-dessus)":""}</label>
       <input value={qty} onChange={e=>setQty(e.target.value)} type="number" min="1" placeholder="Ex: 24"
         style={{width:"100%",padding:"14px",fontSize:20,fontWeight:700,border:`2px solid ${T.border}`,borderRadius:10,marginBottom:12,outline:"none",textAlign:"right"}}/>
       <button onClick={validate} disabled={!qty} style={{width:"100%",padding:"14px",background:qty?T.green:"#ccc",color:"white",border:"none",borderRadius:12,cursor:"pointer",fontWeight:700,fontSize:15}}>
