@@ -6,7 +6,8 @@
 // Actions qui ÉCRIVENT dans le classeur : protégées par un verrou pour éviter
 // les conflits quand 2-3 utilisateurs utilisent la caisse en même temps.
 var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","saveCategory",
-  "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk"];
+  "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
+  "openContainer","closeContainer"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -41,6 +42,8 @@ function doGet(e) {
       case "getSales":        result = getSales(e); break;
       case "initSheets":      result = initSheets(); break;
       case "uploadPhotoChunk":result = uploadPhotoChunk(e); break;
+      case "openContainer":   result = openContainer(e); break;
+      case "closeContainer":  result = closeContainer(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -111,6 +114,13 @@ function initSheets() {
     users.getRange(1,1,1,4).setFontWeight("bold");
     users.getRange(2,1,1,4).setValues([["u1","Admin","1234","admin"]]);
   }
+  // Contenants ouverts (fûts/bouteilles/cubis entamés, un par site+produit)
+  var cont = getOrCreate(ss,"Contenants");
+  if(cont.getLastRow()<=1){
+    cont.getRange(1,1,1,6).setValues([["SiteID","ProduitID","Contenant","TailleCl","RestantCl","DateOuverture"]]);
+    cont.getRange(1,1,1,6).setFontWeight("bold");
+    cont.setFrozenRows(1);
+  }
   return {ok:true, message:"Feuilles initialisées avec succès !"};
 }
 
@@ -125,7 +135,7 @@ function getOrCreate(ss,name){
 function getAllData(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
-    categories:getCategoriesData(ss), users:getUsersData(ss), ts:Date.now()};
+    categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss), ts:Date.now()};
 }
 
 // Les 4 colonnes de stock (L à O) correspondent aux 4 premiers sites de l'onglet
@@ -153,7 +163,11 @@ function siteColumn(ss, siteId){
 function getProductsData(ss){
   var sh=ss.getSheetByName("Produits"); if(!sh||sh.getLastRow()<=1)return [];
   var sites=getSitesData(ss); // pour associer chaque site à SA colonne de stock, dans l'ordre
-  var maxCol=sites.length>4 ? 18+(sites.length-4)-1 : 17;
+  // Colonne Y (25) réservée à "Contenants" — volontairement loin des colonnes de stock
+  // des sites au-delà du 4e (qui démarrent à R=18 et peuvent grandir), pour ne jamais
+  // entrer en collision avec elles.
+  var CONTAINERS_COL=25;
+  var maxCol=Math.max(CONTAINERS_COL, sites.length>4 ? 18+(sites.length-4)-1 : 17);
   return sh.getRange(2,1,sh.getLastRow()-1,maxCol).getValues()
     .filter(r=>r[0]).map(r=>{
       var stock={};
@@ -168,7 +182,8 @@ function getProductsData(ss){
         unit:r[9]||"",baseQty:+r[10]||1,
         stock:stock,
         costPrice:+r[15]||0,
-        presets:(r[16]||"").toString()
+        presets:(r[16]||"").toString(),
+        containers:(r[CONTAINERS_COL-1]||"").toString()
       };
     });
 }
@@ -186,6 +201,67 @@ function getUsersData(ss){
   var sh=ss.getSheetByName("Utilisateurs"); if(!sh||sh.getLastRow()<=1)return [];
   return sh.getRange(2,1,sh.getLastRow()-1,4).getValues().filter(r=>r[0])
     .map(r=>({id:r[0],name:r[1],pin:r[2].toString(),role:r[3]}));
+}
+
+function getContainersData(ss){
+  var sh=ss.getSheetByName("Contenants"); if(!sh||sh.getLastRow()<=1)return [];
+  return sh.getRange(2,1,sh.getLastRow()-1,6).getValues().filter(r=>r[0]&&r[1])
+    .map(r=>({site:r[0],productId:r[1],label:r[2],size:+r[3]||0,remaining:+r[4]||0,openedAt:r[5]}));
+}
+
+// Ouvre un nouveau contenant (fût/bouteille/cubi) pour un produit sur un site donné.
+// S'il y en avait déjà un ouvert pour ce produit+site, il est remplacé (l'ancien est
+// considéré abandonné — l'appli doit normalement demander de "Terminer" avant d'en
+// ouvrir un nouveau, mais on ne bloque pas côté serveur pour rester simple).
+function openContainer(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Contenants"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,6).setValues([["SiteID","ProduitID","Contenant","TailleCl","RestantCl","DateOuverture"]]);
+    sh.getRange(1,1,1,6).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var size=+p.size||0; if(!p.site||!p.id||size<=0)return{ok:false,error:"Paramètres manquants"};
+  var tz=Session.getScriptTimeZone(), now=Utilities.formatDate(new Date(),tz,"dd/MM/yyyy HH:mm");
+  var row=[p.site,p.id,p.label||"",size,size,now];
+  if(sh.getLastRow()>1){
+    var data=sh.getRange(2,1,sh.getLastRow()-1,2).getValues();
+    for(var i=0;i<data.length;i++){
+      if(data[i][0].toString()===p.site.toString()&&data[i][1].toString()===p.id.toString()){
+        sh.getRange(i+2,1,1,6).setValues([row]); return{ok:true,action:"updated"};
+      }
+    }
+  }
+  sh.appendRow(row);
+  return{ok:true,action:"created"};
+}
+
+// Termine un contenant : ce qu'il restait dans la jauge est déduit du stock du
+// produit (pour corriger les pertes/verres renversés et recaler la réalité), puis
+// la ligne est supprimée.
+function closeContainer(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Contenants"), p=e.parameter;
+  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Aucun contenant ouvert"};
+  var data=sh.getRange(2,1,sh.getLastRow()-1,6).getValues();
+  for(var i=0;i<data.length;i++){
+    if(data[i][0].toString()===p.site.toString()&&data[i][1].toString()===p.id.toString()){
+      var remaining=+data[i][4]||0;
+      if(remaining>0){
+        var prodSh=ss.getSheetByName("Produits"), col=siteColumn(ss,p.site);
+        if(col){
+          var pIds=prodSh.getRange(2,1,prodSh.getLastRow()-1,1).getValues();
+          for(var j=0;j<pIds.length;j++){
+            if(pIds[j][0].toString()===p.id.toString()){
+              var cell=prodSh.getRange(j+2,col);
+              cell.setValue(Math.max(0,+cell.getValue()-remaining));
+              break;
+            }
+          }
+        }
+      }
+      sh.deleteRow(i+2);
+      return{ok:true,reconciled:remaining};
+    }
+  }
+  return{ok:false,error:"Contenant introuvable"};
 }
 
 function saveProduct(e){
@@ -210,6 +286,7 @@ function saveProduct(e){
     p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
   var costPrice=+p.costPrice||0;
   var presets=(p.presets||"").toString();
+  var containers=(p.containers||"").toString();
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
@@ -218,14 +295,23 @@ function saveProduct(e){
       sh.getRange(i+2,1,1,11).setValues([meta]);
       sh.getRange(i+2,16).setValue(costPrice); // P = Prix d'achat TTC
       sh.getRange(i+2,17).setValue(presets);   // Q = Paliers de vente au volume
+      sh.getRange(i+2,25).setValue(containers);// Y = Tailles de contenant (jauge fûts/bouteilles/cubis)
       return{ok:true,action:"updated"};
     }}
   }
   // Création d'un nouveau produit : stock initialisé à 0 sur tous les sites
-  // (les 4 colonnes historiques L:O, plus une colonne par site au-delà du 4e).
+  // (les 4 colonnes historiques L:O, plus une colonne par site au-delà du 4e, jusqu'à
+  // la colonne Y=25 réservée à Contenants — donc jusqu'à 11 sites au total sans collision).
   var nbSites=getSitesData(ss).length;
-  var extraStock=nbSites>4?Array(nbSites-4).fill(0):[];
-  sh.appendRow(meta.concat([0,0,0,0,costPrice,presets]).concat(extraStock));
+  var row=meta.slice();               // colonnes 1-11 (A:K)
+  row.push(0,0,0,0);                  // colonnes 12-15 (L:O) — toujours réservées aux 4 premiers sites
+  row.push(costPrice);                // colonne 16 (P)
+  row.push(presets);                  // colonne 17 (Q)
+  var extra=nbSites>4?nbSites-4:0;
+  for(var s=0;s<extra;s++)row.push(0);// colonnes 18+ (R, S...) pour le 5e site et au-delà
+  while(row.length<24)row.push("");   // comble jusqu'à la colonne 24 si besoin
+  row[24]=containers;                 // colonne 25 (Y)
+  sh.appendRow(row);
   return{ok:true,action:"created"};
 }
 // Reçoit un morceau de photo (base64) et le stocke temporairement (10 min) en attendant
@@ -315,15 +401,43 @@ function saveSale(e){
   // Décrémenter stock
   var prodSh=ss.getSheetByName("Produits"), col=siteColumn(ss,p.site);
   var items; try{items=JSON.parse(safeDecodeItems(p.items));}catch(err){items=[];}
+  // Diagnostic : avant, un article non trouvé (mauvais ID, site invalide...) était
+  // ignoré en silence et la vente répondait quand même "ok" — impossible de savoir
+  // pourquoi un stock ne bougeait pas. On renvoie maintenant explicitement ce qui a
+  // été décompté et ce qui ne l'a pas été.
+  var decremented=[], notFound=[];
   if(col&&prodSh.getLastRow()>1){
     var pIds=prodSh.getRange(2,1,prodSh.getLastRow()-1,1).getValues();
     items.forEach(function(item){
+      var found=false;
       for(var i=0;i<pIds.length;i++){if(pIds[i][0].toString()===item.id.toString()){
         var cell=prodSh.getRange(i+2,col);
-        cell.setValue(Math.max(0,+cell.getValue()-item.qty)); break;}}
+        cell.setValue(Math.max(0,+cell.getValue()-item.qty));
+        decremented.push(item.id+":-"+item.qty);
+        found=true; break;}}
+      if(!found)notFound.push(String(item.id));
+    });
+  } else if(items.length){
+    notFound=items.map(function(it){return String(it.id);});
+  }
+  // Décrémenter aussi la jauge du contenant ouvert pour ce produit+site, s'il y en a
+  // un (fût/bouteille/cubi entamé) — en plus du stock global, sans jamais aller sous 0.
+  var contSh=ss.getSheetByName("Contenants");
+  if(contSh&&contSh.getLastRow()>1&&items.length){
+    var cData=contSh.getRange(2,1,contSh.getLastRow()-1,6).getValues();
+    items.forEach(function(item){
+      for(var k=0;k<cData.length;k++){
+        if(cData[k][0].toString()===p.site.toString()&&cData[k][1].toString()===item.id.toString()){
+          var rCell=contSh.getRange(k+2,5);
+          rCell.setValue(Math.max(0,+rCell.getValue()-item.qty));
+          break;
+        }
+      }
     });
   }
-  return{ok:true,saleId:saleId};
+  var result={ok:true,saleId:saleId,stockUpdated:decremented};
+  if(notFound.length)result.stockWarning="Stock NON décompté (site="+p.site+", colonne="+col+") pour ID(s): "+notFound.join(", ");
+  return result;
 }
 function getSales(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), p=e.parameter;

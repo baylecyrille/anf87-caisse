@@ -63,6 +63,16 @@ function parsePresets(str){
     return{qty:q,price:p};
   }).filter(p=>p.qty>0&&p.price>=0);
 }
+// Tailles de contenant : "Fût 20L:2000,Fût 30L:3000" -> [{label:"Fût 20L",size:2000},...]
+function parseContainers(str){
+  if(!str)return[];
+  return str.split(",").map(s=>s.trim()).filter(Boolean).map(pair=>{
+    const idx=pair.lastIndexOf(":");
+    if(idx===-1)return null;
+    const label=pair.slice(0,idx).trim(), size=parseFloat(pair.slice(idx+1).replace(",","."));
+    return{label,size};
+  }).filter(c=>c&&c.label&&c.size>0);
+}
 async function api(url,params){
   if(!url)return{ok:false,error:"URL non configurée"};
   // GET uniquement : sur ce déploiement, le POST vers l'URL Apps Script renvoie une
@@ -115,6 +125,7 @@ function App(){
   const [sites,setSites]=useState(LS.get("anf87_sites")||DSITES);
   const [categories,setCats]=useState(LS.get("anf87_cats")||DCATS);
   const [users,setUsers]=useState(LS.get("anf87_users")||DUSERS);
+  const [containers,setContainers]=useState(LS.get("anf87_containers")||[]); // fûts/bouteilles/cubis ouverts
   const [siteId,setSiteId]=useState(LS.get("anf87_site")||"s1");
   const [tab,setTab]=useState("pos");
   const [cart,setCart]=useState([]);
@@ -149,6 +160,9 @@ function App(){
       if(r.sites?.length){setSites(r.sites);LS.set("anf87_sites",r.sites);}
       if(r.categories?.length){setCats(r.categories);LS.set("anf87_cats",r.categories);}
       if(r.users?.length){setUsers(r.users);LS.set("anf87_users",r.users);}
+      // Contenants : synchronisé même si vide (un contenant qu'on vient de "Terminer"
+      // ailleurs doit bien disparaître ici, pas juste rester affiché en cas de sync vide).
+      setContainers(r.containers||[]);LS.set("anf87_containers",r.containers||[]);
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);LS.set("anf87_lastsync",t);
       setSyncError(null);
@@ -261,7 +275,7 @@ function App(){
           cartTotal={cartTotal} cartCount={cartCount}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")}/>}
-        {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd}/>}
+        {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl}/>}
@@ -1123,23 +1137,119 @@ function ScannerModal({products,siteId,onFound,onClose}){
 }
 
 // ═══ STOCK SCREEN ═══
-function StockScreen({products,sites,siteId,caisseUrl,onSave}){
-  const [view,setView]=useState("list"); // list | entry | transfer
+function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers}){
+  const [view,setView]=useState("list"); // list | entry | transfer | containers
   const [sel,setSel]=useState(siteId);
 
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {/* Tabs */}
-    <div style={{background:T.card,borderBottom:`1px solid ${T.border}`,display:"flex",flexShrink:0}}>
-      {[["list","📋 Stock"],["entry","📥 Entrée rapide"],["transfer","↔ Transfert"]].map(([v,l])=>(
-        <button key={v} onClick={()=>setView(v)} style={{flex:1,padding:"12px",border:"none",background:"none",cursor:"pointer",
-          fontSize:12,fontWeight:600,color:view===v?T.red:T.mid,borderBottom:view===v?`2px solid ${T.red}`:"2px solid transparent"}}>
+    <div style={{background:T.card,borderBottom:`1px solid ${T.border}`,display:"flex",flexShrink:0,overflowX:"auto"}}>
+      {[["list","📋 Stock"],["entry","📥 Entrée rapide"],["containers","🧴 Contenants"],["transfer","↔ Transfert"]].map(([v,l])=>(
+        <button key={v} onClick={()=>setView(v)} style={{flex:"1 0 auto",padding:"12px 10px",border:"none",background:"none",cursor:"pointer",
+          fontSize:12,fontWeight:600,color:view===v?T.red:T.mid,borderBottom:view===v?`2px solid ${T.red}`:"2px solid transparent",whiteSpace:"nowrap"}}>
           {l}
         </button>
       ))}
     </div>
     {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave}/>}
     {view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
+    {view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers}/>}
     {view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
+  </div>);
+}
+
+// ═══ CONTENANTS (fûts / bouteilles / cubis) ═══
+function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,setContainers}){
+  const [busyKey,setBusyKey]=useState(null); // clé "siteId_productId" en cours de traitement
+  const [closeConfirm,setCloseConfirm]=useState(null); // {product,cont} en attente de confirmation
+
+  const volProducts=products.filter(p=>p.sellByVolume&&parseContainers(p.containers).length>0);
+  const findCont=pid=>containers.find(c=>c.site===siteId&&c.productId.toString()===pid.toString());
+
+  const doOpen=async(prod,choice)=>{
+    const key=siteId+"_"+prod.id;
+    setBusyKey(key);
+    const r=await apiWrite(caisseUrl,{action:"openContainer",site:siteId,id:prod.id,label:choice.label,size:choice.size});
+    if(r.ok){
+      const now=new Date();
+      const dateStr=`${String(now.getDate()).padStart(2,"0")}/${String(now.getMonth()+1).padStart(2,"0")}/${now.getFullYear()} ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+      setContainers(prev=>[...prev.filter(c=>!(c.site===siteId&&c.productId.toString()===prod.id.toString())),
+        {site:siteId,productId:prod.id,label:choice.label,size:choice.size,remaining:choice.size,openedAt:dateStr}]);
+    }
+    setBusyKey(null);
+  };
+
+  const doClose=async(prod,cont)=>{
+    const key=siteId+"_"+prod.id;
+    setBusyKey(key);
+    const r=await apiWrite(caisseUrl,{action:"closeContainer",site:siteId,id:prod.id});
+    if(r.ok){
+      setContainers(prev=>prev.filter(c=>!(c.site===siteId&&c.productId.toString()===prod.id.toString())));
+    }
+    setBusyKey(null);setCloseConfirm(null);
+  };
+
+  return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
+    <div style={{display:"flex",gap:6,marginBottom:12,overflowX:"auto"}}>
+      {sites.map(s=><button key={s.id} onClick={()=>setSiteId(s.id)} style={{padding:"7px 14px",borderRadius:20,border:`1px solid ${siteId===s.id?s.color:T.border}`,
+        background:siteId===s.id?s.color:T.card,color:siteId===s.id?"white":T.dark,fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap",flexShrink:0}}>{s.name}</button>)}
+    </div>
+    {volProducts.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:30}}>
+      Aucun produit avec des tailles de contenant configurées.<br/>Ajoutez-les dans Admin → Produits → "Tailles de contenant".
+    </div>}
+    {volProducts.map(prod=>{
+      const cont=findCont(prod.id);
+      const presets=parseContainers(prod.containers);
+      const busy=busyKey===siteId+"_"+prod.id;
+      const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
+      const gaugeColor=pct<=15?T.red:pct<=40?T.orange:T.green;
+      return(<div key={prod.id} style={{background:T.card,borderRadius:14,padding:16,marginBottom:12,border:`1px solid ${T.border}`}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+          {prod.photo?<img src={prod.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover"}}/>:<span style={{fontSize:28}}>{prod.emoji}</span>}
+          <div style={{flex:1}}>
+            <div style={{fontWeight:700,fontSize:15,color:T.dark}}>{prod.name}</div>
+            <div style={{fontSize:11,color:T.mid}}>Stock total : {prod.stock[siteId]||0}{prod.unit}</div>
+          </div>
+        </div>
+        {cont?<>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:T.mid,marginBottom:4}}>
+            <span style={{fontWeight:700,color:T.dark}}>{cont.label}</span>
+            <span>{cont.remaining} / {cont.size}{prod.unit}</span>
+          </div>
+          <div style={{height:14,background:T.bg,borderRadius:7,overflow:"hidden",marginBottom:6}}>
+            <div style={{height:"100%",width:pct+"%",background:gaugeColor,transition:"width .3s"}}/>
+          </div>
+          <div style={{fontSize:11,color:T.mid,marginBottom:10}}>Ouvert le {cont.openedAt}</div>
+          <button disabled={busy} onClick={()=>setCloseConfirm({prod,cont})}
+            style={{width:"100%",padding:"10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,cursor:busy?"default":"pointer",fontWeight:600,fontSize:13,color:T.dark}}>
+            {busy?"⏳...":"🏁 Terminer ce contenant"}
+          </button>
+        </>:<>
+          <div style={{fontSize:12,color:T.mid,marginBottom:8}}>Aucun contenant ouvert actuellement</div>
+          <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+            {presets.map((c,i)=><button key={i} disabled={busy} onClick={()=>doOpen(prod,c)}
+              style={{padding:"9px 12px",background:T.green,color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:600,fontSize:12}}>
+              {busy?"⏳...":"+ Ouvrir "+c.label}
+            </button>)}
+          </div>
+        </>}
+      </div>);
+    })}
+    {/* Confirmation de clôture, avec régularisation du stock */}
+    {closeConfirm&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+      onClick={e=>e.target===e.currentTarget&&setCloseConfirm(null)}>
+      <div style={{background:T.card,borderRadius:16,padding:22,width:"100%",maxWidth:360}}>
+        <div style={{fontWeight:800,fontSize:16,color:T.dark,marginBottom:8}}>🏁 Terminer {closeConfirm.cont.label} ?</div>
+        <div style={{fontSize:13,color:T.mid,lineHeight:1.5,marginBottom:14}}>
+          Il reste <b>{closeConfirm.cont.remaining}{closeConfirm.prod.unit}</b> dans la jauge. Cette quantité sera
+          déduite du stock de "{closeConfirm.prod.name}" pour corriger l'écart (pertes, verres renversés...).
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setCloseConfirm(null)} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={()=>doClose(closeConfirm.prod,closeConfirm.cont)} style={{flex:1,padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>Confirmer</button>
+        </div>
+      </div>
+    </div>}
   </div>);
 }
 
@@ -1448,6 +1558,13 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
         <div style={{fontSize:11,color:T.mid,marginTop:-3,marginBottom:7}}>
           Ex pour un fût de bière : 25:2.5,50:5,100:9 (verre 25cl à 2,50€, pichet 100cl à 9€…). Laissez vide pour un calcul proportionnel automatique.
         </div>
+        <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>
+          Tailles de contenant (Nom:taille en cl, séparés par virgule)
+        </label>
+        <input style={inp} placeholder="Ex: Fût 20L:2000,Fût 30L:3000" value={data.containers||""} onChange={e=>setData({...data,containers:e.target.value})}/>
+        <div style={{fontSize:11,color:T.mid,marginTop:-3,marginBottom:7}}>
+          Ex pour le vin : Bouteille 75cl:75,Cubi 3L:300,Cubi 5L:500. Sert à l'écran "🧴 Contenants" (jauge du fût/bouteille/cubi actuellement entamé). Laissez vide si non concerné.
+        </div>
       </>}
       <button onClick={onSubmit} style={{width:"100%",padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>
         {label.startsWith("+")?label:"💾 Enregistrer"}
@@ -1458,7 +1575,7 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
 
 function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
   const [edit,setEdit]=useState(null);
-  const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:""});
+  const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:""});
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
   // Redimensionne/compresse la photo côté navigateur avant de la stocker : une photo
@@ -1509,7 +1626,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
       const extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
       await apiWrite(caisseUrl,{action:"saveProduct",id,...flattenProd(p,sites),photo:up.ok?up.photoParam:"",...extra});
     }
-    setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:""});
+    setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:""});
   };
   const saveEdit=async()=>{const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
     if(caisseUrl){
@@ -1522,7 +1639,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
   const delProd=async(id)=>{if(!window.confirm("Supprimer ?"))return;onSave(products.filter(p=>p.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
-    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
+    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
   const totalStockValue=products.reduce((s,p)=>s+(p.costPrice||0)*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
   const totalPotentialMargin=products.reduce((s,p)=>s+((p.price||0)-(p.costPrice||0))*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
