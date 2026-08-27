@@ -193,6 +193,10 @@ function App(){
   const cartCount=cart.reduce((s,i)=>s+i.qty,0);
 
   const finalizeSale=async(payment,splitPart)=>{
+    // Consos offertes match (joueurs/dirigeants/arbitres après un match) : la vente
+    // est enregistrée à 0€ mais le stock est bien décompté normalement, comme pour
+    // n'importe quelle consommation réellement servie.
+    const total=payment?.type==="matchOffert"?0:(splitPart||cartTotal);
     // Pour un article vendu au volume (fût, cubi, paquet café...), on décompte qty*vol
     // (ex: 2 verres de 30cl = 60cl décomptés), pas juste qty (qui vaudrait 2).
     const stockAmount=item=>item.vol?item.qty*item.vol:item.qty;
@@ -208,10 +212,13 @@ function App(){
     setProducts(upd);LS.set("anf87_products",upd);
     if(caisseUrl){
       const member=cart.some(i=>i.free)?(LS.get("anf87_last_member")||""):"";
-      await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
-        total:(splitPart||cartTotal).toFixed(2),payment:JSON.stringify(payment),
+      const saleResult=await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
+        total:total.toFixed(2),payment:JSON.stringify(payment),
         items:JSON.stringify(cart.map(i=>({id:i.pid||i.id,qty:stockAmount(i)}))),
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
+      if(saleResult?.stockWarning){
+        window.alert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
+      }
       syncAll(); // reflète immédiatement le stock réel (utile à plusieurs caisses)
     }
     clearCart();setModal(null);
@@ -624,9 +631,29 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBo
             <div style={{fontSize:12,color:T.mid}}>{drinkItems.length} boisson(s) éligible(s)</div></div>
           {freeItems.length>0&&<span style={{background:T.green,color:"white",borderRadius:8,padding:"2px 8px",fontSize:12,fontWeight:700}}>{freeItems.length} offertes</span>}
         </button>}
+        {/* Consos offertes match (joueurs/dirigeants/arbitres) */}
+        <button onClick={()=>setStep("matchOffert")} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",
+          background:"#E8F5E9",border:`2px dashed ${T.green}`,borderRadius:13,cursor:"pointer",marginBottom:12,textAlign:"left"}}>
+          <div style={{width:46,height:46,borderRadius:12,background:T.green,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>⚽</div>
+          <div style={{flex:1}}><div style={{fontWeight:700,fontSize:15,color:T.dark}}>Consos offertes match</div>
+            <div style={{fontSize:12,color:T.mid}}>Joueurs, dirigeants, arbitres — gratuit</div></div>
+        </button>
         <PaymentOptionButton e="💵" l="Espèces" s="Calcul automatique de la monnaie" c={T.green} onClick={()=>setStep("cash")}/>
         <PaymentOptionButton e="📝" l="Chèque" s="Saisir numéro de chèque" c={T.blue} onClick={()=>setStep("check")}/>
         <PaymentOptionButton e="💳" l="Carte Bleue — SumUp" s="Lance directement le TPE SumUp" c="#5856D6" onClick={handleSumUp}/>
+      </>}
+      {step==="matchOffert"&&<>
+        <button onClick={()=>setStep("select")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
+        <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:4}}>⚽ Consos offertes match</div>
+        <div style={{fontSize:13,color:T.mid,marginBottom:14}}>Pour les joueurs, dirigeants et arbitres ayant participé au match.</div>
+        <div style={{background:"#E8F5E9",borderRadius:12,padding:14,marginBottom:16,border:"1px solid #A5D6A7"}}>
+          <div style={{fontSize:12,color:"#2E7D32"}}>VALEUR OFFERTE (stock bien décompté)</div>
+          <div style={{fontSize:30,fontWeight:900,color:"#2E7D32"}}>{fmt(paidTotal)}</div>
+          <div style={{fontSize:12,color:"#2E7D32",marginTop:2}}>{cart.reduce((s,i)=>s+i.qty,0)} article(s) — {site.name}</div>
+        </div>
+        <button onClick={()=>onDone({type:"matchOffert"})} style={{width:"100%",padding:15,background:T.green,color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:"pointer"}}>
+          ✓ Confirmer — Offrir gratuitement
+        </button>
       </>}
       {step==="cash"&&<>
         <button onClick={()=>setStep("select")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
@@ -1339,11 +1366,14 @@ function ReportsScreen({sites,caisseUrl}){
         <div style={{fontSize:11,color:T.mid}}>{s.nb} vente(s)</div>
       </div>)}
     </div>
-    {filtered.slice(0,15).map(tx=><div key={tx.id} style={{background:T.card,borderRadius:10,padding:"10px 14px",marginBottom:6,border:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+    {filtered.slice(0,15).map(tx=>{
+      let payType=null; try{payType=JSON.parse(tx.payment||"{}").type;}catch{}
+      const isMatchOffert=payType==="matchOffert";
+      return(<div key={tx.id} style={{background:isMatchOffert?"#E8F5E9":T.card,borderRadius:10,padding:"10px 14px",marginBottom:6,border:`1px solid ${isMatchOffert?"#A5D6A7":T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
       <div><div style={{fontSize:13,fontWeight:600,color:T.dark}}>{tx.time} • {sites.find(s=>s.id===tx.siteId)?.name||tx.siteId}</div>
-        <div style={{fontSize:11,color:T.mid}}>{tx.caissier&&"👤 "+tx.caissier}{tx.member&&" • 🍺 "+tx.member}</div></div>
-      <div style={{fontWeight:800,color:T.red,fontSize:15}}>{fmt(+tx.total)}</div>
-    </div>)}
+        <div style={{fontSize:11,color:T.mid}}>{tx.caissier&&"👤 "+tx.caissier}{tx.member&&" • 🍺 "+tx.member}{isMatchOffert&&" • ⚽ Offert match"}</div></div>
+      <div style={{fontWeight:800,color:isMatchOffert?T.green:T.red,fontSize:15}}>{isMatchOffert?"Offert":fmt(+tx.total)}</div>
+    </div>);})}
   </div>);
 }
 
