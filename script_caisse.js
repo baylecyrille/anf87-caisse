@@ -176,7 +176,7 @@ function getProductsData(ss){
         stock[s.id]=+r[col-1]||0;
       });
       return {
-        id:r[0],name:r[1],price:+r[2],cat:r[3],emoji:r[4],photo:r[5]||"",barcode:r[6]||"",
+        id:r[0],name:r[1],price:+r[2],cat:r[3],emoji:r[4],photo:r[5]||"",barcode:(r[6]!=null&&r[6]!==""?r[6].toString():""),
         drink:r[7]===true||r[7]==="TRUE"||r[7]==="true",
         sellByVolume:r[8]===true||r[8]==="TRUE"||r[8]==="true",
         unit:r[9]||"",baseQty:+r[10]||1,
@@ -292,6 +292,9 @@ function saveProduct(e){
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
       // Mise à jour : on NE touche PAS aux colonnes de stock (L:O), pour ne jamais écraser
       // une modification de stock faite entre-temps par un autre appareil/utilisateur.
+      sh.getRange(i+2,7).setNumberFormat("@"); // Codebarres en texte : empêche Sheets de
+      // le convertir en nombre et de supprimer un éventuel zéro de tête (cause du
+      // "produit non trouvé" au rescan d'un code-barres déjà enregistré).
       sh.getRange(i+2,1,1,11).setValues([meta]);
       sh.getRange(i+2,16).setValue(costPrice); // P = Prix d'achat TTC
       sh.getRange(i+2,17).setValue(presets);   // Q = Paliers de vente au volume
@@ -312,6 +315,7 @@ function saveProduct(e){
   while(row.length<24)row.push("");   // comble jusqu'à la colonne 24 si besoin
   row[24]=containers;                 // colonne 25 (Y)
   sh.appendRow(row);
+  sh.getRange(sh.getLastRow(),7).setNumberFormat("@"); // Codebarres en texte, même raison que ci-dessus
   return{ok:true,action:"created"};
 }
 // Reçoit un morceau de photo (base64) et le stocke temporairement (10 min) en attendant

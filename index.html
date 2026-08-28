@@ -36,6 +36,14 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 const LS={get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch{return null}},
   set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
 
+// Couleurs des jauges de contenants (fûts/bouteilles/cubis), personnalisables dans
+// ⚙️ Configuration. "high" = jauge encore bien pleine (>40%), "mid" = intermédiaire
+// (15-40%), "low" = presque vide (≤15%). Les seuils restent fixes, seules les
+// couleurs sont réglables.
+const DEFAULT_GAUGE_COLORS={high:"#2E7D32",mid:"#FF9F0A",low:"#FF3B30"};
+const getGaugeColors=()=>({...DEFAULT_GAUGE_COLORS,...(LS.get("anf87_gauge_colors")||{})});
+const gaugeColorFor=pct=>{const g=getGaugeColors(); return pct<=15?g.low:pct<=40?g.mid:g.high;};
+
 // ═══ DEFAULTS ═══
 const DSITES=[{id:"s1",name:"Buvette Nord",village:"Village 1",color:"#CC0000"},{id:"s2",name:"Buvette Est",village:"Village 2",color:"#1565C0"},{id:"s3",name:"Buvette Sud",village:"Village 3",color:"#2E7D32"},{id:"s4",name:"Buvette Ouest",village:"Village 4",color:"#E65100"}];
 const DCATS=[{id:"c1",name:"Boissons"},{id:"c2",name:"Bières"},{id:"c3",name:"Snacks"},{id:"c4",name:"Sandwichs"},{id:"c5",name:"Divers"}];
@@ -414,7 +422,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
       if(!cont&&availablePresets.length===0)return null;
       const busy=busyId===prod.id;
       const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
-      const gaugeColor=pct<=15?T.red:pct<=40?T.orange:T.green;
+      const gaugeColor=gaugeColorFor(pct);
       return(<div key={prod.id} style={{position:"relative",flexShrink:0}}>
         <button disabled={busy}
           onClick={()=>cont?setCloseConfirm({prod,cont}):(availablePresets.length===1?doOpen(prod,availablePresets[0]):setPickerFor(pickerFor===prod.id?null:prod.id))}
@@ -1009,19 +1017,14 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
     return info;
   };
 
-  // Solde connu pour le nom actuellement saisi (utilisé pour désactiver le bouton
-  // et pour plafonner le nombre de boissons réellement offertes).
+  // Solde connu pour le nom actuellement saisi — EN EUROS depuis ce correctif (plus
+  // en nombre de boissons), pour désactiver le bouton et plafonner le montant offert.
   const knownSolde=memberInfo&&!memberInfo.error?memberInfo.solde:null;
   const licenceBlocked=memberInfo&&!memberInfo.error&&memberInfo.licence==="non";
   const maxReached=(knownSolde!=null&&knownSolde<=0)||licenceBlocked;
-  const freeQtyPlanned=licenceBlocked?0:(knownSolde!=null?Math.min(qtyB,knownSolde):qtyB);
-  // Valeur exacte de ce qui sera réellement offert une fois plafonné au solde restant
-  // (les lignes de boissons peuvent avoir des prix différents, donc pas une simple règle de trois).
-  const plannedFreeValue=(()=>{
-    let left=freeQtyPlanned,total=0;
-    for(const i of drinkItems){ if(left<=0)break; const q=Math.min(i.qty,left); total+=q*i.price; left-=q; }
-    return total;
-  })();
+  const totalDrinkValue=drinkItems.reduce((s,i)=>s+i.price*i.qty,0);
+  // Montant exact qui sera réellement offert une fois plafonné au solde restant.
+  const plannedFreeValue=licenceBlocked?0:(knownSolde!=null?Math.min(totalDrinkValue,knownSolde):totalDrinkValue);
 
   const apply=async()=>{
     if(!name.trim())return;
@@ -1030,31 +1033,42 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
     // depuis la dernière recherche, ou n'avoir jamais été recherché après un scan).
     const info=await fetchMember(true);
     if(!info||info.error){setLoading(false);return;} // le message d'erreur est déjà affiché
-    const solde=info.solde||0;
     if(info.licence==="non"){setLoading(false);return;} // licence non réglée : rien n'est offert
-    if(solde<=0){setLoading(false);return;} // maximum déjà atteint, on ne valide rien
+    const soldeValue=info.solde||0; // en €
+    if(soldeValue<=0){setLoading(false);return;} // maximum déjà atteint, on ne valide rien
     LS.set("anf87_last_member",name.trim());
 
-    // On ne rend gratuit que jusqu'à `solde` boissons — s'il en reste moins que demandé,
-    // on découpe la ligne concernée entre part offerte et part restant à payer.
-    let remaining=Math.min(qtyB,solde);
-    const actuallyFree=remaining;
+    // On ne rend gratuit que jusqu'à `soldeValue` €. Le budget peut ne pas couvrir
+    // une ligne entière : dans ce cas on découpe entre le nombre d'unités entières
+    // que le budget permet d'offrir, et le reste qui repasse en payant (impossible
+    // d'offrir une fraction d'article).
+    let remainingBudget=soldeValue;
+    let actuallyFreeValue=0;
     let leftoverDrinkCost=0; // ce qui reste à payer sur les boissons non couvertes par le solde
-    let freeValue=0; // valeur de ce qui est réellement offert, capturée pour l'affichage
     const nonDrinkTotal=cart.reduce((s,i)=>i.drink?s:s+i.price*i.qty,0);
     const newCart=[];
     cart.forEach(item=>{
       if(!item.drink||item.free){newCart.push(item);return;}
-      if(remaining<=0){newCart.push(item);leftoverDrinkCost+=item.price*item.qty;return;}
-      const freeQty=Math.min(item.qty,remaining);
-      remaining-=freeQty;
-      if(freeQty>=item.qty){newCart.push({...item,free:true});freeValue+=item.price*item.qty;}
-      else{
-        const paidQty=item.qty-freeQty;
-        newCart.push({...item,qty:paidQty});
-        newCart.push({...item,id:item.id+"-offert-"+Date.now(),qty:freeQty,free:true});
-        leftoverDrinkCost+=item.price*paidQty;
-        freeValue+=item.price*freeQty;
+      if(remainingBudget<=0.001){newCart.push(item);leftoverDrinkCost+=item.price*item.qty;return;}
+      const lineValue=item.price*item.qty;
+      if(lineValue<=remainingBudget+0.001){
+        newCart.push({...item,free:true});
+        actuallyFreeValue+=lineValue;
+        remainingBudget-=lineValue;
+      }else{
+        const affordableQty=item.price>0?Math.floor((remainingBudget+0.0001)/item.price):0;
+        if(affordableQty>0){
+          const paidQty=item.qty-affordableQty;
+          newCart.push({...item,qty:paidQty});
+          newCart.push({...item,id:item.id+"-offert-"+Date.now(),qty:affordableQty,free:true});
+          const freeVal=affordableQty*item.price;
+          actuallyFreeValue+=freeVal;
+          remainingBudget-=freeVal;
+          leftoverDrinkCost+=paidQty*item.price;
+        }else{
+          newCart.push(item);
+          leftoverDrinkCost+=lineValue;
+        }
       }
     });
     setCart(newCart);
@@ -1062,8 +1076,12 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
     // Mise à jour du compteur côté serveur : on attend la confirmation au lieu d'un
     // fire-and-forget silencieux, pour prévenir si ça n'a pas pu être enregistré.
     // Petite nouvelle tentative automatique en cas d'aléa réseau ponctuel (wifi/4G
-    // de la buvette) avant d'afficher une vraie erreur à l'utilisateur.
-    const scanUrl=boissonsUrl.trim()+"?action=scan&qty="+actuallyFree+"&person="+encodeURIComponent(name.trim());
+    // de la buvette) avant d'afficher une vraie erreur à l'utilisateur — avec le
+    // MÊME reqid à chaque tentative, pour que le serveur ignore un doublon si la
+    // 1ère tentative avait en fait réussi malgré l'erreur réseau côté appli
+    // (c'était la cause du double décompte : "ça déduit 2 au lieu de 1").
+    const reqId=Date.now()+"-"+Math.random().toString(36).slice(2);
+    const scanUrl=boissonsUrl.trim()+"?action=scan&amount="+actuallyFreeValue.toFixed(2)+"&person="+encodeURIComponent(name.trim())+"&reqid="+reqId;
     let scanOk=false,lastErr=null;
     for(let attempt=0;attempt<2&&!scanOk;attempt++){
       try{ await fetch(scanUrl,{redirect:"follow"}); scanOk=true; }
@@ -1074,10 +1092,10 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       window.alert("⚠️ La mise à jour du compteur de boissons offertes a échoué ("+(lastErr?.message||"connexion")+
         "). Les boissons ont bien été retirées du total ici, mais le solde du membre risque de ne pas être à jour sur Google Sheets — vérifiez.");
     }
-    setAppliedSummary({count:actuallyFree,value:freeValue});
+    setAppliedSummary({value:actuallyFreeValue,licence:info.licence||""});
     setLoading(false);
     setApplied(true);
-    // Si toutes les boissons ont pu être offertes et qu'il ne reste rien d'autre à payer,
+    // Si tout le montant a pu être offert et qu'il ne reste rien d'autre à payer,
     // on finalise la vente automatiquement.
     if(nonDrinkTotal+leftoverDrinkCost<=0.001){setTimeout(()=>onFinalize({type:"free_drinks",member:name.trim()}),1200);}
   };
@@ -1115,23 +1133,25 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
           {memberInfo.error?<div style={{color:"#C62828",fontWeight:700,fontSize:14}}>❌ {memberInfo.error}</div>
             :licenceBlocked?
               <div>
-                <div style={{fontWeight:800,fontSize:15,color:"#E65100",marginBottom:6}}>{memberInfo.nom}</div>
+                <div style={{fontWeight:800,fontSize:15,color:"#E65100",marginBottom:2}}>{memberInfo.nom}</div>
+                {memberInfo.licence&&<div style={{fontSize:11,color:"#E65100",opacity:.8,marginBottom:6}}>Licence n° {memberInfo.licence}</div>}
                 <div style={{color:"#E65100",fontWeight:700,fontSize:13,lineHeight:1.4}}>
-                  🔒 Merci de régler la licence pour débloquer {qtyB>1?`les ${qtyB} boissons offertes`:"la boisson offerte"}.
+                  🔒 Merci de régler la licence pour débloquer {totalDrinkValue>0?fmt(totalDrinkValue)+" offert(s)":"la consommation offerte"}.
                 </div>
               </div>
             :<div>
-              <div style={{fontWeight:800,fontSize:15,color:"#2E7D32",marginBottom:6}}>{memberInfo.nom}</div>
+              <div style={{fontWeight:800,fontSize:15,color:"#2E7D32",marginBottom:2}}>{memberInfo.nom}</div>
+              {memberInfo.licence&&<div style={{fontSize:11,color:"#2E7D32",opacity:.8,marginBottom:6}}>Licence n° {memberInfo.licence}</div>}
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
-                {[["Consommées",memberInfo.compteur,"#CC0000"],["Restantes",memberInfo.solde,"#2E7D32"],["Maximum",memberInfo.maximum,"#1565C0"]].map(([l,v,c])=>(
+                {[["Consommé",fmt(memberInfo.compteur),"#CC0000"],["Restant",fmt(memberInfo.solde),"#2E7D32"],["Maximum",fmt(memberInfo.maximum),"#1565C0"]].map(([l,v,c])=>(
                   <div key={l} style={{textAlign:"center",background:"white",borderRadius:8,padding:"8px 4px"}}>
-                    <div style={{fontSize:22,fontWeight:900,color:c}}>{v}</div>
+                    <div style={{fontSize:16,fontWeight:900,color:c}}>{v}</div>
                     <div style={{fontSize:10,color:T.mid,textTransform:"uppercase",fontWeight:700}}>{l}</div>
                   </div>
                 ))}
               </div>
-              {memberInfo.solde<=0&&<div style={{marginTop:8,color:T.red,fontWeight:700,fontSize:12}}>🚫 Maximum atteint — plus aucune boisson offerte disponible pour ce membre</div>}
-              {memberInfo.solde>0&&memberInfo.solde<qtyB&&<div style={{marginTop:8,color:T.orange,fontWeight:700,fontSize:12}}>⚠ Solde insuffisant : seules {memberInfo.solde} sur {qtyB} boisson(s) seront offertes, le reste sera à payer</div>}
+              {memberInfo.solde<=0&&<div style={{marginTop:8,color:T.red,fontWeight:700,fontSize:12}}>🚫 Maximum atteint — plus aucune consommation offerte disponible pour ce membre</div>}
+              {memberInfo.solde>0&&memberInfo.solde<totalDrinkValue&&<div style={{marginTop:8,color:T.orange,fontWeight:700,fontSize:12}}>⚠ Solde insuffisant : seulement {fmt(memberInfo.solde)} sur {fmt(totalDrinkValue)} seront offerts, le reste sera à payer</div>}
             </div>
           }
         </div>}
@@ -1142,7 +1162,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
             <span>{i.emoji} {i.name} ×{i.qty}</span><span style={{fontWeight:700}}>{fmt(i.price*i.qty)}</span>
           </div>)}
           <div style={{borderTop:`1px dashed ${T.border}`,marginTop:8,paddingTop:8,display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:14}}>
-            <span>{knownSolde!=null&&freeQtyPlanned<qtyB?`Offert (${freeQtyPlanned}/${qtyB})`:"Total offert"}</span>
+            <span>{knownSolde!=null&&plannedFreeValue<totalDrinkValue?"Offert (plafonné)":"Total offert"}</span>
             <span style={{color:T.orange}}>{fmt(plannedFreeValue)}</span>
           </div>
         </div>
@@ -1157,8 +1177,9 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       </>:(
         <div style={{textAlign:"center",padding:"10px 0"}}>
           <div style={{fontSize:52,marginBottom:12}}>✅</div>
-          <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:4}}>{appliedSummary?.count||0} boisson(s) offerte(s) à {name}</div>
-          <div style={{fontSize:13,color:T.mid,marginBottom:8}}>Compteur ANF 87 mis à jour {appliedSummary?.value?"— "+fmt(appliedSummary.value)+" offerts":""}</div>
+          <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:4}}>{fmt(appliedSummary?.value||0)} offert(s) à {name}</div>
+          {appliedSummary?.licence&&<div style={{fontSize:12,color:T.mid,marginBottom:2}}>Licence n° {appliedSummary.licence}</div>}
+          <div style={{fontSize:13,color:T.mid,marginBottom:8}}>Compteur ANF 87 mis à jour</div>
           {paidAfter<=0.001
             ?<div style={{background:"#E8F5E9",borderRadius:12,padding:12,marginBottom:16,fontSize:14,color:"#2E7D32",fontWeight:700}}>✅ Total à 0€ — finalisation automatique...</div>
             :<button onClick={onClose} style={{width:"100%",padding:"14px",background:T.red,color:"white",border:"none",borderRadius:12,cursor:"pointer",fontWeight:700,fontSize:15}}>← Retour paiement ({fmt(paidAfter)} restants)</button>
@@ -1191,9 +1212,9 @@ function ScannerModal({products,siteId,onFound,onClose}){
     }catch{setMsg("Caméra indisponible — saisir manuellement ↓");}
   };
   const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
-  const handle=code=>{const p=products.find(pr=>pr.barcode===code.trim());
+  const handle=code=>{const c=code.trim();const p=products.find(pr=>pr.barcode&&pr.barcode.toString()===c);
     if(p)setFound(p);else{setMsg("⚠ Produit introuvable: "+code);setTimeout(()=>setMsg("Pointez sur le code-barres"),2500);}};
-  const handleManual=()=>{const p=products.find(pr=>pr.barcode===manual.trim()||pr.name.toLowerCase().includes(manual.toLowerCase()));
+  const handleManual=()=>{const m=manual.trim();const p=products.find(pr=>(pr.barcode&&pr.barcode.toString()===m)||pr.name.toLowerCase().includes(manual.toLowerCase()));
     if(p)setFound(p);else setMsg("⚠ Produit introuvable");};
 
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
@@ -1293,7 +1314,7 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
       const presets=parseContainers(prod.containers);
       const busy=busyKey===siteId+"_"+prod.id;
       const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
-      const gaugeColor=pct<=15?T.red:pct<=40?T.orange:T.green;
+      const gaugeColor=gaugeColorFor(pct);
       return(<div key={prod.id} style={{background:T.card,borderRadius:14,padding:16,marginBottom:12,border:`1px solid ${T.border}`}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           {prod.photo?<img src={prod.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover"}}/>:<span style={{fontSize:28}}>{prod.emoji}</span>}
@@ -1419,7 +1440,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
           if(!result)return;
           stopCam();setScanning(false);
           const code=result.getText();
-          const p=products.find(pr=>pr.barcode===code.trim());
+          const p=products.find(pr=>pr.barcode&&pr.barcode.toString()===code.trim());
           if(p){setScannedProd(p);setContCounts({});}else setMsg("⚠ Produit non trouvé: "+code);
         }
       );
@@ -2005,6 +2026,42 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit}){
       <div style={{fontWeight:700,fontSize:14,color:"#2E7D32",marginBottom:6}}>💳 SumUp TPE</div>
       <div style={{fontSize:12,color:"#2E7D32",lineHeight:1.6}}>Le bouton "Carte Bleue" envoie directement la commande au TPE via <code>sumupmerchant://pay</code>. L'app SumUp doit être installée sur l'appareil et le TPE associé.</div>
     </div>
+    <GaugeColorSettings/>
+  </div>);
+}
+
+// ═══ COULEURS DES JAUGES (contenants) ═══
+function GaugeColorSettings(){
+  const [colors,setColors]=useState(getGaugeColors());
+  const [msg,setMsg]=useState("");
+  const update=(key,val)=>{
+    const next={...colors,[key]:val};
+    setColors(next);
+    LS.set("anf87_gauge_colors",next);
+    setMsg("✅ Enregistré");
+    setTimeout(()=>setMsg(""),1500);
+  };
+  const reset=()=>{
+    setColors(DEFAULT_GAUGE_COLORS);
+    LS.set("anf87_gauge_colors",DEFAULT_GAUGE_COLORS);
+    setMsg("✅ Couleurs par défaut restaurées");
+    setTimeout(()=>setMsg(""),1500);
+  };
+  const rows=[["high","Jauge pleine (>40%)"],["mid","Jauge moyenne (15-40%)"],["low","Jauge faible (≤15%)"]];
+  return(<div style={{background:T.card,borderRadius:12,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
+    <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:4}}>🎨 Couleurs des jauges (contenants)</div>
+    <div style={{fontSize:11,color:T.mid,marginBottom:12}}>Utilisées sur l'écran caisse et dans Stock → Contenants.</div>
+    {rows.map(([key,label])=>(
+      <div key={key} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderTop:`1px solid ${T.border}`}}>
+        <span style={{fontSize:13,color:T.dark}}>{label}</span>
+        <input type="color" value={colors[key]} onChange={e=>update(key,e.target.value)}
+          style={{width:44,height:32,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",padding:0,background:"none"}}/>
+      </div>
+    ))}
+    <button onClick={reset} style={{width:"100%",padding:"9px",marginTop:10,background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,cursor:"pointer",fontWeight:600,fontSize:12,color:T.dark}}>
+      ↺ Réinitialiser les couleurs par défaut
+    </button>
+    {msg&&<div style={{marginTop:8,fontSize:12,fontWeight:600,textAlign:"center",color:T.green}}>{msg}</div>}
   </div>);
 }
 

@@ -84,7 +84,12 @@ function parseUA(ua){
 
 function handleRequest(e){
   var person=e.parameter.person||null, id=e.parameter.id||null, action=e.parameter.action||"menu";
-  var qty=Math.max(1,+e.parameter.qty||1), scriptUrl=ScriptApp.getService().getUrl();
+  // Montant en € (nouveau système). "qty" reste accepté en repli pour compatibilité
+  // avec l'ancienne page autonome (menu par clics, encore en unités).
+  var amountParam = e.parameter.amount!==undefined ? parseFloat(e.parameter.amount) : (e.parameter.qty!==undefined?parseFloat(e.parameter.qty):1);
+  if(isNaN(amountParam)||amountParam<0)amountParam=0;
+  var reqid=e.parameter.reqid||"";
+  var scriptUrl=ScriptApp.getService().getUrl();
   if(!person&&!id)return HtmlService.createHtmlOutput(buildPage("","","","",buildError("QR code invalide"),""));
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sheet=ss.getSheets()[0], data=sheet.getDataRange().getValues();
   var now=new Date(), tz=Session.getScriptTimeZone();
@@ -99,34 +104,46 @@ function handleRequest(e){
     var licence=data[i][COL_LICENCE].toString().toLowerCase(), maximum=+data[i][COL_MAXIMUM]||0, solde=maximum-compteur;
     var pct=maximum>0?Math.round(compteur/maximum*100):0;
     if(licence==="non"){
-      var hr=logHist(ss,dateStr,heureStr,nom,membreId,"Bloqué",compteur);
+      var hr=logHist(ss,dateStr,heureStr,nom,membreId,"Bloqué",compteur,licence);
       return HtmlService.createHtmlOutput(buildPage(nom,membreId,scriptUrl,hr,buildBloque(nom,membreId),buildFermerScript()));
     }
     if(action==="menu"){
       var body=buildStats(compteur,solde,maximum,pct)+"<div class='divider'></div>"
-        +"<div class='qty-sect'><div class='qty-title'>Boissons à ajouter</div>"
-        +"<div class='qty-row'><button class='q-btn' onclick='cQ(-1)'>−</button>"
-        +"<div><div class='q-num' id='qv'>1</div><div class='q-lbl'>boisson(s)</div></div>"
-        +"<button class='q-btn' onclick='cQ(1)'>+</button></div>"
+        +"<div class='qty-sect'><div class='qty-title'>Montant à ajouter (€)</div>"
+        +"<div class='qty-row'><button class='q-btn' onclick='cQ(-0.5)'>−</button>"
+        +"<div><div class='q-num' id='qv'>1.00</div><div class='q-lbl'>€</div></div>"
+        +"<button class='q-btn' onclick='cQ(0.5)'>+</button></div>"
         +"<button class='q-add' onclick='ajouter()'>✅ Ajouter</button></div>"
         +"<button class='btn-f' onclick='fermer()'>✕ Fermer</button>"
         +"<script>var SM="+solde+",BU='"+baseUrl+"',qty=1;"
-        +"function cQ(d){qty=Math.max(1,Math.min(SM,qty+d));document.getElementById('qv').textContent=qty;}"
-        +"function ajouter(){window.location.href=BU+'&action=scan&qty='+qty;}"
+        +"function cQ(d){qty=Math.max(0.5,Math.min(SM,qty+d));document.getElementById('qv').textContent=qty.toFixed(2);}"
+        +"function ajouter(){window.location.href=BU+'&action=scan&amount='+qty+'&reqid='+Date.now();}"
         +"function fermer(){window.close();setTimeout(function(){document.body.innerHTML='<div style=\"background:#cc0000;min-height:100vh;display:flex;align-items:center;justify-content:center;\"><p style=\"color:white;font-size:24px;font-family:sans-serif;text-align:center;\">Vous pouvez<br>fermer cette page</p></div>';},200);}<\/script>";
       return HtmlService.createHtmlOutput(buildPage(nom,membreId,"","",body,""));
     }
     if(compteur>=maximum){
-      var hr=logHist(ss,dateStr,heureStr,nom,membreId,"Max atteint",compteur);
-      var body="<div class='big-icon'>🚫</div><div class='msg-box'><div class='msg-txt'>Maximum atteint !<br>"+maximum+" / "+maximum+"</div></div>"+buildInfoScan(scriptUrl,hr,dateStr,heureStr)+"<button class='btn-f' onclick='fermer()'>✕ Fermer</button>";
+      var hr=logHist(ss,dateStr,heureStr,nom,membreId,"Max atteint",compteur,licence);
+      var body="<div class='big-icon'>🚫</div><div class='msg-box'><div class='msg-txt'>Maximum atteint !<br>"+fmt2(maximum)+"€ / "+fmt2(maximum)+"€</div></div>"+buildInfoScan(scriptUrl,hr,dateStr,heureStr)+"<button class='btn-f' onclick='fermer()'>✕ Fermer</button>";
       return HtmlService.createHtmlOutput(buildPage(nom,membreId,scriptUrl,hr,body,buildFermerScript()));
     }
     if(action==="scan"){
-      var realQty=Math.min(qty,maximum-compteur), newC=compteur+realQty, newS=maximum-newC, newP=Math.round(newC/maximum*100);
+      // Idempotence : si cette requête (reqid) a déjà été traitée, on ne redécompte
+      // pas une 2e fois — évite un double décompte si une nouvelle tentative réseau
+      // ré-envoie la même demande alors que la 1ère avait en fait réussi côté serveur
+      // (c'était la cause du "ça déduit 2 au lieu de 1").
+      var cache=CacheService.getScriptCache();
+      if(reqid&&cache.get("scanreq_"+reqid)){
+        var hr0=logHist(ss,dateStr,heureStr,nom,membreId,"Déjà traité (doublon ignoré)",compteur,licence);
+        var body0="<div class='tag-ok'>✅ Déjà enregistré</div>"+buildStats(compteur,solde,maximum,pct)+buildInfoScan(scriptUrl,hr0,dateStr,heureStr)+"<button class='btn-f' onclick='fermer()'>✕ Fermer</button>";
+        return HtmlService.createHtmlOutput(buildPage(nom,membreId,scriptUrl,hr0,body0,buildFermerScript()));
+      }
+      var realAmount=Math.min(amountParam,Math.max(0,maximum-compteur));
+      var newC=+(compteur+realAmount).toFixed(2), newS=+(maximum-newC).toFixed(2), newP=maximum>0?Math.round(newC/maximum*100):0;
       sheet.getRange(i+1,COL_COMPTEUR+1).setValue(newC); sheet.getRange(i+1,COL_SOLDE+1).setValue(newS);
       SpreadsheetApp.flush(); // rend la mise à jour immédiatement visible (la caisse revérifie le solde juste après)
-      var hr=logHist(ss,dateStr,heureStr,nom,membreId,"Scan +"+realQty,newC);
-      var body="<div class='badge-plus'>+"+realQty+"</div><div class='tag-ok'>✅ "+realQty+" boisson"+(realQty>1?"s":"")+" enregistrée"+(realQty>1?"s":"")+"</div>"
+      if(reqid)cache.put("scanreq_"+reqid,"1",300); // 5 min : largement suffisant pour couvrir une nouvelle tentative éventuelle
+      var hr=logHist(ss,dateStr,heureStr,nom,membreId,"Scan +"+fmt2(realAmount)+"€",newC,licence);
+      var body="<div class='badge-plus'>+"+fmt2(realAmount)+"€</div><div class='tag-ok'>✅ "+fmt2(realAmount)+"€ enregistré(s)</div>"
         +buildStats(newC,newS,maximum,newP)+buildInfoScan(scriptUrl,hr,dateStr,heureStr)
         +"<a class='btn-retour' href='"+baseUrl+"'>← Retour</a>"
         +"<button class='btn-f' onclick='fermer()'>✕ Fermer</button>";
@@ -135,22 +152,24 @@ function handleRequest(e){
   }
   return HtmlService.createHtmlOutput(buildPage("","","","",buildError("Membre introuvable : "+(person||id)),""));
 }
+function fmt2(n){ return (Math.round((+n||0)*100)/100).toFixed(2); }
 
-function logHist(ss,dateStr,heureStr,nom,membreId,action,compteur){
+function logHist(ss,dateStr,heureStr,nom,membreId,action,compteur,licence){
   var hist=ss.getSheetByName("Historique");
-  if(!hist){hist=ss.insertSheet("Historique");hist.getRange(1,1,1,12).setValues([["Date","Heure","Nom","ID","Action","Compteur","Appareil","OS","Navigateur","Latitude","Longitude","Lien Maps"]]);hist.getRange(1,1,1,12).setFontWeight("bold");hist.setFrozenRows(1);}
+  if(!hist){hist=ss.insertSheet("Historique");hist.getRange(1,1,1,13).setValues([["Date","Heure","Nom","ID","Action","Compteur","Appareil","OS","Navigateur","Latitude","Longitude","Lien Maps","Licence"]]);hist.getRange(1,1,1,13).setFontWeight("bold");hist.setFrozenRows(1);}
   var lr=hist.getLastRow()+1;
   hist.getRange(lr,1,1,6).setValues([[dateStr,heureStr,nom,membreId,action,compteur]]);
   hist.getRange(lr,7,1,6).setValues([["—","—","—","—","—","—"]]);
+  hist.getRange(lr,13).setValue(licence||"");
   return lr;
 }
 
 function buildStats(c,s,m,p){
-  return "<div class='stats'><div class='sbox'><div class='snum'>"+c+"</div><div class='slbl'>Consommées</div></div>"
-    +"<div class='sbox'><div class='snum'>"+s+"</div><div class='slbl'>Restantes</div></div>"
-    +"<div class='sbox'><div class='snum'>"+m+"</div><div class='slbl'>Maximum</div></div></div>"
+  return "<div class='stats'><div class='sbox'><div class='snum'>"+fmt2(c)+"€</div><div class='slbl'>Consommé</div></div>"
+    +"<div class='sbox'><div class='snum'>"+fmt2(s)+"€</div><div class='slbl'>Restant</div></div>"
+    +"<div class='sbox'><div class='snum'>"+fmt2(m)+"€</div><div class='slbl'>Maximum</div></div></div>"
     +"<div class='barre'><div class='barre-f' style='width:"+p+"%'></div></div>"
-    +"<div class='pct'>"+p+"% — "+c+" / "+m+"</div>";
+    +"<div class='pct'>"+p+"% — "+fmt2(c)+"€ / "+fmt2(m)+"€</div>";
 }
 
 function buildInfoScan(scriptUrl,histRow,dateStr,heureStr){
