@@ -407,12 +407,17 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
     {volProducts.map(prod=>{
       const cont=findCont(prod.id);
       const presets=parseContainers(prod.containers);
+      // Contenants qu'on peut réellement ouvrir vu le stock actuel (pour ne pas
+      // proposer "Ouvrir" si le stock est à 0 — et masquer complètement la carte si
+      // le produit n'est ni ouvert, ni ouvrable).
+      const availablePresets=presets.filter(c=>containerCount(prod.stock[siteId]||0,c.size)>0);
+      if(!cont&&availablePresets.length===0)return null;
       const busy=busyId===prod.id;
       const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
       const gaugeColor=pct<=15?T.red:pct<=40?T.orange:T.green;
       return(<div key={prod.id} style={{position:"relative",flexShrink:0}}>
         <button disabled={busy}
-          onClick={()=>cont?setCloseConfirm({prod,cont}):(presets.length===1?doOpen(prod,presets[0]):setPickerFor(pickerFor===prod.id?null:prod.id))}
+          onClick={()=>cont?setCloseConfirm({prod,cont}):(availablePresets.length===1?doOpen(prod,availablePresets[0]):setPickerFor(pickerFor===prod.id?null:prod.id))}
           style={{display:"flex",flexDirection:"column",alignItems:"flex-start",gap:3,padding:"7px 12px",minWidth:118,
             background:cont?"white":T.bg,border:`1.5px solid ${cont?gaugeColor:T.border}`,borderRadius:10,cursor:busy?"default":"pointer"}}>
           <div style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:700,color:T.dark}}>
@@ -426,12 +431,12 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
               <span style={{fontSize:10,fontWeight:700,color:gaugeColor}}>🏁 Terminer ({cont.remaining}{prod.unit})</span>
             </>
             :<span style={{fontSize:10,fontWeight:700,color:T.mid}}>
-              {presets.length===1?`+ Ouvrir (${containerCount(prod.stock[siteId]||0,presets[0].size)} en stock)`:"+ Ouvrir…"}
+              {availablePresets.length===1?`+ Ouvrir (${containerCount(prod.stock[siteId]||0,availablePresets[0].size)} en stock)`:"+ Ouvrir…"}
             </span>}
         </button>
         {pickerFor===prod.id&&<div style={{position:"absolute",top:"100%",left:0,marginTop:4,background:T.card,
           border:`1px solid ${T.border}`,borderRadius:10,boxShadow:"0 4px 12px rgba(0,0,0,0.15)",zIndex:60,padding:6,minWidth:180}}>
-          {presets.map((c,i)=><button key={i} onClick={()=>doOpen(prod,c)}
+          {availablePresets.map((c,i)=><button key={i} onClick={()=>doOpen(prod,c)}
             style={{display:"block",width:"100%",textAlign:"left",padding:"7px 9px",background:"none",border:"none",cursor:"pointer",fontSize:12,borderRadius:7}}>
             Ouvrir {c.label} <span style={{color:T.mid}}>({containerCount(prod.stock[siteId]||0,c.size)} en stock)</span>
           </button>)}
@@ -1315,8 +1320,8 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
           <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
             {presets.map((c,i)=>{
               const n=containerCount(prod.stock[siteId]||0,c.size);
-              return(<button key={i} disabled={busy} onClick={()=>doOpen(prod,c)}
-                style={{padding:"9px 12px",background:T.green,color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:600,fontSize:12}}>
+              return(<button key={i} disabled={busy||n===0} onClick={()=>doOpen(prod,c)}
+                style={{padding:"9px 12px",background:n===0?"#ccc":T.green,color:"white",border:"none",borderRadius:9,cursor:(busy||n===0)?"default":"pointer",fontWeight:600,fontSize:12,opacity:n===0?.6:1}}>
                 {busy?"⏳...":"+ Ouvrir "+c.label+" ("+n+" en stock)"}
               </button>);
             })}
