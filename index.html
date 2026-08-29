@@ -36,14 +36,6 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 const LS={get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch{return null}},
   set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
 
-// Couleurs des jauges de contenants (fûts/bouteilles/cubis), personnalisables dans
-// ⚙️ Configuration. "high" = jauge encore bien pleine (>40%), "mid" = intermédiaire
-// (15-40%), "low" = presque vide (≤15%). Les seuils restent fixes, seules les
-// couleurs sont réglables.
-const DEFAULT_GAUGE_COLORS={high:"#2E7D32",mid:"#FF9F0A",low:"#FF3B30"};
-const getGaugeColors=()=>({...DEFAULT_GAUGE_COLORS,...(LS.get("anf87_gauge_colors")||{})});
-const gaugeColorFor=pct=>{const g=getGaugeColors(); return pct<=15?g.low:pct<=40?g.mid:g.high;};
-
 // ═══ DEFAULTS ═══
 const DSITES=[{id:"s1",name:"Buvette Nord",village:"Village 1",color:"#CC0000"},{id:"s2",name:"Buvette Est",village:"Village 2",color:"#1565C0"},{id:"s3",name:"Buvette Sud",village:"Village 3",color:"#2E7D32"},{id:"s4",name:"Buvette Ouest",village:"Village 4",color:"#E65100"}];
 const DCATS=[{id:"c1",name:"Boissons"},{id:"c2",name:"Bières"},{id:"c3",name:"Snacks"},{id:"c4",name:"Sandwichs"},{id:"c5",name:"Divers"}];
@@ -422,7 +414,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
       if(!cont&&availablePresets.length===0)return null;
       const busy=busyId===prod.id;
       const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
-      const gaugeColor=gaugeColorFor(pct);
+      const gaugeColor=prod.color||T.orange; // couleur choisie pour ce produit (comme les sites)
       return(<div key={prod.id} style={{position:"relative",flexShrink:0}}>
         <button disabled={busy}
           onClick={()=>cont?setCloseConfirm({prod,cont}):(availablePresets.length===1?doOpen(prod,availablePresets[0]):setPickerFor(pickerFor===prod.id?null:prod.id))}
@@ -1314,7 +1306,7 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
       const presets=parseContainers(prod.containers);
       const busy=busyKey===siteId+"_"+prod.id;
       const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
-      const gaugeColor=gaugeColorFor(pct);
+      const gaugeColor=prod.color||T.orange; // couleur choisie pour ce produit (comme les sites)
       return(<div key={prod.id} style={{background:T.card,borderRadius:14,padding:16,marginBottom:12,border:`1px solid ${T.border}`}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           {prod.photo?<img src={prod.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover"}}/>:<span style={{fontSize:28}}>{prod.emoji}</span>}
@@ -1741,6 +1733,14 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
         <div style={{fontSize:11,color:T.mid,marginTop:-3,marginBottom:7}}>
           Ex pour le vin : Bouteille 75cl:75,Cubi 3L:300,Cubi 5L:500. Sert à l'écran "🧴 Contenants" (jauge du fût/bouteille/cubi actuellement entamé). Laissez vide si non concerné.
         </div>
+        <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>
+          Couleur de la jauge (contenant)
+        </label>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:7}}>
+          <input type="color" value={data.color||"#FF9F0A"} onChange={e=>setData({...data,color:e.target.value})}
+            style={{width:44,height:32,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",padding:0,background:"none"}}/>
+          <span style={{fontSize:11,color:T.mid}}>Ex : bière → jaune, café → marron, vin rouge → bordeaux…</span>
+        </div>
       </>}
       <button onClick={onSubmit} style={{width:"100%",padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>
         {label.startsWith("+")?label:"💾 Enregistrer"}
@@ -1751,7 +1751,7 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
 
 function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
   const [edit,setEdit]=useState(null);
-  const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:""});
+  const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
   // Redimensionne/compresse la photo côté navigateur avant de la stocker : une photo
@@ -1802,7 +1802,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
       const extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
       await apiWrite(caisseUrl,{action:"saveProduct",id,...flattenProd(p,sites),photo:up.ok?up.photoParam:"",...extra});
     }
-    setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:""});
+    setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
   };
   const saveEdit=async()=>{const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
     if(caisseUrl){
@@ -1815,7 +1815,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
   const delProd=async(id)=>{if(!window.confirm("Supprimer ?"))return;onSave(products.filter(p=>p.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
-    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
+    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
   const totalStockValue=products.reduce((s,p)=>s+(p.costPrice||0)*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
   const totalPotentialMargin=products.reduce((s,p)=>s+((p.price||0)-(p.costPrice||0))*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
@@ -2026,42 +2026,6 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit}){
       <div style={{fontWeight:700,fontSize:14,color:"#2E7D32",marginBottom:6}}>💳 SumUp TPE</div>
       <div style={{fontSize:12,color:"#2E7D32",lineHeight:1.6}}>Le bouton "Carte Bleue" envoie directement la commande au TPE via <code>sumupmerchant://pay</code>. L'app SumUp doit être installée sur l'appareil et le TPE associé.</div>
     </div>
-    <GaugeColorSettings/>
-  </div>);
-}
-
-// ═══ COULEURS DES JAUGES (contenants) ═══
-function GaugeColorSettings(){
-  const [colors,setColors]=useState(getGaugeColors());
-  const [msg,setMsg]=useState("");
-  const update=(key,val)=>{
-    const next={...colors,[key]:val};
-    setColors(next);
-    LS.set("anf87_gauge_colors",next);
-    setMsg("✅ Enregistré");
-    setTimeout(()=>setMsg(""),1500);
-  };
-  const reset=()=>{
-    setColors(DEFAULT_GAUGE_COLORS);
-    LS.set("anf87_gauge_colors",DEFAULT_GAUGE_COLORS);
-    setMsg("✅ Couleurs par défaut restaurées");
-    setTimeout(()=>setMsg(""),1500);
-  };
-  const rows=[["high","Jauge pleine (>40%)"],["mid","Jauge moyenne (15-40%)"],["low","Jauge faible (≤15%)"]];
-  return(<div style={{background:T.card,borderRadius:12,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
-    <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:4}}>🎨 Couleurs des jauges (contenants)</div>
-    <div style={{fontSize:11,color:T.mid,marginBottom:12}}>Utilisées sur l'écran caisse et dans Stock → Contenants.</div>
-    {rows.map(([key,label])=>(
-      <div key={key} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 0",borderTop:`1px solid ${T.border}`}}>
-        <span style={{fontSize:13,color:T.dark}}>{label}</span>
-        <input type="color" value={colors[key]} onChange={e=>update(key,e.target.value)}
-          style={{width:44,height:32,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",padding:0,background:"none"}}/>
-      </div>
-    ))}
-    <button onClick={reset} style={{width:"100%",padding:"9px",marginTop:10,background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,cursor:"pointer",fontWeight:600,fontSize:12,color:T.dark}}>
-      ↺ Réinitialiser les couleurs par défaut
-    </button>
-    {msg&&<div style={{marginTop:8,fontSize:12,fontWeight:600,textAlign:"center",color:T.green}}>{msg}</div>}
   </div>);
 }
 

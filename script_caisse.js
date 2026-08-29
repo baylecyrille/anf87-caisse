@@ -163,11 +163,11 @@ function siteColumn(ss, siteId){
 function getProductsData(ss){
   var sh=ss.getSheetByName("Produits"); if(!sh||sh.getLastRow()<=1)return [];
   var sites=getSitesData(ss); // pour associer chaque site à SA colonne de stock, dans l'ordre
-  // Colonne Y (25) réservée à "Contenants" — volontairement loin des colonnes de stock
-  // des sites au-delà du 4e (qui démarrent à R=18 et peuvent grandir), pour ne jamais
-  // entrer en collision avec elles.
-  var CONTAINERS_COL=25;
-  var maxCol=Math.max(CONTAINERS_COL, sites.length>4 ? 18+(sites.length-4)-1 : 17);
+  // Colonne Y (25) réservée à "Contenants", Z (26) à "Couleur" — volontairement loin
+  // des colonnes de stock des sites au-delà du 4e (qui démarrent à R=18 et peuvent
+  // grandir), pour ne jamais entrer en collision avec elles.
+  var CONTAINERS_COL=25, COLOR_COL=26;
+  var maxCol=Math.max(COLOR_COL, sites.length>4 ? 18+(sites.length-4)-1 : 17);
   return sh.getRange(2,1,sh.getLastRow()-1,maxCol).getValues()
     .filter(r=>r[0]).map(r=>{
       var stock={};
@@ -183,7 +183,8 @@ function getProductsData(ss){
         stock:stock,
         costPrice:+r[15]||0,
         presets:(r[16]||"").toString(),
-        containers:(r[CONTAINERS_COL-1]||"").toString()
+        containers:(r[CONTAINERS_COL-1]||"").toString(),
+        color:(r[COLOR_COL-1]||"").toString()
       };
     });
 }
@@ -287,6 +288,7 @@ function saveProduct(e){
   var costPrice=+p.costPrice||0;
   var presets=(p.presets||"").toString();
   var containers=(p.containers||"").toString();
+  var color=(p.color||"").toString();
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
@@ -299,12 +301,14 @@ function saveProduct(e){
       sh.getRange(i+2,16).setValue(costPrice); // P = Prix d'achat TTC
       sh.getRange(i+2,17).setValue(presets);   // Q = Paliers de vente au volume
       sh.getRange(i+2,25).setValue(containers);// Y = Tailles de contenant (jauge fûts/bouteilles/cubis)
+      sh.getRange(i+2,26).setValue(color);     // Z = Couleur de la jauge (comme les sites)
       return{ok:true,action:"updated"};
     }}
   }
   // Création d'un nouveau produit : stock initialisé à 0 sur tous les sites
   // (les 4 colonnes historiques L:O, plus une colonne par site au-delà du 4e, jusqu'à
-  // la colonne Y=25 réservée à Contenants — donc jusqu'à 11 sites au total sans collision).
+  // les colonnes Y=25/Z=26 réservées à Contenants/Couleur — donc jusqu'à 11 sites
+  // au total sans collision).
   var nbSites=getSitesData(ss).length;
   var row=meta.slice();               // colonnes 1-11 (A:K)
   row.push(0,0,0,0);                  // colonnes 12-15 (L:O) — toujours réservées aux 4 premiers sites
@@ -314,6 +318,7 @@ function saveProduct(e){
   for(var s=0;s<extra;s++)row.push(0);// colonnes 18+ (R, S...) pour le 5e site et au-delà
   while(row.length<24)row.push("");   // comble jusqu'à la colonne 24 si besoin
   row[24]=containers;                 // colonne 25 (Y)
+  row[25]=color;                      // colonne 26 (Z)
   sh.appendRow(row);
   sh.getRange(sh.getLastRow(),7).setNumberFormat("@"); // Codebarres en texte, même raison que ci-dessus
   return{ok:true,action:"created"};
