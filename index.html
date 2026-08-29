@@ -403,7 +403,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
     setBusyId(null);setCloseConfirm(null);
   };
 
-  return(<div style={{display:"flex",gap:7,overflowX:"auto",marginTop:8,paddingBottom:2}}>
+  return(<div style={{display:"flex",gap:7,overflowX:"auto",alignItems:"stretch"}}>
     {volProducts.map(prod=>{
       const cont=findCont(prod.id);
       const presets=parseContainers(prod.containers);
@@ -426,20 +426,15 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
       return(<div key={prod.id} style={{flexShrink:0}}>
         <button disabled={busy}
           onClick={()=>cont?setCloseConfirm({prod,cont}):(availablePresets.length===1?doOpen(prod,availablePresets[0]):setPickerFor(prod.id))}
-          style={{display:"flex",flexDirection:"column",alignItems:"flex-start",gap:3,padding:"7px 12px",minWidth:130,
-            background:cont?"white":T.bg,border:`1.5px solid ${cont?gaugeColor:T.border}`,borderRadius:10,cursor:busy?"default":"pointer"}}>
-          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:700,color:T.dark}}>
-            <span>{prod.emoji}</span><span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:80}}>{prod.name}</span>
-          </div>
-          {busy?<span style={{fontSize:10,color:T.mid}}>⏳...</span>
-            :cont?<>
-              <div style={{height:6,width:"100%",background:T.border,borderRadius:3,overflow:"hidden"}}>
-                <div style={{height:"100%",width:pct+"%",background:gaugeColor}}/>
-              </div>
-              <span style={{fontSize:10,fontWeight:700,color:gaugeColor}}>🏁 Terminer ({cont.remaining}{prod.unit})</span>
-            </>
-            :<span style={{fontSize:10,fontWeight:700,color:T.mid}}>
-              {availablePresets.length===1?`+ Ouvrir (${containerCount(prod.stock[siteId]||0,availablePresets[0].size)} en stock)`:"+ Ouvrir…"}
+          style={{position:"relative",overflow:"hidden",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+            gap:2,padding:"8px 14px",minWidth:130,height:"100%",background:T.bg,border:`1.5px solid ${cont?gaugeColor:T.border}`,
+            borderRadius:10,cursor:busy?"default":"pointer"}}>
+          {cont&&<div style={{position:"absolute",inset:0,width:pct+"%",background:gaugeColor,opacity:.55,transition:"width .3s"}}/>}
+          <span style={{position:"relative",fontSize:12,fontWeight:700,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:120}}>{prod.name}</span>
+          {busy?<span style={{position:"relative",fontSize:11,color:T.mid}}>⏳...</span>
+            :cont?<span style={{position:"relative",fontSize:11,fontWeight:700,color:T.dark}}>Terminer ({cont.remaining}{prod.unit})</span>
+            :<span style={{position:"relative",fontSize:11,fontWeight:700,color:T.mid}}>
+              {availablePresets.length===1?`Ouvrir (${containerCount(prod.stock[siteId]||0,availablePresets[0].size)} en stock)`:"Ouvrir…"}
             </span>}
         </button>
         {reserveLine&&<div style={{fontSize:9,color:T.mid,marginTop:2,maxWidth:130,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>📦 {reserveLine} en réserve</div>}
@@ -501,11 +496,13 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           {cats.map(c=><button key={c} onClick={()=>setCat(c)} style={{flexShrink:0,padding:"7px 16px",borderRadius:20,
             border:"none",background:cat===c?T.red:T.bg,color:cat===c?"white":T.dark,fontSize:13,fontWeight:600,cursor:"pointer"}}>{c}</button>)}
         </div>
-        <button onClick={openScanner} style={{display:"flex",alignItems:"center",gap:7,padding:"8px 16px",
-          background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer"}}>
-          📷 Scanner code-barres
-        </button>
-        <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
+        <div style={{display:"flex",gap:7,overflowX:"auto",alignItems:"stretch"}}>
+          <button onClick={openScanner} style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,padding:"8px 16px",
+            background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:12,fontWeight:600,cursor:"pointer",flexShrink:0}}>
+            <span>📷 Scanner</span><span>code-barres</span>
+          </button>
+          <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
+        </div>
       </div>
 
       {/* Grille produits */}
