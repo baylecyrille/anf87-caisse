@@ -295,6 +295,7 @@ function App(){
       <div style={{flex:1,overflow:"hidden"}}>
         {tab==="pos"&&<PosScreen products={products} cart={cart} siteId={siteId} categories={categories}
           addToCart={addToCart} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
+          addVolumeToCart={addVolumeToCart}
           cartTotal={cartTotal} cartCount={cartCount}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>}
@@ -426,18 +427,18 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
       return(<div key={prod.id} style={{flexShrink:0}}>
         <button disabled={busy}
           onClick={()=>cont?setCloseConfirm({prod,cont}):(availablePresets.length===1?doOpen(prod,availablePresets[0]):setPickerFor(prod.id))}
-          style={{position:"relative",overflow:"hidden",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
-            gap:2,padding:"8px 14px",minWidth:130,height:"100%",background:T.bg,border:`1.5px solid ${cont?gaugeColor:T.border}`,
-            borderRadius:10,cursor:busy?"default":"pointer"}}>
+          style={{position:"relative",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center",
+            gap:6,padding:"5px 12px",minWidth:150,background:T.bg,border:`1.5px solid ${cont?gaugeColor:T.border}`,
+            borderRadius:8,cursor:busy?"default":"pointer"}}>
           {cont&&<div style={{position:"absolute",inset:0,width:pct+"%",background:gaugeColor,opacity:.55,transition:"width .3s"}}/>}
-          <span style={{position:"relative",fontSize:12,fontWeight:700,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:120}}>{prod.name}</span>
-          {busy?<span style={{position:"relative",fontSize:11,color:T.mid}}>⏳...</span>
-            :cont?<span style={{position:"relative",fontSize:11,fontWeight:700,color:T.dark}}>Terminer ({cont.remaining}{prod.unit})</span>
-            :<span style={{position:"relative",fontSize:11,fontWeight:700,color:T.mid}}>
-              {availablePresets.length===1?`Ouvrir (${containerCount(prod.stock[siteId]||0,availablePresets[0].size)} en stock)`:"Ouvrir…"}
+          <span style={{position:"relative",fontSize:11,fontWeight:700,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:70}}>{prod.name}</span>
+          {busy?<span style={{position:"relative",fontSize:10,color:T.mid}}>⏳...</span>
+            :cont?<span style={{position:"relative",fontSize:10,fontWeight:700,color:T.dark,whiteSpace:"nowrap"}}>Terminer ({cont.remaining}{prod.unit})</span>
+            :<span style={{position:"relative",fontSize:10,fontWeight:700,color:T.mid,whiteSpace:"nowrap"}}>
+              {availablePresets.length===1?`Ouvrir (${containerCount(prod.stock[siteId]||0,availablePresets[0].size)})`:"Ouvrir…"}
             </span>}
         </button>
-        {reserveLine&&<div style={{fontSize:9,color:T.mid,marginTop:2,maxWidth:130,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>📦 {reserveLine} en réserve</div>}
+        {reserveLine&&<div style={{fontSize:9,color:T.mid,marginTop:1,maxWidth:150,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>📦 {reserveLine}</div>}
       </div>);
     })}
     {/* Choix de la taille à ouvrir — en fenêtre centrée (pas en menu déroulant, qui
@@ -477,13 +478,31 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
     window.addEventListener("resize",h);window.addEventListener("orientationchange",()=>setTimeout(h,100));return()=>{window.removeEventListener("resize",h);window.removeEventListener("orientationchange",h);};},[]);
   const cats=["Tout",...categories.map(c=>c.name)];
-  const filtered=products.filter(p=>cat==="Tout"||p.cat===cat);
+  const [reorderMode,setReorderMode]=useState(false);
+  const [customOrder,setCustomOrder]=useState(LS.get("anf87_product_order")||[]);
+  const filteredRaw=products.filter(p=>cat==="Tout"||p.cat===cat);
+  // Ordre personnalisé (mémorisé) — les produits jamais déplacés gardent leur ordre naturel à la suite.
+  const filtered=customOrder.length===0?filteredRaw:(()=>{
+    const idx=id=>{const i=customOrder.indexOf(id.toString());return i===-1?999999:i;};
+    return [...filteredRaw].sort((a,b)=>idx(a.id)-idx(b.id));
+  })();
+  const moveProduct=(id,dir)=>{
+    const allIds=products.map(p=>p.id.toString());
+    let order=customOrder.length?[...customOrder]:allIds.slice();
+    allIds.forEach(pid=>{if(!order.includes(pid))order.push(pid);}); // inclut les produits ajoutés depuis le dernier réglage
+    const idx=order.indexOf(id.toString());
+    const swapIdx=idx+dir;
+    if(idx===-1||swapIdx<0||swapIdx>=order.length)return;
+    [order[idx],order[swapIdx]]=[order[swapIdx],order[idx]];
+    setCustomOrder(order);
+    LS.set("anf87_product_order",order);
+  };
   const cols=isLandscape?5:3;
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:T.green;
 
@@ -496,29 +515,62 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           {cats.map(c=><button key={c} onClick={()=>setCat(c)} style={{flexShrink:0,padding:"7px 16px",borderRadius:20,
             border:"none",background:cat===c?T.red:T.bg,color:cat===c?"white":T.dark,fontSize:13,fontWeight:600,cursor:"pointer"}}>{c}</button>)}
         </div>
-        <div style={{display:"flex",gap:7,overflowX:"auto",alignItems:"stretch"}}>
-          <button onClick={openScanner} style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,padding:"8px 16px",
-            background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:12,fontWeight:600,cursor:"pointer",flexShrink:0}}>
-            <span>📷 Scanner</span><span>code-barres</span>
-          </button>
-          <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
-        </div>
+        <button onClick={openScanner} style={{display:"inline-flex",alignItems:"center",gap:7,padding:"8px 16px",
+          background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer",marginBottom:7,marginRight:7}}>
+          📷 Scanner code-barres
+        </button>
+        <button onClick={()=>setReorderMode(r=>!r)} style={{display:"inline-flex",alignItems:"center",gap:7,padding:"8px 16px",
+          background:reorderMode?T.red:T.bg,color:reorderMode?"white":T.dark,border:`1px solid ${reorderMode?T.red:T.border}`,
+          borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer",marginBottom:7}}>
+          {reorderMode?"✓ Terminer":"↕ Réorganiser"}
+        </button>
+        <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
       </div>
 
       {/* Grille produits */}
       <div style={{flex:1,overflowY:"auto",padding:10,display:"grid",
         gridTemplateColumns:`repeat(${cols},1fr)`,gap:9,alignContent:"start"}}>
-        {filtered.map(p=>{
+        {filtered.flatMap(p=>{
           const stk=p.stock[siteId]||0;
           const isDrink=p.drink;
-          return(<button key={p.id} onClick={()=>addToCart(p)} disabled={stk<=0}
-            style={p.photo?{position:"relative",height:132,borderRadius:14,overflow:"hidden",padding:0,
-                cursor:stk>0?"pointer":"not-allowed",opacity:stk<=0?.45:1,
+          const presets=p.sellByVolume?parsePresets(p.presets):[];
+          // Produit vendu au volume avec des paliers configurés (ex: Demi/Pichet 1L/
+          // Pichet 1,5L) : un bouton par palier, ajouté directement au panier sans
+          // passer par la fenêtre de choix de quantité.
+          if(presets.length>0){
+            return presets.map((preset,pi)=>(
+              <div key={p.id+"-preset-"+pi} style={{position:"relative"}}>
+              <button onClick={()=>{if(reorderMode)return;stk>0&&addVolumeToCart(p,preset.qty,p.unit,preset.price);}} disabled={stk<=0&&!reorderMode}
+                style={{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
+                  borderRadius:14,padding:"14px 8px",cursor:reorderMode?"default":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
+                  textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
+                onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
+                onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
+                <div style={{fontSize:30,marginBottom:6}}>{p.emoji}</div>
+                {isDrink&&stk>0&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
+                <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:1,lineHeight:1.2}}>{p.name}</div>
+                <div style={{fontSize:11,color:T.mid,marginBottom:3}}>{preset.qty}{p.unit}</div>
+                <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(preset.price)}</div>
+                <div style={{fontSize:10,fontWeight:600,color:stockC(stk),marginTop:3}}>
+                  {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
+                </div>
+              </button>
+              {reorderMode&&<div style={{position:"absolute",bottom:6,left:0,right:0,display:"flex",justifyContent:"center",gap:6}}>
+                <button onClick={()=>moveProduct(p.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"rgba(0,0,0,0.7)",color:"white",fontSize:15,cursor:"pointer"}}>◀</button>
+                <button onClick={()=>moveProduct(p.id,1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"rgba(0,0,0,0.7)",color:"white",fontSize:15,cursor:"pointer"}}>▶</button>
+              </div>}
+              </div>
+            ));
+          }
+          return [(<div key={p.id} style={{position:"relative"}}>
+          <button onClick={()=>{if(!reorderMode)addToCart(p);}} disabled={stk<=0&&!reorderMode}
+            style={p.photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
+                cursor:reorderMode?"default":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.45:1,
                 border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
-              :{background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
-                borderRadius:14,padding:"14px 8px",cursor:stk>0?"pointer":"not-allowed",opacity:stk<=0?.4:1,
+              :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
+                borderRadius:14,padding:"14px 8px",cursor:reorderMode?"default":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
                 textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
-            onMouseDown={e=>e.currentTarget.style.transform="scale(0.94)"}
+            onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
             onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
             {p.photo?<>
               <img src={p.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
@@ -544,7 +596,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
                 {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}`:stk<99?`${stk} dispo`:"✓"}
               </div>
             </>}
-          </button>);
+          </button>
+          {reorderMode&&<div style={{position:"absolute",bottom:6,left:0,right:0,display:"flex",justifyContent:"center",gap:6}}>
+            <button onClick={()=>moveProduct(p.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"rgba(0,0,0,0.7)",color:"white",fontSize:15,cursor:"pointer"}}>◀</button>
+            <button onClick={()=>moveProduct(p.id,1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"rgba(0,0,0,0.7)",color:"white",fontSize:15,cursor:"pointer"}}>▶</button>
+          </div>}
+          </div>)];
         })}
       </div>
 
