@@ -295,6 +295,7 @@ function App(){
       <div style={{flex:1,overflow:"hidden"}}>
         {tab==="pos"&&<PosScreen products={products} cart={cart} siteId={siteId} categories={categories}
           addToCart={addToCart} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
+          addVolumeToCart={addVolumeToCart}
           cartTotal={cartTotal} cartCount={cartCount}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>}
@@ -385,7 +386,7 @@ function SiteSelector({sites,siteId,onChange}){
 // ═══ BANDEAU CONTENANTS (écran caisse, à côté du scanner) ═══
 function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
   const [busyId,setBusyId]=useState(null);
-  const [pickerFor,setPickerFor]=useState(null); // productId dont on choisit la taille à ouvrir
+  const [pickerFor,setPickerFor]=useState(null); // produit dont on choisit la taille à ouvrir
   const [closeConfirm,setCloseConfirm]=useState(null); // {prod,cont}
 
   const volProducts=products.filter(p=>p.sellByVolume&&parseContainers(p.containers).length>0);
@@ -403,7 +404,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
     setBusyId(null);setCloseConfirm(null);
   };
 
-  return(<div style={{display:"flex",gap:7,overflowX:"auto",marginTop:8,paddingBottom:2}}>
+  return(<div style={{display:"flex",gap:7,overflowX:"auto",alignItems:"stretch"}}>
     {volProducts.map(prod=>{
       const cont=findCont(prod.id);
       const presets=parseContainers(prod.containers);
@@ -415,34 +416,51 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
       const busy=busyId===prod.id;
       const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
       const gaugeColor=prod.color||T.orange; // couleur choisie pour ce produit (comme les sites)
-      return(<div key={prod.id} style={{position:"relative",flexShrink:0}}>
+      // Ligne dédiée "en réserve" : ce qui reste en stock au-delà du contenant
+      // actuellement ouvert (pour toujours voir ce qui suit, même une fois entamé).
+      const reserveLine=presets.map(c=>{
+        const total=containerCount(prod.stock[siteId]||0,c.size);
+        const openSame=cont&&cont.label===c.label&&cont.size===c.size;
+        const n=openSame?Math.max(0,total-1):total;
+        return n>0?`${n}× ${c.label}`:null;
+      }).filter(Boolean).join(", ");
+      return(<div key={prod.id} style={{flexShrink:0}}>
         <button disabled={busy}
-          onClick={()=>cont?setCloseConfirm({prod,cont}):(availablePresets.length===1?doOpen(prod,availablePresets[0]):setPickerFor(pickerFor===prod.id?null:prod.id))}
-          style={{display:"flex",flexDirection:"column",alignItems:"flex-start",gap:3,padding:"7px 12px",minWidth:118,
-            background:cont?"white":T.bg,border:`1.5px solid ${cont?gaugeColor:T.border}`,borderRadius:10,cursor:busy?"default":"pointer"}}>
-          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontWeight:700,color:T.dark}}>
-            <span>{prod.emoji}</span><span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:80}}>{prod.name}</span>
-          </div>
-          {busy?<span style={{fontSize:10,color:T.mid}}>⏳...</span>
-            :cont?<>
-              <div style={{height:6,width:"100%",background:T.border,borderRadius:3,overflow:"hidden"}}>
-                <div style={{height:"100%",width:pct+"%",background:gaugeColor}}/>
-              </div>
-              <span style={{fontSize:10,fontWeight:700,color:gaugeColor}}>🏁 Terminer ({cont.remaining}{prod.unit})</span>
-            </>
-            :<span style={{fontSize:10,fontWeight:700,color:T.mid}}>
-              {availablePresets.length===1?`+ Ouvrir (${containerCount(prod.stock[siteId]||0,availablePresets[0].size)} en stock)`:"+ Ouvrir…"}
+          onClick={()=>cont?setCloseConfirm({prod,cont}):(availablePresets.length===1?doOpen(prod,availablePresets[0]):setPickerFor(prod.id))}
+          style={{position:"relative",overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center",
+            gap:6,padding:"5px 12px",minWidth:150,background:T.bg,border:`1.5px solid ${cont?gaugeColor:T.border}`,
+            borderRadius:8,cursor:busy?"default":"pointer"}}>
+          {cont&&<div style={{position:"absolute",inset:0,width:pct+"%",background:gaugeColor,opacity:.55,transition:"width .3s"}}/>}
+          <span style={{position:"relative",fontSize:11,fontWeight:700,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:70}}>{prod.name}</span>
+          {busy?<span style={{position:"relative",fontSize:10,color:T.mid}}>⏳...</span>
+            :cont?<span style={{position:"relative",fontSize:10,fontWeight:700,color:T.dark,whiteSpace:"nowrap"}}>Terminer ({cont.remaining}{prod.unit})</span>
+            :<span style={{position:"relative",fontSize:10,fontWeight:700,color:T.mid,whiteSpace:"nowrap"}}>
+              {availablePresets.length===1?`Ouvrir (${containerCount(prod.stock[siteId]||0,availablePresets[0].size)})`:"Ouvrir…"}
             </span>}
         </button>
-        {pickerFor===prod.id&&<div style={{position:"absolute",top:"100%",left:0,marginTop:4,background:T.card,
-          border:`1px solid ${T.border}`,borderRadius:10,boxShadow:"0 4px 12px rgba(0,0,0,0.15)",zIndex:60,padding:6,minWidth:180}}>
-          {availablePresets.map((c,i)=><button key={i} onClick={()=>doOpen(prod,c)}
-            style={{display:"block",width:"100%",textAlign:"left",padding:"7px 9px",background:"none",border:"none",cursor:"pointer",fontSize:12,borderRadius:7}}>
-            Ouvrir {c.label} <span style={{color:T.mid}}>({containerCount(prod.stock[siteId]||0,c.size)} en stock)</span>
-          </button>)}
-        </div>}
+        {reserveLine&&<div style={{fontSize:9,color:T.mid,marginTop:1,maxWidth:150,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>📦 {reserveLine}</div>}
       </div>);
     })}
+    {/* Choix de la taille à ouvrir — en fenêtre centrée (pas en menu déroulant, qui
+        se faisait couper par le défilement horizontal du bandeau et devenait
+        invisible/incliquable). */}
+    {pickerFor&&(()=>{
+      const prod=volProducts.find(p=>p.id.toString()===pickerFor.toString());
+      if(!prod)return null;
+      const availablePresets=parseContainers(prod.containers).filter(c=>containerCount(prod.stock[siteId]||0,c.size)>0);
+      return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+        onClick={e=>e.target===e.currentTarget&&setPickerFor(null)}>
+        <div style={{background:T.card,borderRadius:16,padding:20,width:"100%",maxWidth:340}}>
+          <div style={{fontWeight:800,fontSize:16,color:T.dark,marginBottom:12}}>{prod.emoji} Ouvrir — {prod.name}</div>
+          {availablePresets.map((c,i)=><button key={i} onClick={()=>doOpen(prod,c)}
+            style={{display:"block",width:"100%",textAlign:"left",padding:"12px 14px",background:T.bg,border:`1px solid ${T.border}`,
+              borderRadius:10,cursor:"pointer",fontSize:14,fontWeight:600,color:T.dark,marginBottom:8}}>
+            {c.label} <span style={{color:T.mid,fontWeight:500}}>({containerCount(prod.stock[siteId]||0,c.size)} en stock)</span>
+          </button>)}
+          <button onClick={()=>setPickerFor(null)} style={{width:"100%",padding:"11px",background:"none",border:"none",cursor:"pointer",fontWeight:600,color:T.mid}}>Annuler</button>
+        </div>
+      </div>);
+    })()}
     {closeConfirm&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
       onClick={e=>e.target===e.currentTarget&&setCloseConfirm(null)}>
       <div style={{background:T.card,borderRadius:16,padding:22,width:"100%",maxWidth:360}}>
@@ -460,13 +478,59 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
     window.addEventListener("resize",h);window.addEventListener("orientationchange",()=>setTimeout(h,100));return()=>{window.removeEventListener("resize",h);window.removeEventListener("orientationchange",h);};},[]);
   const cats=["Tout",...categories.map(c=>c.name)];
-  const filtered=products.filter(p=>cat==="Tout"||p.cat===cat);
+  const [reorderMode,setReorderMode]=useState(false);
+  const [customOrder,setCustomOrder]=useState(LS.get("anf87_product_order")||[]);
+  const filteredRaw=products.filter(p=>cat==="Tout"||p.cat===cat);
+  // Ordre personnalisé (mémorisé) — les produits jamais déplacés gardent leur ordre naturel à la suite.
+  const filtered=customOrder.length===0?filteredRaw:(()=>{
+    const idx=id=>{const i=customOrder.indexOf(id.toString());return i===-1?999999:i;};
+    return [...filteredRaw].sort((a,b)=>idx(a.id)-idx(b.id));
+  })();
+  // Glisser-déposer pour réorganiser : on insère le produit déplacé juste à l'endroit
+  // où le doigt est relâché, plutôt que de ne pouvoir échanger qu'avec le voisin direct.
+  const [dragId,setDragId]=useState(null);
+  const [dragOverId,setDragOverId]=useState(null);
+  const dragIdRef=useRef(null),dragOverIdRef=useRef(null);
+  const reorderTo=(sourceId,targetId)=>{
+    const allIds=products.map(p=>p.id.toString());
+    let order=customOrder.length?[...customOrder]:allIds.slice();
+    allIds.forEach(pid=>{if(!order.includes(pid))order.push(pid);});
+    const from=order.indexOf(sourceId.toString());
+    if(from===-1)return;
+    order.splice(from,1);
+    const to=order.indexOf(targetId.toString());
+    order.splice(to===-1?order.length:to,0,sourceId.toString());
+    setCustomOrder(order);
+    LS.set("anf87_product_order",order);
+  };
+  const startDrag=pid=>{
+    if(!reorderMode)return;
+    dragIdRef.current=pid.toString();setDragId(pid.toString());
+    const move=ev=>{
+      const pt=ev.touches?ev.touches[0]:ev;
+      const el=document.elementFromPoint(pt.clientX,pt.clientY);
+      const wrapper=el&&el.closest&&el.closest("[data-pid]");
+      const overId=wrapper?wrapper.getAttribute("data-pid"):null;
+      dragOverIdRef.current=overId;setDragOverId(overId);
+    };
+    const end=()=>{
+      document.removeEventListener("pointermove",move);
+      document.removeEventListener("pointerup",end);
+      if(dragOverIdRef.current&&dragIdRef.current&&dragOverIdRef.current!==dragIdRef.current){
+        reorderTo(dragIdRef.current,dragOverIdRef.current);
+      }
+      dragIdRef.current=null;dragOverIdRef.current=null;
+      setDragId(null);setDragOverId(null);
+    };
+    document.addEventListener("pointermove",move);
+    document.addEventListener("pointerup",end);
+  };
   const cols=isLandscape?5:3;
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:T.green;
 
@@ -475,31 +539,93 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
       {/* Cats + scanner */}
       <div style={{padding:"10px 12px 8px",background:T.card,borderBottom:`1px solid ${T.border}`,flexShrink:0}}>
-        <div style={{display:"flex",gap:7,overflowX:"auto",paddingBottom:8}}>
-          {cats.map(c=><button key={c} onClick={()=>setCat(c)} style={{flexShrink:0,padding:"7px 16px",borderRadius:20,
-            border:"none",background:cat===c?T.red:T.bg,color:cat===c?"white":T.dark,fontSize:13,fontWeight:600,cursor:"pointer"}}>{c}</button>)}
+        <div style={{display:"flex",gap:7,alignItems:"center",marginBottom:8}}>
+          <div style={{display:"flex",gap:7,overflowX:"auto",flex:1}}>
+            {cats.map(c=><button key={c} onClick={()=>setCat(c)} style={{flexShrink:0,padding:"7px 16px",borderRadius:20,
+              border:"none",background:cat===c?T.red:T.bg,color:cat===c?"white":T.dark,fontSize:13,fontWeight:600,cursor:"pointer"}}>{c}</button>)}
+          </div>
+          <button onClick={()=>setReorderMode(r=>!r)} title={reorderMode?"Terminer la réorganisation":"Réorganiser les produits"}
+            style={{flexShrink:0,width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",
+              background:reorderMode?T.red:T.bg,color:reorderMode?"white":T.dark,border:`1px solid ${reorderMode?T.red:T.border}`,
+              borderRadius:"50%",fontSize:15,cursor:"pointer"}}>
+            {reorderMode?"✓":"↕"}
+          </button>
         </div>
-        <button onClick={openScanner} style={{display:"flex",alignItems:"center",gap:7,padding:"8px 16px",
-          background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer"}}>
-          📷 Scanner code-barres
-        </button>
-        <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
+        <div style={{display:"flex",gap:7,overflowX:"auto",alignItems:"stretch"}}>
+          <button onClick={openScanner} style={{display:"flex",alignItems:"center",gap:7,padding:"8px 16px",flexShrink:0,
+            background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer"}}>
+            📷 Scanner code-barres
+          </button>
+          <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
+        </div>
       </div>
 
       {/* Grille produits */}
       <div style={{flex:1,overflowY:"auto",padding:10,display:"grid",
         gridTemplateColumns:`repeat(${cols},1fr)`,gap:9,alignContent:"start"}}>
-        {filtered.map(p=>{
+        {filtered.flatMap(p=>{
           const stk=p.stock[siteId]||0;
           const isDrink=p.drink;
-          return(<button key={p.id} onClick={()=>addToCart(p)} disabled={stk<=0}
-            style={p.photo?{position:"relative",height:132,borderRadius:14,overflow:"hidden",padding:0,
-                cursor:stk>0?"pointer":"not-allowed",opacity:stk<=0?.45:1,
+          const presets=p.sellByVolume?parsePresets(p.presets):[];
+          // Produit vendu au volume avec des paliers configurés (ex: Demi/Pichet 1L/
+          // Pichet 1,5L) : un bouton par palier, ajouté directement au panier sans
+          // passer par la fenêtre de choix de quantité.
+          if(presets.length>0){
+            return presets.map((preset,pi)=>(
+              <div key={p.id+"-preset-"+pi} data-pid={p.id} onPointerDown={()=>startDrag(p.id)}
+                style={{position:"relative",touchAction:reorderMode?"none":"auto",
+                  opacity:dragId===p.id.toString()?0.35:1,
+                  outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
+                  outlineOffset:2,borderRadius:14}}>
+              <button onClick={()=>{if(reorderMode)return;stk>0&&addVolumeToCart(p,preset.qty,p.unit,preset.price);}} disabled={stk<=0&&!reorderMode}
+                style={p.photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
+                    cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.45:1,
+                    border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
+                  :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
+                    borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
+                    textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
+                onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
+                onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
+                {p.photo?<>
+                  <img src={p.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
+                  <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0) 38%,rgba(0,0,0,0.8) 100%)"}}/>
+                  {isDrink&&stk>0&&<div style={{position:"absolute",top:6,left:6,background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
+                  <div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>
+                    {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
+                  </div>
+                  <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
+                    <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name} — {preset.qty}{p.unit}</div>
+                    <div style={{fontSize:14,fontWeight:900,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)"}}>{fmt(preset.price)}</div>
+                  </div>
+                </>:<>
+                  <div style={{fontSize:30,marginBottom:6}}>{p.emoji}</div>
+                  {isDrink&&stk>0&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
+                  <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:1,lineHeight:1.2}}>{p.name}</div>
+                  <div style={{fontSize:11,color:T.mid,marginBottom:3}}>{preset.qty}{p.unit}</div>
+                  <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(preset.price)}</div>
+                  <div style={{fontSize:10,fontWeight:600,color:stockC(stk),marginTop:3}}>
+                    {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
+                  </div>
+                </>}
+              </button>
+              {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white",pointerEvents:"none"}}>⠿</div>}
+              </div>
+            ));
+          }
+          return [(<div key={p.id} data-pid={p.id} onPointerDown={()=>startDrag(p.id)}
+            style={{position:"relative",touchAction:reorderMode?"none":"auto",
+              opacity:dragId===p.id.toString()?0.35:1,
+              outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
+              outlineOffset:2,borderRadius:14}}>
+          <button onClick={()=>{if(!reorderMode)addToCart(p);}} disabled={stk<=0&&!reorderMode}
+            style={p.photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
+                cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.45:1,
                 border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
-              :{background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
-                borderRadius:14,padding:"14px 8px",cursor:stk>0?"pointer":"not-allowed",opacity:stk<=0?.4:1,
+              :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
+                borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
                 textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
-            onMouseDown={e=>e.currentTarget.style.transform="scale(0.94)"}
+            onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
             onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
             {p.photo?<>
               <img src={p.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
@@ -525,7 +651,10 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
                 {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}`:stk<99?`${stk} dispo`:"✓"}
               </div>
             </>}
-          </button>);
+          </button>
+          {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white",pointerEvents:"none"}}>⠿</div>}
+          </div>)];
         })}
       </div>
 
@@ -1307,6 +1436,14 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
       const busy=busyKey===siteId+"_"+prod.id;
       const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
       const gaugeColor=prod.color||T.orange; // couleur choisie pour ce produit (comme les sites)
+      // Ligne dédiée "en réserve" : contenants pleins encore disponibles en stock,
+      // au-delà de celui actuellement ouvert (visible même après ouverture).
+      const reserveLine=presets.map(c=>{
+        const total=containerCount(prod.stock[siteId]||0,c.size);
+        const openSame=cont&&cont.label===c.label&&cont.size===c.size;
+        const n=openSame?Math.max(0,total-1):total;
+        return n>0?`${n}× ${c.label}`:null;
+      }).filter(Boolean).join(", ");
       return(<div key={prod.id} style={{background:T.card,borderRadius:14,padding:16,marginBottom:12,border:`1px solid ${T.border}`}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
           {prod.photo?<img src={prod.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover"}}/>:<span style={{fontSize:28}}>{prod.emoji}</span>}
@@ -1315,6 +1452,7 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
             <div style={{fontSize:11,color:T.mid}}>Stock total : {prod.stock[siteId]||0}{prod.unit}</div>
           </div>
         </div>
+        {reserveLine&&<div style={{fontSize:12,color:T.dark,background:T.bg,borderRadius:8,padding:"6px 10px",marginBottom:10,fontWeight:600}}>📦 {reserveLine} en réserve</div>}
         {cont?<>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:T.mid,marginBottom:4}}>
             <span style={{fontWeight:700,color:T.dark}}>{cont.label}</span>
