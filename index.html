@@ -492,16 +492,44 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
     const idx=id=>{const i=customOrder.indexOf(id.toString());return i===-1?999999:i;};
     return [...filteredRaw].sort((a,b)=>idx(a.id)-idx(b.id));
   })();
-  const moveProduct=(id,dir)=>{
+  // Glisser-déposer pour réorganiser : on insère le produit déplacé juste à l'endroit
+  // où le doigt est relâché, plutôt que de ne pouvoir échanger qu'avec le voisin direct.
+  const [dragId,setDragId]=useState(null);
+  const [dragOverId,setDragOverId]=useState(null);
+  const dragIdRef=useRef(null),dragOverIdRef=useRef(null);
+  const reorderTo=(sourceId,targetId)=>{
     const allIds=products.map(p=>p.id.toString());
     let order=customOrder.length?[...customOrder]:allIds.slice();
-    allIds.forEach(pid=>{if(!order.includes(pid))order.push(pid);}); // inclut les produits ajoutés depuis le dernier réglage
-    const idx=order.indexOf(id.toString());
-    const swapIdx=idx+dir;
-    if(idx===-1||swapIdx<0||swapIdx>=order.length)return;
-    [order[idx],order[swapIdx]]=[order[swapIdx],order[idx]];
+    allIds.forEach(pid=>{if(!order.includes(pid))order.push(pid);});
+    const from=order.indexOf(sourceId.toString());
+    if(from===-1)return;
+    order.splice(from,1);
+    const to=order.indexOf(targetId.toString());
+    order.splice(to===-1?order.length:to,0,sourceId.toString());
     setCustomOrder(order);
     LS.set("anf87_product_order",order);
+  };
+  const startDrag=pid=>{
+    if(!reorderMode)return;
+    dragIdRef.current=pid.toString();setDragId(pid.toString());
+    const move=ev=>{
+      const pt=ev.touches?ev.touches[0]:ev;
+      const el=document.elementFromPoint(pt.clientX,pt.clientY);
+      const wrapper=el&&el.closest&&el.closest("[data-pid]");
+      const overId=wrapper?wrapper.getAttribute("data-pid"):null;
+      dragOverIdRef.current=overId;setDragOverId(overId);
+    };
+    const end=()=>{
+      document.removeEventListener("pointermove",move);
+      document.removeEventListener("pointerup",end);
+      if(dragOverIdRef.current&&dragIdRef.current&&dragOverIdRef.current!==dragIdRef.current){
+        reorderTo(dragIdRef.current,dragOverIdRef.current);
+      }
+      dragIdRef.current=null;dragOverIdRef.current=null;
+      setDragId(null);setDragOverId(null);
+    };
+    document.addEventListener("pointermove",move);
+    document.addEventListener("pointerup",end);
   };
   const cols=isLandscape?5:3;
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:T.green;
@@ -511,20 +539,25 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
       {/* Cats + scanner */}
       <div style={{padding:"10px 12px 8px",background:T.card,borderBottom:`1px solid ${T.border}`,flexShrink:0}}>
-        <div style={{display:"flex",gap:7,overflowX:"auto",paddingBottom:8}}>
-          {cats.map(c=><button key={c} onClick={()=>setCat(c)} style={{flexShrink:0,padding:"7px 16px",borderRadius:20,
-            border:"none",background:cat===c?T.red:T.bg,color:cat===c?"white":T.dark,fontSize:13,fontWeight:600,cursor:"pointer"}}>{c}</button>)}
+        <div style={{display:"flex",gap:7,alignItems:"center",marginBottom:8}}>
+          <div style={{display:"flex",gap:7,overflowX:"auto",flex:1}}>
+            {cats.map(c=><button key={c} onClick={()=>setCat(c)} style={{flexShrink:0,padding:"7px 16px",borderRadius:20,
+              border:"none",background:cat===c?T.red:T.bg,color:cat===c?"white":T.dark,fontSize:13,fontWeight:600,cursor:"pointer"}}>{c}</button>)}
+          </div>
+          <button onClick={()=>setReorderMode(r=>!r)} title={reorderMode?"Terminer la réorganisation":"Réorganiser les produits"}
+            style={{flexShrink:0,width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",
+              background:reorderMode?T.red:T.bg,color:reorderMode?"white":T.dark,border:`1px solid ${reorderMode?T.red:T.border}`,
+              borderRadius:"50%",fontSize:15,cursor:"pointer"}}>
+            {reorderMode?"✓":"↕"}
+          </button>
         </div>
-        <button onClick={openScanner} style={{display:"inline-flex",alignItems:"center",gap:7,padding:"8px 16px",
-          background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer",marginBottom:7,marginRight:7}}>
-          📷 Scanner code-barres
-        </button>
-        <button onClick={()=>setReorderMode(r=>!r)} style={{display:"inline-flex",alignItems:"center",gap:7,padding:"8px 16px",
-          background:reorderMode?T.red:T.bg,color:reorderMode?"white":T.dark,border:`1px solid ${reorderMode?T.red:T.border}`,
-          borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer",marginBottom:7}}>
-          {reorderMode?"✓ Terminer":"↕ Réorganiser"}
-        </button>
-        <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
+        <div style={{display:"flex",gap:7,overflowX:"auto",alignItems:"stretch"}}>
+          <button onClick={openScanner} style={{display:"flex",alignItems:"center",gap:7,padding:"8px 16px",flexShrink:0,
+            background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer"}}>
+            📷 Scanner code-barres
+          </button>
+          <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
+        </div>
       </div>
 
       {/* Grille produits */}
@@ -539,10 +572,14 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           // passer par la fenêtre de choix de quantité.
           if(presets.length>0){
             return presets.map((preset,pi)=>(
-              <div key={p.id+"-preset-"+pi} style={{position:"relative"}}>
+              <div key={p.id+"-preset-"+pi} data-pid={p.id} onPointerDown={()=>startDrag(p.id)}
+                style={{position:"relative",touchAction:reorderMode?"none":"auto",
+                  opacity:dragId===p.id.toString()?0.35:1,
+                  outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
+                  outlineOffset:2,borderRadius:14}}>
               <button onClick={()=>{if(reorderMode)return;stk>0&&addVolumeToCart(p,preset.qty,p.unit,preset.price);}} disabled={stk<=0&&!reorderMode}
                 style={{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
-                  borderRadius:14,padding:"14px 8px",cursor:reorderMode?"default":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
+                  borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
                   textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
                 onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
                 onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
@@ -555,20 +592,22 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
                   {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
                 </div>
               </button>
-              {reorderMode&&<div style={{position:"absolute",bottom:6,left:0,right:0,display:"flex",justifyContent:"center",gap:6}}>
-                <button onClick={()=>moveProduct(p.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"rgba(0,0,0,0.7)",color:"white",fontSize:15,cursor:"pointer"}}>◀</button>
-                <button onClick={()=>moveProduct(p.id,1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"rgba(0,0,0,0.7)",color:"white",fontSize:15,cursor:"pointer"}}>▶</button>
-              </div>}
+              {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white",pointerEvents:"none"}}>⠿</div>}
               </div>
             ));
           }
-          return [(<div key={p.id} style={{position:"relative"}}>
+          return [(<div key={p.id} data-pid={p.id} onPointerDown={()=>startDrag(p.id)}
+            style={{position:"relative",touchAction:reorderMode?"none":"auto",
+              opacity:dragId===p.id.toString()?0.35:1,
+              outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
+              outlineOffset:2,borderRadius:14}}>
           <button onClick={()=>{if(!reorderMode)addToCart(p);}} disabled={stk<=0&&!reorderMode}
             style={p.photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
-                cursor:reorderMode?"default":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.45:1,
+                cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.45:1,
                 border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
               :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
-                borderRadius:14,padding:"14px 8px",cursor:reorderMode?"default":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
+                borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
                 textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
             onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
             onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
@@ -597,10 +636,8 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               </div>
             </>}
           </button>
-          {reorderMode&&<div style={{position:"absolute",bottom:6,left:0,right:0,display:"flex",justifyContent:"center",gap:6}}>
-            <button onClick={()=>moveProduct(p.id,-1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"rgba(0,0,0,0.7)",color:"white",fontSize:15,cursor:"pointer"}}>◀</button>
-            <button onClick={()=>moveProduct(p.id,1)} style={{width:30,height:30,borderRadius:"50%",border:"none",background:"rgba(0,0,0,0.7)",color:"white",fontSize:15,cursor:"pointer"}}>▶</button>
-          </div>}
+          {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white",pointerEvents:"none"}}>⠿</div>}
           </div>)];
         })}
       </div>
