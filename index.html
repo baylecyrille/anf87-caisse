@@ -96,6 +96,42 @@ async function closeContainerApi(caisseUrl,siteId,prod,setContainers){
   }
   return r;
 }
+// Redimensionne/compresse une photo côté navigateur avant stockage (400px max, JPEG
+// 70%) — réutilisé pour les photos produit ET les photos de portion.
+function resizePhotoFile(file){
+  return new Promise(resolve=>{
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const img=new Image();
+      img.onload=()=>{
+        const maxDim=400;
+        const scale=Math.min(1,maxDim/Math.max(img.width,img.height));
+        const w=Math.round(img.width*scale),h=Math.round(img.height*scale);
+        const canvas=document.createElement("canvas");canvas.width=w;canvas.height=h;
+        canvas.getContext("2d").drawImage(img,0,0,w,h);
+        resolve(canvas.toDataURL("image/jpeg",0.7));
+      };
+      img.onerror=()=>resolve(ev.target.result);
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+// Envoie une photo en plusieurs petits morceaux (GET, le POST ne fonctionne pas de
+// façon fiable sur ce déploiement) — "chunkAction" paramétrable pour réutiliser ce
+// mécanisme aussi bien pour les photos produit que pour les photos de portion.
+async function uploadPhotoGeneric(caisseUrl,chunkAction,id,photoDataUrl){
+  if(!photoDataUrl||!caisseUrl)return{ok:true,photoParam:photoDataUrl||""};
+  if(photoDataUrl.length<1200)return{ok:true,photoParam:photoDataUrl};
+  const CHUNK=1200;
+  const chunks=[];
+  for(let i=0;i<photoDataUrl.length;i+=CHUNK)chunks.push(photoDataUrl.slice(i,i+CHUNK));
+  for(let i=0;i<chunks.length;i++){
+    const r=await api(caisseUrl,{action:chunkAction,id,idx:i,total:chunks.length,chunk:chunks[i]});
+    if(!r.ok)return{ok:false,error:r.error||"échec de l'envoi de la photo (morceau "+(i+1)+"/"+chunks.length+")"};
+  }
+  return{ok:true,photoParam:"__CHUNKED__",photoChunks:chunks.length};
+}
 async function api(url,params){
   if(!url)return{ok:false,error:"URL non configurée"};
   // GET uniquement : sur ce déploiement, le POST vers l'URL Apps Script renvoie une
@@ -149,6 +185,7 @@ function App(){
   const [categories,setCats]=useState(LS.get("anf87_cats")||DCATS);
   const [users,setUsers]=useState(LS.get("anf87_users")||DUSERS);
   const [containers,setContainers]=useState(LS.get("anf87_containers")||[]); // fûts/bouteilles/cubis ouverts
+  const [portions,setPortions]=useState(LS.get("anf87_portions")||[]); // paliers de vente (demis, pichets, gobelets...)
   const [siteId,setSiteId]=useState(LS.get("anf87_site")||"s1");
   const [tab,setTab]=useState("pos");
   const [cart,setCart]=useState([]);
@@ -186,6 +223,7 @@ function App(){
       // Contenants : synchronisé même si vide (un contenant qu'on vient de "Terminer"
       // ailleurs doit bien disparaître ici, pas juste rester affiché en cas de sync vide).
       setContainers(r.containers||[]);LS.set("anf87_containers",r.containers||[]);
+      setPortions(r.portions||[]);LS.set("anf87_portions",r.portions||[]);
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);LS.set("anf87_lastsync",t);
       setSyncError(null);
@@ -295,14 +333,15 @@ function App(){
       <div style={{flex:1,overflow:"hidden"}}>
         {tab==="pos"&&<PosScreen products={products} cart={cart} siteId={siteId} categories={categories}
           addToCart={addToCart} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
-          addVolumeToCart={addVolumeToCart}
+          addVolumeToCart={addVolumeToCart} portions={portions}
           cartTotal={cartTotal} cartCount={cartCount}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>}
         {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
-          onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl}/>}
+          onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl}
+          portions={portions} setPortions={setPortions}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})}/>}
       </div>
@@ -329,7 +368,7 @@ function App(){
       {modal==="split"&&<SplitModal total={cartTotal} onClose={()=>setModal("payment")} onComplete={(payments)=>{finalizeSale({type:"split",parts:payments});}}/>}
       {modal==="cart"&&<CartModal cart={cart} cartTotal={cartTotal} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
         onClose={()=>setModal(null)} onEncaisser={()=>{setModal("payment");}}/>}
-      {volumeProd&&<VolumeModal prod={volumeProd} onClose={()=>setVolumeProd(null)} onAdd={addVolumeToCart}/>}
+      {volumeProd&&<VolumeModal prod={volumeProd} onClose={()=>setVolumeProd(null)} onAdd={addVolumeToCart} portions={portions}/>}
     </div>
   );
 }
@@ -478,7 +517,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
@@ -566,19 +605,22 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         {filtered.flatMap(p=>{
           const stk=p.stock[siteId]||0;
           const isDrink=p.drink;
-          const presets=p.sellByVolume?parsePresets(p.presets):[];
-          // Produit vendu au volume avec des paliers configurés (ex: Demi/Pichet 1L/
-          // Pichet 1,5L) : un bouton par palier, ajouté directement au panier sans
-          // passer par la fenêtre de choix de quantité.
-          if(presets.length>0){
-            return presets.map((preset,pi)=>(
-              <div key={p.id+"-preset-"+pi} data-pid={p.id} onPointerDown={()=>startDrag(p.id)}
+          const myPortions=p.sellByVolume?portions.filter(po=>po.productId.toString()===p.id.toString()):[];
+          // Produit vendu au volume avec des portions configurées (ex: Demi/Pichet 1L/
+          // Pichet 1,5L) : un bouton par portion, ajouté directement au panier sans
+          // passer par la fenêtre de choix de quantité. Chaque portion a sa propre
+          // photo (repli sur la photo du produit si non définie).
+          if(myPortions.length>0){
+            return myPortions.map((portion,pi)=>{
+              const photo=portion.photo||p.photo;
+              return(
+              <div key={p.id+"-portion-"+portion.id} data-pid={p.id} onPointerDown={()=>startDrag(p.id)}
                 style={{position:"relative",touchAction:reorderMode?"none":"auto",
                   opacity:dragId===p.id.toString()?0.35:1,
                   outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
                   outlineOffset:2,borderRadius:14}}>
-              <button onClick={()=>{if(reorderMode)return;stk>0&&addVolumeToCart(p,preset.qty,p.unit,preset.price);}} disabled={stk<=0&&!reorderMode}
-                style={p.photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
+              <button onClick={()=>{if(reorderMode)return;stk>0&&addVolumeToCart(p,portion.size,p.unit,portion.price);}} disabled={stk<=0&&!reorderMode}
+                style={photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
                     cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.45:1,
                     border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
                   :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
@@ -586,23 +628,23 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
                     textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
                 onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
                 onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
-                {p.photo?<>
-                  <img src={p.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
+                {photo?<>
+                  <img src={photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
                   <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0) 38%,rgba(0,0,0,0.8) 100%)"}}/>
                   {isDrink&&stk>0&&<div style={{position:"absolute",top:6,left:6,background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
                   <div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>
                     {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
                   </div>
                   <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
-                    <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name} — {preset.qty}{p.unit}</div>
-                    <div style={{fontSize:14,fontWeight:900,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)"}}>{fmt(preset.price)}</div>
+                    <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{portion.name} — {portion.size}{p.unit}</div>
+                    <div style={{fontSize:14,fontWeight:900,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)"}}>{fmt(portion.price)}</div>
                   </div>
                 </>:<>
                   <div style={{fontSize:30,marginBottom:6}}>{p.emoji}</div>
                   {isDrink&&stk>0&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
-                  <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:1,lineHeight:1.2}}>{p.name}</div>
-                  <div style={{fontSize:11,color:T.mid,marginBottom:3}}>{preset.qty}{p.unit}</div>
-                  <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(preset.price)}</div>
+                  <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:1,lineHeight:1.2}}>{portion.name}</div>
+                  <div style={{fontSize:11,color:T.mid,marginBottom:3}}>{portion.size}{p.unit}</div>
+                  <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(portion.price)}</div>
                   <div style={{fontSize:10,fontWeight:600,color:stockC(stk),marginTop:3}}>
                     {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
                   </div>
@@ -611,7 +653,8 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
                 display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white",pointerEvents:"none"}}>⠿</div>}
               </div>
-            ));
+              );
+            });
           }
           return [(<div key={p.id} data-pid={p.id} onPointerDown={()=>startDrag(p.id)}
             style={{position:"relative",touchAction:reorderMode?"none":"auto",
@@ -772,10 +815,11 @@ function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose
 }
 
 // ═══ VOLUME MODAL ═══
-function VolumeModal({prod,onClose,onAdd}){
-  // Paliers configurés par l'admin (25:2.5,100:9,150:13...) avec un prix FIXE chacun,
-  // pas forcément proportionnel (un pichet coûte souvent moins cher que 4x le prix du verre).
-  const configured=parsePresets(prod.presets);
+function VolumeModal({prod,onClose,onAdd,portions}){
+  // Portions configurées (table dédiée, avec prix FIXE chacune, pas forcément
+  // proportionnel — un pichet coûte souvent moins cher que 4x le prix du verre).
+  const configured=(portions||[]).filter(po=>po.productId.toString()===prod.id.toString())
+    .map(po=>({qty:po.size,price:po.price}));
   const presets=configured.length?configured:[1,2,3].map(m=>({qty:prod.baseQty*m,price:+(prod.price*m).toFixed(2)}));
   const [selectedIdx,setSelectedIdx]=useState(0);
   const [customQty,setCustomQty]=useState(null); // non-null dès qu'on ajuste manuellement (+/-)
@@ -1756,7 +1800,7 @@ function ReportsScreen({sites,caisseUrl}){
 }
 
 // ═══ ADMIN ═══
-function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl}){
+function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,portions,setPortions}){
   const [tab,setTab]=useState("products");
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{display:"flex",background:T.card,borderBottom:`1px solid ${T.border}`,overflowX:"auto",flexShrink:0}}>
@@ -1768,7 +1812,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
       ))}
     </div>
     <div style={{flex:1,overflow:"hidden"}}>
-      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl}/>}
+      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions}/>}
       {tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
       {tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl}/>}
       {tab==="users"&&<UsersAdmin users={users} onSave={onSaveUsers} caisseUrl={caisseUrl}/>}
@@ -1776,7 +1820,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
   </div>);
 }
 
-function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
+function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePortions}){
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const videoRef=useRef(null);const readerRef=useRef(null);
   const [scanningBarcode,setScanningBarcode]=useState(false);
@@ -1857,13 +1901,11 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
           <input style={inp} placeholder="Unité (cl, g...)" value={data.unit||""} onChange={e=>setData({...data,unit:e.target.value})}/>
           <input style={{...inp}} type="number" placeholder="Qté de base (ex: 25 pour 25cl)" value={data.baseQty||""} onChange={e=>setData({...data,baseQty:+e.target.value})}/>
         </div>
-        <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>
-          Portions proposées à la caisse (qté:prix séparés par virgule)
-        </label>
-        <input style={inp} placeholder="Ex: 25:2.5,100:9,150:13" value={data.presets||""} onChange={e=>setData({...data,presets:e.target.value})}/>
-        <div style={{fontSize:11,color:T.mid,marginTop:-3,marginBottom:7}}>
-          Ex pour un fût de bière : 25:2.5,50:5,100:9 (verre 25cl à 2,50€, pichet 100cl à 9€…). Laissez vide pour un calcul proportionnel automatique.
-        </div>
+        {data.id?
+          <button type="button" onClick={()=>onManagePortions&&onManagePortions(data)} style={{width:"100%",padding:"10px",background:T.blue,color:"white",border:"none",borderRadius:9,cursor:"pointer",fontWeight:700,fontSize:13,marginBottom:9}}>
+            🍺 Gérer les portions de vente (demis, pichets, photos…)
+          </button>
+          :<div style={{fontSize:11,color:T.mid,marginBottom:9,fontStyle:"italic"}}>Enregistrez d'abord le produit, puis modifiez-le pour ajouter ses portions de vente (avec photo).</div>}
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>
           Tailles de contenant (Nom:taille en cl, séparés par virgule)
         </label>
@@ -1887,48 +1929,16 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto}){
   );
 }
 
-function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
+function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions}){
   const [edit,setEdit]=useState(null);
   const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
+  const [portionsFor,setPortionsFor]=useState(null); // produit dont on gère les portions
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
-  // Redimensionne/compresse la photo côté navigateur avant de la stocker : une photo
-  // de téléphone peut peser plusieurs Mo, alors qu'une vignette 400px en JPEG suffit
-  // largement pour l'écran caisse — ça réduit fortement le nombre de morceaux à envoyer.
   const handlePhoto=(e,setter)=>{const f=e.target.files[0];if(!f)return;
-    const reader=new FileReader();
-    reader.onload=ev=>{
-      const img=new Image();
-      img.onload=()=>{
-        const maxDim=400;
-        const scale=Math.min(1,maxDim/Math.max(img.width,img.height));
-        const w=Math.round(img.width*scale),h=Math.round(img.height*scale);
-        const canvas=document.createElement("canvas");canvas.width=w;canvas.height=h;
-        canvas.getContext("2d").drawImage(img,0,0,w,h);
-        setter(prev=>({...prev,photo:canvas.toDataURL("image/jpeg",0.7)}));
-      };
-      img.onerror=()=>setter(prev=>({...prev,photo:ev.target.result})); // repli : photo brute si le redimensionnement échoue
-      img.src=ev.target.result;
-    };
-    reader.readAsDataURL(f);
+    resizePhotoFile(f).then(url=>setter(prev=>({...prev,photo:url})));
   };
-
-  // Envoie une photo (base64) en plusieurs petits morceaux par GET, car le POST ne
-  // fonctionne pas de façon fiable sur ce déploiement (confirmé : renvoie une page
-  // de connexion Google au lieu du JSON), et un GET avec toute la photo dépasse la
-  // longueur d'URL maximale acceptée.
-  const uploadPhotoIfNeeded=async(id,photoDataUrl)=>{
-    if(!photoDataUrl||!caisseUrl)return{ok:true,photoParam:photoDataUrl||""};
-    if(photoDataUrl.length<1200)return{ok:true,photoParam:photoDataUrl}; // assez court pour tenir dans un seul GET
-    const CHUNK=1200;
-    const chunks=[];
-    for(let i=0;i<photoDataUrl.length;i+=CHUNK)chunks.push(photoDataUrl.slice(i,i+CHUNK));
-    for(let i=0;i<chunks.length;i++){
-      const r=await api(caisseUrl,{action:"uploadPhotoChunk",id,idx:i,total:chunks.length,chunk:chunks[i]});
-      if(!r.ok)return{ok:false,error:r.error||"échec de l'envoi de la photo (morceau "+(i+1)+"/"+chunks.length+")"};
-    }
-    return{ok:true,photoParam:"__CHUNKED__",photoChunks:chunks.length};
-  };
+  const uploadPhotoIfNeeded=(id,photoDataUrl)=>uploadPhotoGeneric(caisseUrl,"uploadPhotoChunk",id,photoDataUrl);
 
   const addProd=async()=>{if(!newP.name||!newP.price)return;
     const id=uid();const stock=Object.fromEntries(sites.map(s=>[s.id,0]));
@@ -1990,13 +2000,92 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl}){
     {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>✏️ Modifier {edit.name}</div>
-        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} handlePhoto={handlePhoto}/>
+        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)}/>
         <button onClick={()=>setEdit(null)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:6}}>Annuler</button>
       </div>
     </div>}
+    {portionsFor&&<PortionsManager product={portionsFor} portions={portions} setPortions={setPortions} caisseUrl={caisseUrl} onClose={()=>setPortionsFor(null)}/>}
   </div>);
 }
 
+// ═══ GESTION DES PORTIONS DE VENTE (demis, pichets, tailles de gobelet...) ═══
+function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
+  const myPortions=portions.filter(po=>po.productId.toString()===product.id.toString());
+  const [form,setForm]=useState({name:"",size:"",price:"",photo:""});
+  const [editingId,setEditingId]=useState(null);
+  const [busy,setBusy]=useState(false);
+
+  const handlePortionPhoto=e=>{const f=e.target.files[0];if(!f)return;
+    resizePhotoFile(f).then(url=>setForm(prev=>({...prev,photo:url})));
+  };
+
+  const startEdit=po=>{setEditingId(po.id);setForm({name:po.name,size:po.size,price:po.price,photo:po.photo||""});};
+  const resetForm=()=>{setEditingId(null);setForm({name:"",size:"",price:"",photo:""});};
+
+  const save=async()=>{
+    if(!form.name||!form.size||!form.price)return;
+    setBusy(true);
+    const id=editingId||uid();
+    const up=await uploadPhotoGeneric(caisseUrl,"uploadPortionPhotoChunk",id,form.photo);
+    if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
+    const extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
+    const r=await apiWrite(caisseUrl,{action:"savePortion",id,productId:product.id,name:form.name,size:+form.size,price:+form.price,photo:up.photoParam,...extra});
+    if(r.ok){
+      const newEntry={id,productId:product.id,name:form.name,size:+form.size,price:+form.price,photo:up.photoParam==="__CHUNKED__"?form.photo:up.photoParam};
+      setPortions(prev=>[...prev.filter(po=>po.id!==id),newEntry]);
+      resetForm();
+    }
+    setBusy(false);
+  };
+
+  const del=async id=>{
+    if(!window.confirm("Supprimer cette portion ?"))return;
+    setPortions(prev=>prev.filter(po=>po.id!==id));
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"deletePortion",id});
+  };
+
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
+    <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:420,maxHeight:"90vh",overflowY:"auto"}}>
+      <div style={{fontWeight:800,fontSize:17,marginBottom:4}}>🍺 Portions — {product.name}</div>
+      <div style={{fontSize:12,color:T.mid,marginBottom:14}}>Ex : Demi 25cl, Pichet 1L, Pichet 1,5L — chacune avec sa propre photo.</div>
+
+      {myPortions.map(po=>(
+        <div key={po.id} style={{display:"flex",alignItems:"center",gap:10,background:T.bg,borderRadius:10,padding:"9px 12px",marginBottom:7}}>
+          {po.photo?<img src={po.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:22,flexShrink:0}}>{product.emoji}</span>}
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:700,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{po.name}</div>
+            <div style={{fontSize:11,color:T.mid}}>{po.size}{product.unit||"cl"} • {fmt(po.price)}</div>
+          </div>
+          <button onClick={()=>startEdit(po)} style={{padding:"6px 9px",background:"white",border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:12}}>✏️</button>
+          <button onClick={()=>del(po.id)} style={{padding:"6px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+        </div>
+      ))}
+
+      <div style={{background:T.bg,borderRadius:12,padding:14,marginTop:10}}>
+        <div style={{fontWeight:700,fontSize:13,color:T.dark,marginBottom:8}}>{editingId?"✏️ Modifier la portion":"+ Nouvelle portion"}</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:7}}>
+          <input placeholder="Nom (ex: Demi)" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}
+            style={{padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13}}/>
+          <input placeholder={`Taille (${product.unit||"cl"})`} type="number" value={form.size} onChange={e=>setForm({...form,size:e.target.value})}
+            style={{padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13}}/>
+        </div>
+        <input placeholder="Prix" type="number" step="0.50" value={form.price} onChange={e=>setForm({...form,price:e.target.value})}
+          style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:7}}/>
+        <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Photo de cette portion</label>
+        {form.photo&&<img src={form.photo} style={{width:50,height:50,borderRadius:8,objectFit:"cover",marginBottom:6,display:"block"}}/>}
+        <input type="file" accept="image/*" onChange={handlePortionPhoto} style={{fontSize:12,color:T.mid,marginBottom:9}}/>
+        <div style={{display:"flex",gap:8}}>
+          {editingId&&<button onClick={resetForm} style={{flex:1,padding:"10px",background:"white",border:`1px solid ${T.border}`,borderRadius:9,cursor:"pointer",fontWeight:600}}>Annuler</button>}
+          <button onClick={save} disabled={busy} style={{flex:2,padding:"10px",background:T.blue,color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:700}}>
+            {busy?"⏳ Envoi...":editingId?"💾 Enregistrer":"+ Ajouter"}
+          </button>
+        </div>
+      </div>
+
+      <button onClick={onClose} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:14}}>Fermer</button>
+    </div>
+  </div>);
+}
 function CatsAdmin({categories,onSave,caisseUrl}){
   const [newName,setNewName]=useState("");
   const [editId,setEditId]=useState(null);const [editName,setEditName]=useState("");

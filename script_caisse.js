@@ -7,7 +7,7 @@
 // les conflits quand 2-3 utilisateurs utilisent la caisse en même temps.
 var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","saveCategory",
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
-  "openContainer","closeContainer"];
+  "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -44,6 +44,9 @@ function doGet(e) {
       case "uploadPhotoChunk":result = uploadPhotoChunk(e); break;
       case "openContainer":   result = openContainer(e); break;
       case "closeContainer":  result = closeContainer(e); break;
+      case "savePortion":     result = savePortion(e); break;
+      case "deletePortion":   result = deletePortion(e); break;
+      case "uploadPortionPhotoChunk": result = uploadPortionPhotoChunk(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -121,6 +124,14 @@ function initSheets() {
     cont.getRange(1,1,1,6).setFontWeight("bold");
     cont.setFrozenRows(1);
   }
+  // Portions de vente (paliers) : demis/pichets/tailles de gobelet... avec leur
+  // propre photo, liées à un produit "liquide" (celui vendu au volume).
+  var port = getOrCreate(ss,"Portions");
+  if(port.getLastRow()<=1){
+    port.getRange(1,1,1,6).setValues([["ID","ProduitID","Nom","TailleCl","Prix","Photo"]]);
+    port.getRange(1,1,1,6).setFontWeight("bold");
+    port.setFrozenRows(1);
+  }
   return {ok:true, message:"Feuilles initialisées avec succès !"};
 }
 
@@ -135,7 +146,60 @@ function getOrCreate(ss,name){
 function getAllData(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
-    categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss), ts:Date.now()};
+    categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss),
+    portions:getPortionsData(ss), ts:Date.now()};
+}
+
+function getPortionsData(ss){
+  var sh=ss.getSheetByName("Portions"); if(!sh||sh.getLastRow()<=1)return [];
+  return sh.getRange(2,1,sh.getLastRow()-1,6).getValues().filter(r=>r[0]&&r[1])
+    .map(r=>({id:r[0],productId:r[1],name:r[2],size:+r[3]||0,price:+r[4]||0,photo:r[5]||""}));
+}
+
+// Crée ou met à jour une portion de vente (demi, pichet, taille de gobelet...).
+function savePortion(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Portions"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,6).setValues([["ID","ProduitID","Nom","TailleCl","Prix","Photo"]]);
+    sh.getRange(1,1,1,6).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var photo=p.photo||"";
+  if(photo==="__CHUNKED__"){
+    var total=+p.photoChunks||0;
+    var cache=CacheService.getScriptCache(), parts=[];
+    for(var c=0;c<total;c++){
+      var part=cache.get("portionphoto_"+p.id+"_"+c);
+      if(part===null)return{ok:false,error:"Photo incomplète (morceau "+(c+1)+"/"+total+" manquant ou expiré), réessayez."};
+      parts.push(part);
+    }
+    photo=parts.join("");
+    for(var c2=0;c2<total;c2++)cache.remove("portionphoto_"+p.id+"_"+c2);
+  }
+  var row=[p.id,p.productId,p.name||"",+p.size||0,+p.price||0,photo];
+  if(sh.getLastRow()>1){
+    var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      sh.getRange(i+2,1,1,6).setValues([row]);
+      return{ok:true,action:"updated"};
+    }}
+  }
+  sh.appendRow(row);
+  return{ok:true,action:"created"};
+}
+function deletePortion(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Portions"), id=e.parameter.id;
+  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Non trouvé"};
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}
+  return{ok:false,error:"Non trouvé"};
+}
+// Même mécanisme que uploadPhotoChunk (voir plus bas), sous une clé de cache dédiée
+// pour ne jamais entrer en collision avec les morceaux de photo produit.
+function uploadPortionPhotoChunk(e){
+  var p=e.parameter;
+  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
+  CacheService.getScriptCache().put("portionphoto_"+p.id+"_"+p.idx, p.chunk, 600);
+  return{ok:true};
 }
 
 // Les 4 colonnes de stock (L à O) correspondent aux 4 premiers sites de l'onglet
