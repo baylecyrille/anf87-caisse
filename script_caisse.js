@@ -7,7 +7,8 @@
 // les conflits quand 2-3 utilisateurs utilisent la caisse en même temps.
 var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","saveCategory",
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
-  "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk"];
+  "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
+  "saveCombo","deleteCombo","uploadComboPhotoChunk"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -47,6 +48,9 @@ function doGet(e) {
       case "savePortion":     result = savePortion(e); break;
       case "deletePortion":   result = deletePortion(e); break;
       case "uploadPortionPhotoChunk": result = uploadPortionPhotoChunk(e); break;
+      case "saveCombo":       result = saveCombo(e); break;
+      case "deleteCombo":     result = deleteCombo(e); break;
+      case "uploadComboPhotoChunk": result = uploadComboPhotoChunk(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -132,6 +136,14 @@ function initSheets() {
     port.getRange(1,1,1,6).setFontWeight("bold");
     port.setFrozenRows(1);
   }
+  // Combos/Menus : regroupent plusieurs produits DIFFÉRENTS en une seule vente
+  // (ex: Croque + Frites + Boisson). Contenu = liste "produitId:qté,produitId:qté".
+  var combo = getOrCreate(ss,"Combos");
+  if(combo.getLastRow()<=1){
+    combo.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
+    combo.getRange(1,1,1,5).setFontWeight("bold");
+    combo.setFrozenRows(1);
+  }
   return {ok:true, message:"Feuilles initialisées avec succès !"};
 }
 
@@ -147,7 +159,7 @@ function getAllData(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
     categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss),
-    portions:getPortionsData(ss), ts:Date.now()};
+    portions:getPortionsData(ss), combos:getCombosData(ss), ts:Date.now()};
 }
 
 function getPortionsData(ss){
@@ -199,6 +211,61 @@ function uploadPortionPhotoChunk(e){
   var p=e.parameter;
   if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
   CacheService.getScriptCache().put("portionphoto_"+p.id+"_"+p.idx, p.chunk, 600);
+  return{ok:true};
+}
+
+function getCombosData(ss){
+  var sh=ss.getSheetByName("Combos"); if(!sh||sh.getLastRow()<=1)return [];
+  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0]).map(r=>{
+    var items=(r[3]||"").toString().split(",").map(function(pair){
+      var parts=pair.split(":");
+      return{productId:(parts[0]||"").trim(),qty:+parts[1]||1};
+    }).filter(function(it){return it.productId;});
+    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||""};
+  });
+}
+
+// Crée ou met à jour un combo/menu (plusieurs produits différents en une vente).
+function saveCombo(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Combos"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
+    sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var photo=p.photo||"";
+  if(photo==="__CHUNKED__"){
+    var total=+p.photoChunks||0;
+    var cache=CacheService.getScriptCache(), parts=[];
+    for(var c=0;c<total;c++){
+      var part=cache.get("combophoto_"+p.id+"_"+c);
+      if(part===null)return{ok:false,error:"Photo incomplète (morceau "+(c+1)+"/"+total+" manquant ou expiré), réessayez."};
+      parts.push(part);
+    }
+    photo=parts.join("");
+    for(var c2=0;c2<total;c2++)cache.remove("combophoto_"+p.id+"_"+c2);
+  }
+  var row=[p.id,p.name||"",+p.price||0,p.items||"",photo];
+  if(sh.getLastRow()>1){
+    var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      sh.getRange(i+2,1,1,5).setValues([row]);
+      return{ok:true,action:"updated"};
+    }}
+  }
+  sh.appendRow(row);
+  return{ok:true,action:"created"};
+}
+function deleteCombo(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Combos"), id=e.parameter.id;
+  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Non trouvé"};
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}
+  return{ok:false,error:"Non trouvé"};
+}
+function uploadComboPhotoChunk(e){
+  var p=e.parameter;
+  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
+  CacheService.getScriptCache().put("combophoto_"+p.id+"_"+p.idx, p.chunk, 600);
   return{ok:true};
 }
 

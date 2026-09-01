@@ -186,6 +186,7 @@ function App(){
   const [users,setUsers]=useState(LS.get("anf87_users")||DUSERS);
   const [containers,setContainers]=useState(LS.get("anf87_containers")||[]); // fûts/bouteilles/cubis ouverts
   const [portions,setPortions]=useState(LS.get("anf87_portions")||[]); // paliers de vente (demis, pichets, gobelets...)
+  const [combos,setCombos]=useState(LS.get("anf87_combos")||[]); // menus (plusieurs produits différents en une vente)
   const [siteId,setSiteId]=useState(LS.get("anf87_site")||"s1");
   const [tab,setTab]=useState("pos");
   const [cart,setCart]=useState([]);
@@ -224,6 +225,7 @@ function App(){
       // ailleurs doit bien disparaître ici, pas juste rester affiché en cas de sync vide).
       setContainers(r.containers||[]);LS.set("anf87_containers",r.containers||[]);
       setPortions(r.portions||[]);LS.set("anf87_portions",r.portions||[]);
+      setCombos(r.combos||[]);LS.set("anf87_combos",r.combos||[]);
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);LS.set("anf87_lastsync",t);
       setSyncError(null);
@@ -258,6 +260,27 @@ function App(){
     setCart(prev=>[...prev,{id:prod.id+"-"+Date.now(),pid:prod.id,name:prod.name+" "+qty+unit,price,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,qty:1,vol:qty,free:false,unit:unit}]);
     setVolumeProd(null);
   };
+  // Un combo regroupe plusieurs PRODUITS DIFFÉRENTS en une seule ligne de panier
+  // (ex: Croque + Frites). comboItems garde la liste des produits inclus (avec leur
+  // quantité chacun) pour que le stock de CHAQUE produit soit décompté à la vente,
+  // même si le combo lui-même n'existe pas dans le tableau Produits.
+  const addComboToCart=combo=>{
+    const items=combo.items.map(ci=>{
+      const prod=products.find(p=>p.id.toString()===ci.productId.toString());
+      return{pid:ci.productId,qty:ci.qty,prod};
+    });
+    const missing=items.find(it=>!it.prod);
+    if(missing){window.alert("⚠️ Ce menu contient un produit qui n'existe plus, il ne peut pas être ajouté.");return;}
+    const insuffisant=items.find(it=>(it.prod.stock[siteId]||0)<it.qty);
+    if(insuffisant){window.alert("⚠️ Stock insuffisant pour ce menu (\""+insuffisant.prod.name+"\").");return;}
+    setCart(prev=>{
+      const ex=prev.find(i=>i.pid===combo.id&&i.isCombo);
+      if(ex)return prev.map(i=>i===ex?{...i,qty:i.qty+1}:i);
+      return[...prev,{id:combo.id+"-"+Date.now(),pid:combo.id,isCombo:true,
+        comboItems:items.map(it=>({pid:it.pid,qty:it.qty})),
+        name:combo.name,price:combo.price,emoji:"🍽",photo:combo.photo,drink:false,qty:1,free:false,unit:"menu"}];
+    });
+  };
   const removeFromCart=id=>setCart(prev=>{const ex=prev.find(i=>i.id===id);
     if(!ex||ex.qty<=1)return prev.filter(i=>i.id!==id);
     return prev.map(i=>i.id===id?{...i,qty:i.qty-1}:i);});
@@ -275,12 +298,22 @@ function App(){
     // Pour un article vendu au volume (fût, cubi, paquet café...), on décompte qty*vol
     // (ex: 2 verres de 30cl = 60cl décomptés), pas juste qty (qui vaudrait 2).
     const stockAmount=item=>item.vol?item.qty*item.vol:item.qty;
-    // On utilise pid (l'ID réel du produit) et on ADDITIONNE toutes les lignes du panier
-    // qui appartiennent au même produit — un produit peut apparaître sur plusieurs
-    // lignes (plusieurs services au verre, ou une ligne scindée entre part offerte et
-    // part payante par la carte boissons).
+    // Pour un combo (plusieurs produits DIFFÉRENTS en une ligne), on décompte le
+    // stock de CHAQUE produit inclus, pas le combo lui-même (qui n'existe pas dans
+    // le tableau Produits) — comboItems.qty × le nombre de combos commandés.
+    const stockEntries=[];
+    cart.forEach(item=>{
+      if(item.comboItems){
+        item.comboItems.forEach(ci=>stockEntries.push({id:ci.pid,qty:ci.qty*item.qty}));
+      }else{
+        stockEntries.push({id:item.pid||item.id,qty:stockAmount(item)});
+      }
+    });
+    // On ADDITIONNE toutes les entrées d'un même produit — il peut apparaître sur
+    // plusieurs lignes (plusieurs services au verre, une ligne scindée par la carte
+    // boissons, ou inclus dans plusieurs combos différents à la fois).
     const upd=products.map(p=>{
-      const qtyTotal=cart.filter(i=>(i.pid||i.id)===p.id).reduce((s,i)=>s+stockAmount(i),0);
+      const qtyTotal=stockEntries.filter(e=>e.id.toString()===p.id.toString()).reduce((s,e)=>s+e.qty,0);
       if(qtyTotal<=0)return p;
       return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-qtyTotal)}};
     });
@@ -289,7 +322,7 @@ function App(){
       const member=cart.some(i=>i.free)?(LS.get("anf87_last_member")||""):"";
       const saleResult=await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
         total:total.toFixed(2),payment:JSON.stringify(payment),
-        items:JSON.stringify(cart.map(i=>({id:i.pid||i.id,qty:stockAmount(i)}))),
+        items:JSON.stringify(stockEntries),
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
       if(saleResult?.stockWarning){
         window.alert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
@@ -333,7 +366,7 @@ function App(){
       <div style={{flex:1,overflow:"hidden"}}>
         {tab==="pos"&&<PosScreen products={products} cart={cart} siteId={siteId} categories={categories}
           addToCart={addToCart} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
-          addVolumeToCart={addVolumeToCart} portions={portions}
+          addVolumeToCart={addVolumeToCart} portions={portions} combos={combos} addComboToCart={addComboToCart}
           cartTotal={cartTotal} cartCount={cartCount}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>}
@@ -341,7 +374,7 @@ function App(){
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl}
-          portions={portions} setPortions={setPortions}/>}
+          portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})}/>}
       </div>
@@ -517,12 +550,12 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
     window.addEventListener("resize",h);window.addEventListener("orientationchange",()=>setTimeout(h,100));return()=>{window.removeEventListener("resize",h);window.removeEventListener("orientationchange",h);};},[]);
-  const cats=["Tout",...categories.map(c=>c.name)];
+  const cats=["Tout",...categories.map(c=>c.name),...(combos&&combos.length?["Menus"]:[])];
   const [reorderMode,setReorderMode]=useState(false);
   const [customOrder,setCustomOrder]=useState(LS.get("anf87_product_order")||[]);
   const filteredRaw=products.filter(p=>cat==="Tout"||p.cat===cat);
@@ -698,6 +731,38 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
             display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white",pointerEvents:"none"}}>⠿</div>}
           </div>)];
+        })}
+        {/* Menus/combos : plusieurs produits différents en une seule vente */}
+        {(cat==="Tout"||cat==="Menus")&&combos&&combos.map(combo=>{
+          const stockOk=combo.items.every(it=>{
+            const prod=products.find(p=>p.id.toString()===it.productId.toString());
+            return prod&&(prod.stock[siteId]||0)>=it.qty;
+          });
+          return(<button key={"combo-"+combo.id} onClick={()=>stockOk&&addComboToCart(combo)} disabled={!stockOk}
+            style={combo.photo?{position:"relative",height:132,borderRadius:14,overflow:"hidden",padding:0,
+                cursor:stockOk?"pointer":"not-allowed",opacity:stockOk?1:.45,
+                border:`2px solid #5856D6`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
+              :{background:"#EEF0FF",border:"2px solid #5856D6",borderRadius:14,padding:"14px 8px",
+                cursor:stockOk?"pointer":"not-allowed",opacity:stockOk?1:.45,textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
+            onMouseDown={e=>stockOk&&(e.currentTarget.style.transform="scale(0.94)")}
+            onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
+            {combo.photo?<>
+              <img src={combo.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
+              <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0) 38%,rgba(0,0,0,0.8) 100%)"}}/>
+              <div style={{position:"absolute",top:6,left:6,background:"#5856D6",color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍽 Menu</div>
+              {!stockOk&&<div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>RUPTURE</div>}
+              <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
+                <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{combo.name}</div>
+                <div style={{fontSize:14,fontWeight:900,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)"}}>{fmt(combo.price)}</div>
+              </div>
+            </>:<>
+              <div style={{fontSize:36,marginBottom:6}}>🍽</div>
+              <div style={{fontSize:10,color:"#5856D6",fontWeight:700,marginBottom:2}}>Menu</div>
+              <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:3,lineHeight:1.2}}>{combo.name}</div>
+              <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(combo.price)}</div>
+              <div style={{fontSize:10,fontWeight:600,color:stockOk?T.green:"#FF3B30",marginTop:3}}>{stockOk?"✓ dispo":"RUPTURE"}</div>
+            </>}
+          </button>);
         })}
       </div>
 
@@ -1542,6 +1607,109 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
   </div>);
 }
 
+// ═══ GESTION DES COMBOS/MENUS (plusieurs produits différents en une vente) ═══
+function CombosAdmin({products,combos,setCombos,caisseUrl}){
+  const [edit,setEdit]=useState(null); // combo en cours d'édition, ou {} pour nouveau
+  const [busy,setBusy]=useState(false);
+
+  const startNew=()=>setEdit({id:null,name:"",price:"",items:[],photo:""});
+  const startEdit=c=>setEdit({id:c.id,name:c.name,price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});
+
+  const addItem=()=>{
+    if(!products.length)return;
+    setEdit(prev=>({...prev,items:[...prev.items,{productId:products[0].id,qty:1}]}));
+  };
+  const updateItem=(idx,field,val)=>setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i===idx?{...it,[field]:val}:it)}));
+  const removeItem=idx=>setEdit(prev=>({...prev,items:prev.items.filter((_,i)=>i!==idx)}));
+
+  const handlePhoto=e=>{const f=e.target.files[0];if(!f)return;
+    resizePhotoFile(f).then(url=>setEdit(prev=>({...prev,photo:url})));
+  };
+
+  const save=async()=>{
+    if(!edit.name||!edit.price||edit.items.length===0)return;
+    setBusy(true);
+    const id=edit.id||uid();
+    const up=await uploadPhotoGeneric(caisseUrl,"uploadComboPhotoChunk",id,edit.photo);
+    if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
+    const extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
+    const itemsStr=edit.items.map(it=>it.productId+":"+it.qty).join(",");
+    const r=await apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsStr,photo:up.photoParam,...extra});
+    if(r.ok){
+      const newEntry={id,name:edit.name,price:+edit.price,items:edit.items.map(it=>({productId:it.productId,qty:+it.qty})),
+        photo:up.photoParam==="__CHUNKED__"?edit.photo:up.photoParam};
+      setCombos(prev=>[...prev.filter(c=>c.id!==id),newEntry]);
+      setEdit(null);
+    }
+    setBusy(false);
+  };
+
+  const del=async id=>{
+    if(!window.confirm("Supprimer ce menu ?"))return;
+    setCombos(prev=>prev.filter(c=>c.id!==id));
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteCombo",id});
+  };
+
+  const prodName=pid=>products.find(p=>p.id.toString()===pid.toString())?.name||"(produit supprimé)";
+
+  return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
+    <button onClick={startNew} style={{width:"100%",padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,marginBottom:14}}>
+      + Nouveau menu
+    </button>
+    {combos.map(c=>(
+      <div key={c.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
+        {c.photo?<img src={c.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:26,flexShrink:0}}>🍽</span>}
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:13,fontWeight:600,color:T.dark}}>{c.name}</div>
+          <div style={{fontSize:11,color:T.mid,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+            {fmt(c.price)} • {c.items.map(it=>it.qty+"× "+prodName(it.productId)).join(", ")}
+          </div>
+        </div>
+        <button onClick={()=>startEdit(c)} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
+        <button onClick={()=>del(c.id)} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+      </div>
+    ))}
+
+    {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
+      <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:420,maxHeight:"90vh",overflowY:"auto"}}>
+        <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>{edit.id?"✏️ Modifier le menu":"+ Nouveau menu"}</div>
+        <input placeholder="Nom (ex: Menu Croque)" value={edit.name} onChange={e=>setEdit({...edit,name:e.target.value})}
+          style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:7}}/>
+        <input placeholder="Prix du menu" type="number" step="0.50" value={edit.price} onChange={e=>setEdit({...edit,price:e.target.value})}
+          style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:7}}/>
+
+        <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Photo du menu</label>
+        {edit.photo&&<img src={edit.photo} style={{width:50,height:50,borderRadius:8,objectFit:"cover",marginBottom:6,display:"block"}}/>}
+        <input type="file" accept="image/*" onChange={handlePhoto} style={{fontSize:12,color:T.mid,marginBottom:12}}/>
+
+        <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:6}}>Produits inclus</label>
+        {edit.items.map((it,idx)=>(
+          <div key={idx} style={{display:"flex",gap:6,marginBottom:6,alignItems:"center"}}>
+            <select value={it.productId} onChange={e=>updateItem(idx,"productId",e.target.value)}
+              style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
+              {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <input type="number" min="1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
+              style={{width:50,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center"}}/>
+            <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+          </div>
+        ))}
+        <button onClick={addItem} style={{width:"100%",padding:"9px",background:T.bg,border:`1px dashed ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600,color:T.dark,marginBottom:14}}>
+          + Ajouter un produit au menu
+        </button>
+
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setEdit(null)} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={save} disabled={busy||!edit.name||!edit.price||edit.items.length===0}
+            style={{flex:2,padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>
+            {busy?"⏳ Envoi...":"💾 Enregistrer"}
+          </button>
+        </div>
+      </div>
+    </div>}
+  </div>);
+}
+
 function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave}){
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:v<=10?"#EAB308":T.green;
   const updateQty=async(prod,site,newQty)=>{
@@ -1800,11 +1968,11 @@ function ReportsScreen({sites,caisseUrl}){
 }
 
 // ═══ ADMIN ═══
-function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,portions,setPortions}){
+function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,portions,setPortions,combos,setCombos}){
   const [tab,setTab]=useState("products");
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{display:"flex",background:T.card,borderBottom:`1px solid ${T.border}`,overflowX:"auto",flexShrink:0}}>
-      {[["products","🏷 Produits"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"]].map(([v,l])=>(
+      {[["products","🏷 Produits"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"]].map(([v,l])=>(
         <button key={v} onClick={()=>setTab(v)} style={{flexShrink:0,padding:"12px 16px",border:"none",background:"none",cursor:"pointer",
           fontSize:13,fontWeight:600,color:tab===v?T.red:T.mid,borderBottom:tab===v?`2px solid ${T.red}`:"2px solid transparent"}}>
           {l}
@@ -1813,6 +1981,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
     </div>
     <div style={{flex:1,overflow:"hidden"}}>
       {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions}/>}
+      {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} caisseUrl={caisseUrl}/>}
       {tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
       {tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl}/>}
       {tab==="users"&&<UsersAdmin users={users} onSave={onSaveUsers} caisseUrl={caisseUrl}/>}
