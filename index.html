@@ -569,7 +569,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
   const cats=["Tout",...categories.map(c=>c.name),...(combos&&combos.length?["Menus"]:[])];
   const [reorderMode,setReorderMode]=useState(false);
   const [customOrder,setCustomOrder]=useState(LS.get("anf87_product_order")||[]);
-  const filteredRaw=products.filter(p=>cat==="Tout"||p.cat===cat);
+  // Les produits à 0€ (gobelet, sucre, touillette... utilisés uniquement comme
+  // accompagnements automatiques) sont masqués par défaut de la grille caisse, pour
+  // ne pas l'encombrer — un bouton permet de les faire réapparaître au besoin.
+  const [showFree,setShowFree]=useState(false);
+  const hiddenFreeCount=products.filter(p=>+p.price===0&&(cat==="Tout"||p.cat===cat)).length;
+  const filteredRaw=products.filter(p=>(cat==="Tout"||p.cat===cat)&&(showFree||+p.price!==0));
   // Ordre personnalisé (mémorisé) — les produits jamais déplacés gardent leur ordre naturel à la suite.
   const filtered=customOrder.length===0?filteredRaw:(()=>{
     const idx=id=>{const i=customOrder.indexOf(id.toString());return i===-1?999999:i;};
@@ -633,6 +638,14 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               borderRadius:"50%",fontSize:15,cursor:"pointer"}}>
             {reorderMode?"✓":"↕"}
           </button>
+          {hiddenFreeCount>0&&<button onClick={()=>setShowFree(s=>!s)} title={showFree?"Masquer les produits à 0€":"Afficher les produits à 0€ (accompagnements...)"}
+            style={{flexShrink:0,position:"relative",width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",
+              background:showFree?T.dark:T.bg,color:showFree?"white":T.dark,border:`1px solid ${showFree?T.dark:T.border}`,
+              borderRadius:"50%",fontSize:15,cursor:"pointer"}}>
+            {showFree?"🙈":"👁"}
+            {!showFree&&<span style={{position:"absolute",top:-4,right:-4,background:T.red,color:"white",borderRadius:"50%",
+              width:16,height:16,fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{hiddenFreeCount}</span>}
+          </button>}
         </div>
         <div style={{display:"flex",gap:7,overflowX:"auto",alignItems:"stretch"}}>
           <button onClick={openScanner} style={{display:"flex",alignItems:"center",gap:7,padding:"8px 16px",flexShrink:0,
