@@ -187,6 +187,7 @@ function App(){
   const [containers,setContainers]=useState(LS.get("anf87_containers")||[]); // fûts/bouteilles/cubis ouverts
   const [portions,setPortions]=useState(LS.get("anf87_portions")||[]); // paliers de vente (demis, pichets, gobelets...)
   const [combos,setCombos]=useState(LS.get("anf87_combos")||[]); // menus (plusieurs produits différents en une vente)
+  const [accompaniments,setAccompaniments]=useState(LS.get("anf87_accompaniments")||[]); // gobelet/sucre/touillette... auto-décomptés
   const [siteId,setSiteId]=useState(LS.get("anf87_site")||"s1");
   const [tab,setTab]=useState("pos");
   const [cart,setCart]=useState([]);
@@ -226,6 +227,7 @@ function App(){
       setContainers(r.containers||[]);LS.set("anf87_containers",r.containers||[]);
       setPortions(r.portions||[]);LS.set("anf87_portions",r.portions||[]);
       setCombos(r.combos||[]);LS.set("anf87_combos",r.combos||[]);
+      setAccompaniments(r.accompaniments||[]);LS.set("anf87_accompaniments",r.accompaniments||[]);
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);LS.set("anf87_lastsync",t);
       setSyncError(null);
@@ -306,7 +308,15 @@ function App(){
       if(item.comboItems){
         item.comboItems.forEach(ci=>stockEntries.push({id:ci.pid,qty:ci.qty*item.qty}));
       }else{
-        stockEntries.push({id:item.pid||item.id,qty:stockAmount(item)});
+        const pid=item.pid||item.id;
+        stockEntries.push({id:pid,qty:stockAmount(item)});
+        // Accompagnements automatiques (gobelet, sucre, touillette...) : décomptés
+        // en plus du produit vendu, sans ligne de panier ni impact sur le prix.
+        // Basé sur item.qty (nb de services), pas stockAmount (qui inclut le volume
+        // en cl pour les ventes au verre — un café ×2 consomme 2 gobelets, pas
+        // "2×volume" gobelets).
+        accompaniments.filter(a=>a.productId.toString()===pid.toString())
+          .forEach(a=>stockEntries.push({id:a.assocId,qty:a.qty*item.qty}));
       }
     });
     // On ADDITIONNE toutes les entrées d'un même produit — il peut apparaître sur
@@ -374,7 +384,8 @@ function App(){
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl}
-          portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}/>}
+          portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
+          accompaniments={accompaniments} setAccompaniments={setAccompaniments}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})}/>}
       </div>
@@ -1968,7 +1979,7 @@ function ReportsScreen({sites,caisseUrl}){
 }
 
 // ═══ ADMIN ═══
-function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,portions,setPortions,combos,setCombos}){
+function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,portions,setPortions,combos,setCombos,accompaniments,setAccompaniments}){
   const [tab,setTab]=useState("products");
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{display:"flex",background:T.card,borderBottom:`1px solid ${T.border}`,overflowX:"auto",flexShrink:0}}>
@@ -1980,7 +1991,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
       ))}
     </div>
     <div style={{flex:1,overflow:"hidden"}}>
-      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions}/>}
+      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments}/>}
       {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} caisseUrl={caisseUrl}/>}
       {tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
       {tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl}/>}
@@ -1989,7 +2000,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
   </div>);
 }
 
-function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePortions}){
+function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePortions,onManageAccompaniments}){
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const videoRef=useRef(null);const readerRef=useRef(null);
   const [scanningBarcode,setScanningBarcode]=useState(false);
@@ -2039,6 +2050,11 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
         <div style={{fontSize:11,color:T.mid,textAlign:"center",marginTop:4}}>Pointez sur le code-barres du produit</div>
         {scanMsg&&<div style={{fontSize:11,color:T.red,textAlign:"center",marginTop:2}}>{scanMsg}</div>}
       </div>}
+      {data.id?
+        <button type="button" onClick={()=>onManageAccompaniments&&onManageAccompaniments(data)} style={{width:"100%",padding:"10px",background:"#6B4F3A",color:"white",border:"none",borderRadius:9,cursor:"pointer",fontWeight:700,fontSize:13,marginBottom:9}}>
+          🔗 Gérer les accompagnements (gobelet, sucre, touillette…)
+        </button>
+        :<div style={{fontSize:11,color:T.mid,marginBottom:9,fontStyle:"italic"}}>Enregistrez d'abord le produit, puis modifiez-le pour lui associer des accompagnements automatiques.</div>}
       {data.price&&data.costPrice?(()=>{
         const margeUnit=+data.price-+data.costPrice, margePct=+data.costPrice>0?(margeUnit/+data.costPrice*100):0;
         return(<div style={{background:margeUnit>=0?"#E8F5E9":"#FFEBEE",borderRadius:8,padding:"7px 10px",marginBottom:7,
@@ -2098,10 +2114,11 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
   );
 }
 
-function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions}){
+function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions,accompaniments,setAccompaniments}){
   const [edit,setEdit]=useState(null);
   const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
   const [portionsFor,setPortionsFor]=useState(null); // produit dont on gère les portions
+  const [accompFor,setAccompFor]=useState(null); // produit dont on gère les accompagnements
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
   const handlePhoto=(e,setter)=>{const f=e.target.files[0];if(!f)return;
@@ -2169,15 +2186,79 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>✏️ Modifier {edit.name}</div>
-        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)}/>
+        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)} onManageAccompaniments={p=>setAccompFor(p)}/>
         <button onClick={()=>setEdit(null)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:6}}>Annuler</button>
       </div>
     </div>}
     {portionsFor&&<PortionsManager product={portionsFor} portions={portions} setPortions={setPortions} caisseUrl={caisseUrl} onClose={()=>setPortionsFor(null)}/>}
+    {accompFor&&<AccompanimentsManager product={accompFor} products={products} accompaniments={accompaniments} setAccompaniments={setAccompaniments} caisseUrl={caisseUrl} onClose={()=>setAccompFor(null)}/>}
   </div>);
 }
 
 // ═══ GESTION DES PORTIONS DE VENTE (demis, pichets, tailles de gobelet...) ═══
+// ═══ GESTION DES ACCOMPAGNEMENTS AUTOMATIQUES (gobelet, sucre, touillette...) ═══
+// Décomptés discrètement en plus du produit vendu — pas de ligne de panier, pas
+// d'impact sur le prix. Ex: café -> gobelet, sucre, touillette (ou juste gobelet
+// pour un autre produit).
+function AccompanimentsManager({product,products,accompaniments,setAccompaniments,caisseUrl,onClose}){
+  const mine=accompaniments.filter(a=>a.productId.toString()===product.id.toString());
+  const otherProducts=products.filter(p=>p.id.toString()!==product.id.toString());
+  const [assocId,setAssocId]=useState(otherProducts[0]?.id||"");
+  const [qty,setQty]=useState(1);
+  const [busy,setBusy]=useState(false);
+
+  const add=async()=>{
+    if(!assocId)return;
+    setBusy(true);
+    const id=uid();
+    const r=await apiWrite(caisseUrl,{action:"saveAccompaniment",id,productId:product.id,assocId,qty:+qty||1});
+    if(r.ok){
+      setAccompaniments(prev=>[...prev,{id,productId:product.id,assocId,qty:+qty||1}]);
+      setQty(1);
+    }
+    setBusy(false);
+  };
+  const del=async id=>{
+    setAccompaniments(prev=>prev.filter(a=>a.id!==id));
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteAccompaniment",id});
+  };
+  const prodName=pid=>products.find(p=>p.id.toString()===pid.toString())?.name||"(produit supprimé)";
+  const prodEmoji=pid=>products.find(p=>p.id.toString()===pid.toString())?.emoji||"🏷";
+
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
+    <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
+      <div style={{fontWeight:800,fontSize:17,marginBottom:4}}>🔗 Accompagnements — {product.name}</div>
+      <div style={{fontSize:12,color:T.mid,marginBottom:14}}>Décomptés automatiquement à chaque vente de "{product.name}", sans ligne de panier ni impact sur le prix.</div>
+
+      {mine.length===0&&<div style={{fontSize:12,color:T.mid,fontStyle:"italic",marginBottom:10}}>Aucun accompagnement configuré.</div>}
+      {mine.map(a=>(
+        <div key={a.id} style={{display:"flex",alignItems:"center",gap:10,background:T.bg,borderRadius:10,padding:"9px 12px",marginBottom:7}}>
+          <span style={{fontSize:20}}>{prodEmoji(a.assocId)}</span>
+          <div style={{flex:1,fontSize:13,color:T.dark}}>{a.qty}× {prodName(a.assocId)}</div>
+          <button onClick={()=>del(a.id)} style={{padding:"6px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+        </div>
+      ))}
+
+      <div style={{background:T.bg,borderRadius:12,padding:14,marginTop:10}}>
+        <div style={{fontWeight:700,fontSize:13,color:T.dark,marginBottom:8}}>+ Ajouter un accompagnement</div>
+        <div style={{display:"flex",gap:7,marginBottom:9}}>
+          <select value={assocId} onChange={e=>setAssocId(e.target.value)}
+            style={{flex:1,padding:"9px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13}}>
+            {otherProducts.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <input type="number" min="1" value={qty} onChange={e=>setQty(e.target.value)}
+            style={{width:60,padding:"9px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,textAlign:"center"}}/>
+        </div>
+        <button onClick={add} disabled={busy||!assocId} style={{width:"100%",padding:"10px",background:"#6B4F3A",color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:700,fontSize:13}}>
+          {busy?"⏳...":"+ Ajouter"}
+        </button>
+      </div>
+
+      <button onClick={onClose} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:14}}>Fermer</button>
+    </div>
+  </div>);
+}
+
 function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
   const myPortions=portions.filter(po=>po.productId.toString()===product.id.toString());
   const [form,setForm]=useState({name:"",size:"",price:"",photo:""});

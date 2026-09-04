@@ -8,7 +8,7 @@
 var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","saveCategory",
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
-  "saveCombo","deleteCombo","uploadComboPhotoChunk"];
+  "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -51,6 +51,8 @@ function doGet(e) {
       case "saveCombo":       result = saveCombo(e); break;
       case "deleteCombo":     result = deleteCombo(e); break;
       case "uploadComboPhotoChunk": result = uploadComboPhotoChunk(e); break;
+      case "saveAccompaniment":   result = saveAccompaniment(e); break;
+      case "deleteAccompaniment": result = deleteAccompaniment(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -144,6 +146,16 @@ function initSheets() {
     combo.getRange(1,1,1,5).setFontWeight("bold");
     combo.setFrozenRows(1);
   }
+  // Accompagnements automatiques : quand on vend le produit ProduitID, on décompte
+  // AUSSI, en plus et discrètement (pas de ligne de panier, pas d'impact sur le
+  // prix), Qté unités du produit ProduitAssocieID (ex: café -> gobelet, sucre,
+  // touillette). Un même produit peut avoir plusieurs lignes d'accompagnement.
+  var acc = getOrCreate(ss,"Accompagnements");
+  if(acc.getLastRow()<=1){
+    acc.getRange(1,1,1,4).setValues([["ID","ProduitID","ProduitAssocieID","Qte"]]);
+    acc.getRange(1,1,1,4).setFontWeight("bold");
+    acc.setFrozenRows(1);
+  }
   return {ok:true, message:"Feuilles initialisées avec succès !"};
 }
 
@@ -159,7 +171,37 @@ function getAllData(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
     categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss),
-    portions:getPortionsData(ss), combos:getCombosData(ss), ts:Date.now()};
+    portions:getPortionsData(ss), combos:getCombosData(ss), accompaniments:getAccompanimentsData(ss), ts:Date.now()};
+}
+
+function getAccompanimentsData(ss){
+  var sh=ss.getSheetByName("Accompagnements"); if(!sh||sh.getLastRow()<=1)return [];
+  return sh.getRange(2,1,sh.getLastRow()-1,4).getValues().filter(r=>r[0]&&r[1]&&r[2])
+    .map(r=>({id:r[0],productId:r[1],assocId:r[2],qty:+r[3]||1}));
+}
+function saveAccompaniment(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Accompagnements"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,4).setValues([["ID","ProduitID","ProduitAssocieID","Qte"]]);
+    sh.getRange(1,1,1,4).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var row=[p.id,p.productId,p.assocId,+p.qty||1];
+  if(sh.getLastRow()>1){
+    var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      sh.getRange(i+2,1,1,4).setValues([row]);
+      return{ok:true,action:"updated"};
+    }}
+  }
+  sh.appendRow(row);
+  return{ok:true,action:"created"};
+}
+function deleteAccompaniment(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Accompagnements"), id=e.parameter.id;
+  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Non trouvé"};
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}
+  return{ok:false,error:"Non trouvé"};
 }
 
 function getPortionsData(ss){
