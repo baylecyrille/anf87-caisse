@@ -8,7 +8,8 @@
 var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","saveCategory",
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
-  "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment"];
+  "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
+  "saveProductOrder"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -53,6 +54,7 @@ function doGet(e) {
       case "uploadComboPhotoChunk": result = uploadComboPhotoChunk(e); break;
       case "saveAccompaniment":   result = saveAccompaniment(e); break;
       case "deleteAccompaniment": result = deleteAccompaniment(e); break;
+      case "saveProductOrder":    result = saveProductOrder(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -119,8 +121,8 @@ function initSheets() {
   // Utilisateurs
   var users = getOrCreate(ss,"Utilisateurs");
   if(users.getLastRow()<=1){
-    users.getRange(1,1,1,4).setValues([["ID","Nom","PIN","Role"]]);
-    users.getRange(1,1,1,4).setFontWeight("bold");
+    users.getRange(1,1,1,5).setValues([["ID","Nom","PIN","Role","OrdreProduits"]]);
+    users.getRange(1,1,1,5).setFontWeight("bold");
     users.getRange(2,1,1,4).setValues([["u1","Admin","1234","admin"]]);
   }
   // Contenants ouverts (fûts/bouteilles/cubis entamés, un par site+produit)
@@ -373,8 +375,21 @@ function getCategoriesData(ss){
 }
 function getUsersData(ss){
   var sh=ss.getSheetByName("Utilisateurs"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,4).getValues().filter(r=>r[0])
-    .map(r=>({id:r[0],name:r[1],pin:r[2].toString(),role:r[3]}));
+  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0])
+    .map(r=>({id:r[0],name:r[1],pin:r[2].toString(),role:r[3],productOrder:(r[4]||"").toString()}));
+}
+// Sauvegarde l'ordre personnalisé des produits sur l'écran caisse pour un utilisateur
+// donné (colonne E "OrdreProduits" de la feuille Utilisateurs) — ne touche à rien
+// d'autre sur sa ligne (nom, PIN, rôle inchangés).
+function saveProductOrder(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), p=e.parameter;
+  if(!sh||sh.getLastRow()<=1||!p.userId)return{ok:false,error:"Utilisateur introuvable"};
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.userId.toString()){
+    sh.getRange(i+2,5).setValue(p.order||"");
+    return{ok:true};
+  }}
+  return{ok:false,error:"Utilisateur introuvable"};
 }
 
 function getContainersData(ss){

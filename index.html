@@ -377,7 +377,7 @@ function App(){
         {tab==="pos"&&<PosScreen products={products} cart={cart} siteId={siteId} categories={categories}
           addToCart={addToCart} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
           addVolumeToCart={addVolumeToCart} portions={portions} combos={combos} addComboToCart={addComboToCart}
-          cartTotal={cartTotal} cartCount={cartCount}
+          cartTotal={cartTotal} cartCount={cartCount} currentUser={currentUser}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>}
         {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers}/>}
@@ -561,14 +561,25 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
     window.addEventListener("resize",h);window.addEventListener("orientationchange",()=>setTimeout(h,100));return()=>{window.removeEventListener("resize",h);window.removeEventListener("orientationchange",h);};},[]);
   const cats=["Tout",...categories.map(c=>c.name),...(combos&&combos.length?["Menus"]:[])];
   const [reorderMode,setReorderMode]=useState(false);
-  const [customOrder,setCustomOrder]=useState(LS.get("anf87_product_order")||[]);
+  // L'ordre des produits est propre à chaque utilisateur connecté, et sauvegardé sur
+  // Google Sheets (colonne "OrdreProduits" de la feuille Utilisateurs) pour qu'il
+  // suive la personne sur n'importe quel appareil — pas juste sur celui-ci.
+  const orderKey=currentUser?"anf87_product_order_"+currentUser.id:"anf87_product_order";
+  const [customOrder,setCustomOrder]=useState(()=>{
+    if(currentUser?.productOrder)return currentUser.productOrder.split(",").filter(Boolean);
+    return LS.get(orderKey)||[];
+  });
+  useEffect(()=>{
+    if(currentUser?.productOrder)setCustomOrder(currentUser.productOrder.split(",").filter(Boolean));
+    else setCustomOrder(LS.get(orderKey)||[]);
+  },[currentUser?.id]);
   // Les produits à 0€ (gobelet, sucre, touillette... utilisés uniquement comme
   // accompagnements automatiques) sont masqués par défaut de la grille caisse, pour
   // ne pas l'encombrer — un bouton permet de les faire réapparaître au besoin.
@@ -595,7 +606,10 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
     const to=order.indexOf(targetId.toString());
     order.splice(to===-1?order.length:to,0,sourceId.toString());
     setCustomOrder(order);
-    LS.set("anf87_product_order",order);
+    LS.set(orderKey,order); // repli immédiat sur cet appareil, le temps que le serveur confirme
+    if(caisseUrl&&currentUser){
+      apiWrite(caisseUrl,{action:"saveProductOrder",userId:currentUser.id,order:order.join(",")});
+    }
   };
   const startDrag=pid=>{
     if(!reorderMode)return;
