@@ -586,18 +586,13 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
   const [showFree,setShowFree]=useState(false);
   const hiddenFreeCount=products.filter(p=>+p.price===0&&(cat==="Tout"||p.cat===cat)).length;
   const filteredRaw=products.filter(p=>(cat==="Tout"||p.cat===cat)&&(showFree||+p.price!==0));
-  // Ordre personnalisé (mémorisé) — les produits jamais déplacés gardent leur ordre naturel à la suite.
-  const filtered=customOrder.length===0?filteredRaw:(()=>{
-    const idx=id=>{const i=customOrder.indexOf(id.toString());return i===-1?999999:i;};
-    return [...filteredRaw].sort((a,b)=>idx(a.id)-idx(b.id));
-  })();
   // Glisser-déposer pour réorganiser : on insère le produit déplacé juste à l'endroit
   // où le doigt est relâché, plutôt que de ne pouvoir échanger qu'avec le voisin direct.
   const [dragId,setDragId]=useState(null);
   const [dragOverId,setDragOverId]=useState(null);
   const dragIdRef=useRef(null),dragOverIdRef=useRef(null);
   const reorderTo=(sourceId,targetId)=>{
-    const allIds=products.map(p=>p.id.toString());
+    const allIds=[...products.map(p=>p.id.toString()),...(combos||[]).map(c=>"combo-"+c.id)];
     let order=customOrder.length?[...customOrder]:allIds.slice();
     allIds.forEach(pid=>{if(!order.includes(pid))order.push(pid);});
     const from=order.indexOf(sourceId.toString());
@@ -673,7 +668,8 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
       {/* Grille produits */}
       <div style={{flex:1,overflowY:"auto",padding:10,display:"grid",
         gridTemplateColumns:`repeat(${cols},1fr)`,gap:9,alignContent:"start"}}>
-        {filtered.flatMap(p=>{
+        {(()=>{
+        const buildProductTile=(p)=>{
           const stk=p.stock[siteId]||0;
           const isDrink=p.drink;
           const myPortions=p.sellByVolume?portions.filter(po=>po.productId.toString()===p.id.toString()):[];
@@ -769,20 +765,25 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
             display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white",pointerEvents:"none"}}>⠿</div>}
           </div>)];
-        })}
-        {/* Menus/combos : plusieurs produits différents en une seule vente */}
-        {(cat==="Tout"||cat==="Menus")&&combos&&combos.map(combo=>{
+        };
+        const buildComboTile=(combo)=>{
+          const cid="combo-"+combo.id;
           const stockOk=combo.items.every(it=>{
             const prod=products.find(p=>p.id.toString()===it.productId.toString());
             return prod&&(prod.stock[siteId]||0)>=it.qty;
           });
-          return(<button key={"combo-"+combo.id} onClick={()=>stockOk&&addComboToCart(combo)} disabled={!stockOk}
-            style={combo.photo?{position:"relative",height:132,borderRadius:14,overflow:"hidden",padding:0,
-                cursor:stockOk?"pointer":"not-allowed",opacity:stockOk?1:.45,
+          return(<div key={cid} data-pid={cid} onPointerDown={()=>startDrag(cid)}
+            style={{position:"relative",touchAction:reorderMode?"none":"auto",
+              opacity:dragId===cid?0.35:1,
+              outline:reorderMode&&dragOverId===cid&&dragId!==cid?`3px dashed ${T.red}`:"none",
+              outlineOffset:2,borderRadius:14}}>
+          <button onClick={()=>{if(reorderMode)return;stockOk&&addComboToCart(combo);}} disabled={!stockOk&&!reorderMode}
+            style={combo.photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
+                cursor:reorderMode?"grab":stockOk?"pointer":"not-allowed",opacity:stockOk||reorderMode?1:.45,
                 border:`2px solid #5856D6`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
-              :{background:"#EEF0FF",border:"2px solid #5856D6",borderRadius:14,padding:"14px 8px",
-                cursor:stockOk?"pointer":"not-allowed",opacity:stockOk?1:.45,textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
-            onMouseDown={e=>stockOk&&(e.currentTarget.style.transform="scale(0.94)")}
+              :{width:"100%",background:"#EEF0FF",border:"2px solid #5856D6",borderRadius:14,padding:"14px 8px",
+                cursor:reorderMode?"grab":stockOk?"pointer":"not-allowed",opacity:stockOk||reorderMode?1:.45,textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
+            onMouseDown={e=>!reorderMode&&stockOk&&(e.currentTarget.style.transform="scale(0.94)")}
             onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
             {combo.photo?<>
               <img src={combo.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
@@ -800,8 +801,23 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(combo.price)}</div>
               <div style={{fontSize:10,fontWeight:600,color:stockOk?T.green:"#FF3B30",marginTop:3}}>{stockOk?"✓ dispo":"RUPTURE"}</div>
             </>}
-          </button>);
-        })}
+          </button>
+          {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white",pointerEvents:"none"}}>⠿</div>}
+          </div>);
+        };
+
+        // Fusionne produits ET menus dans le même ordre personnalisé, pour pouvoir
+        // aussi déplacer les menus n'importe où dans la grille (pas coincés à la fin).
+        const productEntries=filteredRaw.map(p=>({id:p.id.toString(),els:buildProductTile(p)}));
+        const comboEntries=(cat==="Tout"||cat==="Menus")?combos.map(c=>({id:"combo-"+c.id,els:[buildComboTile(c)]})):[];
+        const allEntries=[...productEntries,...comboEntries];
+        const orderedEntries=customOrder.length===0?allEntries:(()=>{
+          const idx=id=>{const i=customOrder.indexOf(id);return i===-1?999999:i;};
+          return [...allEntries].sort((a,b)=>idx(a.id)-idx(b.id));
+        })();
+        return orderedEntries.flatMap(e=>e.els);
+        })()}
       </div>
 
       {/* ── Barre mobile bas ── */}
