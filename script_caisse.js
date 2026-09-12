@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder"];
+  "saveProductOrder","addToReserve"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -55,6 +55,7 @@ function doGet(e) {
       case "saveAccompaniment":   result = saveAccompaniment(e); break;
       case "deleteAccompaniment": result = deleteAccompaniment(e); break;
       case "saveProductOrder":    result = saveProductOrder(e); break;
+      case "addToReserve":        result = addToReserve(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -132,6 +133,14 @@ function initSheets() {
     cont.getRange(1,1,1,6).setFontWeight("bold");
     cont.setFrozenRows(1);
   }
+  // Réserve précise de contenants (par type) reçus via Entrée rapide, pour savoir
+  // exactement combien de fûts/bouteilles/cubis de CHAQUE taille restent en stock.
+  var res = getOrCreate(ss,"ReserveContenants");
+  if(res.getLastRow()<=1){
+    res.getRange(1,1,1,5).setValues([["SiteID","ProduitID","Contenant","TailleCl","Nombre"]]);
+    res.getRange(1,1,1,5).setFontWeight("bold");
+    res.setFrozenRows(1);
+  }
   // Portions de vente (paliers) : demis/pichets/tailles de gobelet... avec leur
   // propre photo, liées à un produit "liquide" (celui vendu au volume).
   var port = getOrCreate(ss,"Portions");
@@ -173,7 +182,40 @@ function getAllData(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
     categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss),
-    portions:getPortionsData(ss), combos:getCombosData(ss), accompaniments:getAccompanimentsData(ss), ts:Date.now()};
+    portions:getPortionsData(ss), combos:getCombosData(ss), accompaniments:getAccompanimentsData(ss),
+    reserve:getReserveData(ss), ts:Date.now()};
+}
+
+function getReserveData(ss){
+  var sh=ss.getSheetByName("ReserveContenants"); if(!sh||sh.getLastRow()<=1)return [];
+  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0]&&r[1])
+    .map(r=>({site:r[0],productId:r[1],label:r[2],size:+r[3]||0,count:+r[4]||0}));
+}
+// Enregistre l'ajout de N contenants d'un type précis (utilisé depuis Entrée rapide),
+// pour savoir EXACTEMENT combien de fûts/bouteilles/cubis de CHAQUE taille sont en
+// réserve — plus fiable qu'un calcul dérivé du stock total en cl si on mélange
+// plusieurs tailles pour un même produit.
+function addToReserve(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"ReserveContenants"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,5).setValues([["SiteID","ProduitID","Contenant","TailleCl","Nombre"]]);
+    sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var site=p.site, id=p.id, label=p.label||"", size=+p.size||0, count=+p.count||0;
+  if(!site||!id||size<=0||count===0)return{ok:false,error:"Paramètres manquants"};
+  if(sh.getLastRow()>1){
+    var data=sh.getRange(2,1,sh.getLastRow()-1,5).getValues();
+    for(var i=0;i<data.length;i++){
+      if(data[i][0].toString()===site.toString()&&data[i][1].toString()===id.toString()
+        &&data[i][2].toString()===label&&(+data[i][3]||0)===size){
+        var newCount=Math.max(0,(+data[i][4]||0)+count);
+        sh.getRange(i+2,5).setValue(newCount);
+        return{ok:true,count:newCount};
+      }
+    }
+  }
+  sh.appendRow([site,id,label,size,Math.max(0,count)]);
+  return{ok:true,count:Math.max(0,count)};
 }
 
 function getAccompanimentsData(ss){
@@ -415,12 +457,27 @@ function openContainer(e){
     var data=sh.getRange(2,1,sh.getLastRow()-1,2).getValues();
     for(var i=0;i<data.length;i++){
       if(data[i][0].toString()===p.site.toString()&&data[i][1].toString()===p.id.toString()){
-        sh.getRange(i+2,1,1,6).setValues([row]); return{ok:true,action:"updated"};
+        sh.getRange(i+2,1,1,6).setValues([row]); decrementReserve(ss,p.site,p.id,p.label||"",size); return{ok:true,action:"updated"};
       }
     }
   }
   sh.appendRow(row);
+  decrementReserve(ss,p.site,p.id,p.label||"",size);
   return{ok:true,action:"created"};
+}
+// Décompte 1 unité de la réserve précise (voir addToReserve) quand ce contenant est
+// ouvert — ne fait rien si aucune réserve n'a été enregistrée pour ce type (repli
+// silencieux, l'écran Contenants utilisera alors le calcul dérivé du stock total).
+function decrementReserve(ss,site,id,label,size){
+  var sh=ss.getSheetByName("ReserveContenants"); if(!sh||sh.getLastRow()<=1)return;
+  var data=sh.getRange(2,1,sh.getLastRow()-1,5).getValues();
+  for(var i=0;i<data.length;i++){
+    if(data[i][0].toString()===site.toString()&&data[i][1].toString()===id.toString()
+      &&data[i][2].toString()===label&&(+data[i][3]||0)===size){
+      sh.getRange(i+2,5).setValue(Math.max(0,(+data[i][4]||0)-1));
+      return;
+    }
+  }
 }
 
 // Termine un contenant : ce qu'il restait dans la jauge est déduit du stock du

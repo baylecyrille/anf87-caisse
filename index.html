@@ -35,6 +35,11 @@ const fmt=v=>(+v||0).toFixed(2).replace(".",",")+"\u202f€";
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 const LS={get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch{return null}},
   set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+// Session (pas localStorage) pour la connexion : effacée quand l'appli/l'onglet est
+// réellement fermé, pour qu'on retombe sur le code PIN à la prochaine ouverture —
+// mais reste active pendant l'utilisation (rechargement de page, synchro...).
+const SS={get:k=>{try{return JSON.parse(sessionStorage.getItem(k))}catch{return null}},
+  set:(k,v)=>{try{sessionStorage.setItem(k,JSON.stringify(v))}catch{}}};
 
 // ═══ DEFAULTS ═══
 const DSITES=[{id:"s1",name:"Buvette Nord",village:"Village 1",color:"#CC0000"},{id:"s2",name:"Buvette Est",village:"Village 2",color:"#1565C0"},{id:"s3",name:"Buvette Sud",village:"Village 3",color:"#2E7D32"},{id:"s4",name:"Buvette Ouest",village:"Village 4",color:"#E65100"}];
@@ -76,6 +81,18 @@ function parseContainers(str){
 // Combien de contenants pleins de cette taille tiennent dans le stock actuel (pour
 // "Ouvrir (2 Fûts 20L)" et l'équivalence affichée dans l'écran Contenants).
 const containerCount=(stock,size)=>size>0?Math.floor(stock/size):0;
+// Si une réserve précise a été enregistrée pour ce type de contenant (via Entrée
+// rapide), on l'utilise — plus fiable qu'un calcul dérivé du stock total en cl si
+// plusieurs tailles sont mélangées pour un même produit. Sinon, repli sur le calcul
+// dérivé (compatibilité avec le stock ajouté avant ce suivi précis).
+const preciseReserveCount=(reserve,siteId,productId,label,size)=>{
+  const entry=(reserve||[]).find(r=>r.site===siteId&&r.productId.toString()===productId.toString()&&r.label===label&&r.size===size);
+  return entry?entry.count:null;
+};
+const containerAvailable=(reserve,stock,siteId,productId,label,size)=>{
+  const precise=preciseReserveCount(reserve,siteId,productId,label,size);
+  return precise!=null?precise:containerCount(stock,size);
+};
 
 // Ouvre/ferme un contenant — utilisé à la fois depuis l'écran caisse (POS) et
 // l'écran Stock > Contenants, pour ne pas dupliquer la logique réseau.
@@ -188,11 +205,12 @@ function App(){
   const [portions,setPortions]=useState(LS.get("anf87_portions")||[]); // paliers de vente (demis, pichets, gobelets...)
   const [combos,setCombos]=useState(LS.get("anf87_combos")||[]); // menus (plusieurs produits différents en une vente)
   const [accompaniments,setAccompaniments]=useState(LS.get("anf87_accompaniments")||[]); // gobelet/sucre/touillette... auto-décomptés
+  const [reserve,setReserve]=useState(LS.get("anf87_reserve")||[]); // réserve précise de contenants par type (via Entrée rapide)
   const [siteId,setSiteId]=useState(LS.get("anf87_site")||"s1");
   const [tab,setTab]=useState("pos");
   const [cart,setCart]=useState([]);
   const [modal,setModal]=useState(null);
-  const [currentUser,setCU]=useState(LS.get("anf87_user")||null);
+  const [currentUser,setCU]=useState(SS.get("anf87_user")||null);
   const [syncing,setSyncing]=useState(false);
   const [lastSync,setLastSync]=useState(LS.get("anf87_lastsync")||null);
   const [syncError,setSyncError]=useState(null);
@@ -228,6 +246,7 @@ function App(){
       setPortions(r.portions||[]);LS.set("anf87_portions",r.portions||[]);
       setCombos(r.combos||[]);LS.set("anf87_combos",r.combos||[]);
       setAccompaniments(r.accompaniments||[]);LS.set("anf87_accompaniments",r.accompaniments||[]);
+      setReserve(r.reserve||[]);LS.set("anf87_reserve",r.reserve||[]);
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);LS.set("anf87_lastsync",t);
       setSyncError(null);
@@ -344,7 +363,7 @@ function App(){
 
   // ── Authentification ──
   if(users.length&&!currentUser){
-    return <LoginScreen users={users} onLogin={u=>{setCU(u);LS.set("anf87_user",u);}}/>;
+    return <LoginScreen users={users} onLogin={u=>{setCU(u);SS.set("anf87_user",u);}}/>;
   }
 
   const navItems=isAdmin
@@ -368,7 +387,7 @@ function App(){
         <div style={{display:"flex",alignItems:"center",gap:6}}>
           {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:600}}>↻</button>}
           <SiteSelector sites={sites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}}/>
-          {users.length>0&&<button onClick={()=>{setCU(null);LS.set("anf87_user",null);}} style={{background:"rgba(255,255,255,0.1)",border:"none",borderRadius:8,color:"rgba(255,255,255,0.6)",padding:"7px 10px",fontSize:13,cursor:"pointer"}}>⎋</button>}
+          {users.length>0&&<button onClick={()=>{setCU(null);SS.set("anf87_user",null);}} style={{background:"rgba(255,255,255,0.1)",border:"none",borderRadius:8,color:"rgba(255,255,255,0.6)",padding:"7px 10px",fontSize:13,cursor:"pointer"}}>⎋</button>}
         </div>
       </div>
 
@@ -379,15 +398,15 @@ function App(){
           addVolumeToCart={addVolumeToCart} portions={portions} combos={combos} addComboToCart={addComboToCart}
           cartTotal={cartTotal} cartCount={cartCount} currentUser={currentUser}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
-          openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>}
-        {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers}/>}
+          openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}/>}
+        {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
           accompaniments={accompaniments} setAccompaniments={setAccompaniments}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
-          onInit={()=>api(caisseUrl,{action:"initSheets"})}/>}
+          onInit={()=>api(caisseUrl,{action:"initSheets"})} currentUser={currentUser} setCU={setCU}/>}
       </div>
 
       {/* ── NAVIGATION ── */}
@@ -467,7 +486,7 @@ function SiteSelector({sites,siteId,onChange}){
 
 // ═══ POS SCREEN ═══
 // ═══ BANDEAU CONTENANTS (écran caisse, à côté du scanner) ═══
-function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
+function ContainerStrip({products,siteId,containers,setContainers,caisseUrl,reserve}){
   const [busyId,setBusyId]=useState(null);
   const [pickerFor,setPickerFor]=useState(null); // produit dont on choisit la taille à ouvrir
   const [closeConfirm,setCloseConfirm]=useState(null); // {prod,cont}
@@ -494,7 +513,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
       // Contenants qu'on peut réellement ouvrir vu le stock actuel (pour ne pas
       // proposer "Ouvrir" si le stock est à 0 — et masquer complètement la carte si
       // le produit n'est ni ouvert, ni ouvrable).
-      const availablePresets=presets.filter(c=>containerCount(prod.stock[siteId]||0,c.size)>0);
+      const availablePresets=presets.filter(c=>containerAvailable(reserve,prod.stock[siteId]||0,siteId,prod.id,c.label,c.size)>0);
       if(!cont&&availablePresets.length===0)return null;
       const busy=busyId===prod.id;
       const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
@@ -502,7 +521,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
       // Ligne dédiée "en réserve" : ce qui reste en stock au-delà du contenant
       // actuellement ouvert (pour toujours voir ce qui suit, même une fois entamé).
       const reserveLine=presets.map(c=>{
-        const total=containerCount(prod.stock[siteId]||0,c.size);
+        const total=containerAvailable(reserve,prod.stock[siteId]||0,siteId,prod.id,c.label,c.size);
         const openSame=cont&&cont.label===c.label&&cont.size===c.size;
         const n=openSame?Math.max(0,total-1):total;
         return n>0?`${n}× ${c.label}`:null;
@@ -518,7 +537,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
           {busy?<span style={{position:"relative",fontSize:10,color:T.mid}}>⏳...</span>
             :cont?<span style={{position:"relative",fontSize:10,fontWeight:700,color:T.dark,whiteSpace:"nowrap"}}>Terminer ({cont.remaining}{prod.unit})</span>
             :<span style={{position:"relative",fontSize:10,fontWeight:700,color:T.mid,whiteSpace:"nowrap"}}>
-              {availablePresets.length===1?`Ouvrir (${containerCount(prod.stock[siteId]||0,availablePresets[0].size)})`:"Ouvrir…"}
+              {availablePresets.length===1?`Ouvrir (${containerAvailable(reserve,prod.stock[siteId]||0,siteId,prod.id,availablePresets[0].label,availablePresets[0].size)})`:"Ouvrir…"}
             </span>}
         </button>
         {reserveLine&&<div style={{fontSize:9,color:T.mid,marginTop:1,maxWidth:150,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>📦 {reserveLine}</div>}
@@ -530,7 +549,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
     {pickerFor&&(()=>{
       const prod=volProducts.find(p=>p.id.toString()===pickerFor.toString());
       if(!prod)return null;
-      const availablePresets=parseContainers(prod.containers).filter(c=>containerCount(prod.stock[siteId]||0,c.size)>0);
+      const availablePresets=parseContainers(prod.containers).filter(c=>containerAvailable(reserve,prod.stock[siteId]||0,siteId,prod.id,c.label,c.size)>0);
       return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
         onClick={e=>e.target===e.currentTarget&&setPickerFor(null)}>
         <div style={{background:T.card,borderRadius:16,padding:20,width:"100%",maxWidth:340}}>
@@ -538,7 +557,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
           {availablePresets.map((c,i)=><button key={i} onClick={()=>doOpen(prod,c)}
             style={{display:"block",width:"100%",textAlign:"left",padding:"12px 14px",background:T.bg,border:`1px solid ${T.border}`,
               borderRadius:10,cursor:"pointer",fontSize:14,fontWeight:600,color:T.dark,marginBottom:8}}>
-            {c.label} <span style={{color:T.mid,fontWeight:500}}>({containerCount(prod.stock[siteId]||0,c.size)} en stock)</span>
+            {c.label} <span style={{color:T.mid,fontWeight:500}}>({containerAvailable(reserve,prod.stock[siteId]||0,siteId,prod.id,c.label,c.size)} en stock)</span>
           </button>)}
           <button onClick={()=>setPickerFor(null)} style={{width:"100%",padding:"11px",background:"none",border:"none",cursor:"pointer",fontWeight:600,color:T.mid}}>Annuler</button>
         </div>
@@ -561,7 +580,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl}){
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl}){
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
@@ -661,7 +680,7 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             background:T.dark,color:"white",border:"none",borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer"}}>
             📷 Scanner code-barres
           </button>
-          <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl}/>
+          <ContainerStrip products={products} siteId={siteId} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}/>
         </div>
       </div>
 
@@ -1544,7 +1563,7 @@ function ScannerModal({products,siteId,onFound,onClose}){
 }
 
 // ═══ STOCK SCREEN ═══
-function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers}){
+function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve}){
   const [view,setView]=useState("list"); // list | entry | transfer | containers
   const [sel,setSel]=useState(siteId);
 
@@ -1560,13 +1579,13 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
     </div>
     {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave}/>}
     {view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
-    {view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers}/>}
+    {view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
     {view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
   </div>);
 }
 
 // ═══ CONTENANTS (fûts / bouteilles / cubis) ═══
-function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,setContainers}){
+function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,setContainers,reserve,setReserve}){
   const [busyKey,setBusyKey]=useState(null); // clé "siteId_productId" en cours de traitement
   const [closeConfirm,setCloseConfirm]=useState(null); // {product,cont} en attente de confirmation
 
@@ -1602,7 +1621,7 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
       // Ligne dédiée "en réserve" : contenants pleins encore disponibles en stock,
       // au-delà de celui actuellement ouvert (visible même après ouverture).
       const reserveLine=presets.map(c=>{
-        const total=containerCount(prod.stock[siteId]||0,c.size);
+        const total=containerAvailable(reserve,prod.stock[siteId]||0,siteId,prod.id,c.label,c.size);
         const openSame=cont&&cont.label===c.label&&cont.size===c.size;
         const n=openSame?Math.max(0,total-1):total;
         return n>0?`${n}× ${c.label}`:null;
@@ -1633,7 +1652,7 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
           <div style={{fontSize:12,color:T.mid,marginBottom:8}}>Aucun contenant ouvert actuellement</div>
           <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
             {presets.map((c,i)=>{
-              const n=containerCount(prod.stock[siteId]||0,c.size);
+              const n=containerAvailable(reserve,prod.stock[siteId]||0,siteId,prod.id,c.label,c.size);
               return(<button key={i} disabled={busy||n===0} onClick={()=>doOpen(prod,c)}
                 style={{padding:"9px 12px",background:n===0?"#ccc":T.green,color:"white",border:"none",borderRadius:9,cursor:(busy||n===0)?"default":"pointer",fontWeight:600,fontSize:12,opacity:n===0?.6:1}}>
                 {busy?"⏳...":"+ Ouvrir "+c.label+" ("+n+" en stock)"}
@@ -1850,6 +1869,17 @@ function StockEntry({products,sites,caisseUrl,onSave}){
     const upd=products.map(p=>p.id!==scannedProd.id?p:{...p,stock:{...p.stock,[site]:newQty}});
     onSave(upd);
     if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:scannedProd.id,site,qty:+qty,mode:"delta"});
+    // Si le total vient du tableau de contenants (Nombre par taille), on enregistre
+    // AUSSI la réserve précise de chaque type reçu — pour que l'écran Contenants
+    // sache exactement combien de fûts/bouteilles/cubis de CHAQUE taille il reste,
+    // plutôt qu'un calcul dérivé du stock total (faux si les tailles sont mélangées).
+    if(scannedProd.sellByVolume&&caisseUrl){
+      const presets=parseContainers(scannedProd.containers);
+      for(const c of presets){
+        const n=parseInt(contCounts[c.label])||0;
+        if(n>0)await apiWrite(caisseUrl,{action:"addToReserve",site,id:scannedProd.id,label:c.label,size:c.size,count:n});
+      }
+    }
     setMsg(`✅ +${qty} ${scannedProd.name} sur ${sites.find(s=>s.id===site)?.name}`);
     setScannedProd(null);setQty("");setContCounts({});
     setTimeout(()=>setMsg(""),3000);
@@ -2504,7 +2534,42 @@ function UsersAdmin({users,onSave,caisseUrl}){
 }
 
 // ═══ SETTINGS ═══
-function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit}){
+// ═══ MON PROFIL (accessible à tout utilisateur connecté, pas seulement admin) ═══
+function MyProfile({currentUser,setCU,caisseUrl}){
+  const [name,setName]=useState(currentUser.name);
+  const [pin,setPin]=useState("");
+  const [msg,setMsg]=useState("");
+  const [busy,setBusy]=useState(false);
+
+  const save=async()=>{
+    if(!name.trim())return;
+    setBusy(true);
+    const updated={...currentUser,name:name.trim(),pin:(pin.trim()||currentUser.pin)};
+    const r=await apiWrite(caisseUrl,{action:"saveUser",id:currentUser.id,name:updated.name,pin:updated.pin,role:currentUser.role});
+    if(r.ok){
+      setCU(updated);SS.set("anf87_user",updated);
+      setMsg("✅ Profil mis à jour");setPin("");
+    }
+    setBusy(false);
+    setTimeout(()=>setMsg(""),2500);
+  };
+
+  return(<div style={{background:T.card,borderRadius:12,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
+    <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>👤 Mon profil</div>
+    <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Nom affiché</label>
+    <input value={name} onChange={e=>setName(e.target.value)}
+      style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:9}}/>
+    <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Nouveau code PIN (laisser vide pour ne pas changer)</label>
+    <input value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,""))} type="password" inputMode="numeric" maxLength={6} placeholder="••••"
+      style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:9}}/>
+    <button onClick={save} disabled={busy||!name.trim()} style={{width:"100%",padding:"10px",background:T.red,color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:700,fontSize:13}}>
+      {busy?"⏳...":"💾 Enregistrer mon profil"}
+    </button>
+    {msg&&<div style={{marginTop:8,fontSize:12,fontWeight:600,textAlign:"center",color:T.green}}>{msg}</div>}
+  </div>);
+}
+
+function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU}){
   const [cu,setCu]=useState(caisseUrl);const [bu,setBu]=useState(boissonsUrl);const [msg,setMsg]=useState("");
   // Une URL Apps Script valide ressemble à https://script.google.com/macros/s/XXXX/exec
   // (souvent copiée-collée avec un espace ou un retour à la ligne en trop, ce qui casse
@@ -2527,6 +2592,7 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit}){
   const inp=ok=>({width:"100%",padding:"11px 12px",border:`1px solid ${ok?T.border:T.red}`,borderRadius:8,fontSize:12,outline:"none",marginBottom:4,wordBreak:"break-all"});
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:16}}>⚙️ Configuration</div>
+    {currentUser&&<MyProfile currentUser={currentUser} setCU={setCU} caisseUrl={caisseUrl}/>}
     <div style={{background:T.card,borderRadius:12,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:4}}>URL Script Caisse (Google Sheets produits/ventes)</div>
       <input style={inp(cuOk)} value={cu} onChange={e=>setCu(e.target.value)} onBlur={()=>setCu(c=>c.trim())} placeholder="https://script.google.com/macros/s/.../exec"/>
