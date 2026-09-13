@@ -1817,10 +1817,18 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave}){
                   background:s.id===siteId?s.color:"rgba(0,0,0,0.06)",
                   display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,
                   color:s.id===siteId?"white":T.mid}}>{prod.stock[s.id]||0}</div>)}
+                <div title="Total tous sites" style={{minWidth:28,height:24,borderRadius:5,padding:"0 4px",
+                  background:T.dark,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"white"}}>
+                  Σ {Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0)}
+                </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:4}}>
                 <button onClick={()=>updateQty(prod,siteId,stk-1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14}}>−</button>
-                <span style={{fontSize:14,fontWeight:800,minWidth:28,textAlign:"center",color:stockC(stk)}}>{stk}</span>
+                <input key={prod.id+"_"+stk} type="number" defaultValue={stk}
+                  onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v)&&v!==stk)updateQty(prod,siteId,v);}}
+                  onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
+                  style={{width:46,fontSize:14,fontWeight:800,textAlign:"center",color:stockC(stk),
+                    border:`1px solid ${T.border}`,borderRadius:6,padding:"3px 0",outline:"none"}}/>
                 <button onClick={()=>updateQty(prod,siteId,stk+1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14}}>+</button>
               </div>
             </div>);
