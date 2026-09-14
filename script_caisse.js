@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve","adjustContainer"];
+  "saveProductOrder","addToReserve","adjustContainer","setReserveCount"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -47,6 +47,7 @@ function doGet(e) {
       case "openContainer":   result = openContainer(e); break;
       case "closeContainer":  result = closeContainer(e); break;
       case "adjustContainer": result = adjustContainer(e); break;
+      case "setReserveCount":  result = setReserveCount(e); break;
       case "savePortion":     result = savePortion(e); break;
       case "deletePortion":   result = deletePortion(e); break;
       case "uploadPortionPhotoChunk": result = uploadPortionPhotoChunk(e); break;
@@ -217,6 +218,30 @@ function addToReserve(e){
   }
   sh.appendRow([site,id,label,size,Math.max(0,count)]);
   return{ok:true,count:Math.max(0,count)};
+}
+// Fixe directement le nombre de contenants en réserve (correction manuelle depuis
+// l'écran Stock), contrairement à addToReserve qui ADDITIONNE (utilisé par Entrée
+// rapide). Crée la ligne si elle n'existe pas encore.
+function setReserveCount(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"ReserveContenants"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,5).setValues([["SiteID","ProduitID","Contenant","TailleCl","Nombre"]]);
+    sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var site=p.site, id=p.id, label=p.label||"", size=+p.size||0, count=Math.max(0,+p.count||0);
+  if(!site||!id||size<=0)return{ok:false,error:"Paramètres manquants"};
+  if(sh.getLastRow()>1){
+    var data=sh.getRange(2,1,sh.getLastRow()-1,5).getValues();
+    for(var i=0;i<data.length;i++){
+      if(data[i][0].toString()===site.toString()&&data[i][1].toString()===id.toString()
+        &&data[i][2].toString()===label&&(+data[i][3]||0)===size){
+        sh.getRange(i+2,5).setValue(count);
+        return{ok:true,count:count};
+      }
+    }
+  }
+  sh.appendRow([site,id,label,size,count]);
+  return{ok:true,count:count};
 }
 
 function getAccompanimentsData(ss){

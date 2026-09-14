@@ -104,6 +104,28 @@ const refocusVideo=videoEl=>{
     }
   }catch{}
 };
+// Liste les caméras disponibles (les libellés précis ne sont visibles qu'après une
+// 1ère autorisation caméra accordée). Utilisé par le bouton "Autre caméra" : sur les
+// téléphones à plusieurs objectifs arrière (Samsung notamment), le navigateur choisit
+// parfois un objectif grand-angle qui a du mal à faire le point de près — ce bouton
+// permet de basculer manuellement sur un autre objectif jusqu'à trouver le bon.
+async function listCameras(){
+  try{
+    const devices=await navigator.mediaDevices.enumerateDevices();
+    return devices.filter(d=>d.kind==="videoinput");
+  }catch{return[];}
+}
+// Redémarre le lecteur ZXing sur la caméra suivante de la liste (cycle). currentIdRef
+// doit contenir le deviceId actuellement utilisé (récupéré via getSettings()).
+async function switchCamera(videoEl,readerRef,currentIdRef,restart){
+  const cams=await listCameras();
+  if(cams.length<2)return; // rien à changer, une seule caméra détectée
+  const curIdx=cams.findIndex(c=>c.deviceId===currentIdRef.current);
+  const next=cams[(curIdx+1)%cams.length];
+  if(readerRef.current){try{readerRef.current.reset();}catch{}}
+  await restart({video:{deviceId:{exact:next.deviceId},width:{ideal:1280},height:{ideal:720},advanced:[{focusMode:"continuous"}]}});
+  currentIdRef.current=next.deviceId;
+}
 const containerCount=(stock,size)=>size>0?Math.floor(stock/size):0;
 // Si une réserve précise a été enregistrée pour ce type de contenant (via Entrée
 // rapide), on l'utilise. Sinon on affiche 0 — pas de calcul dérivé du stock total en
@@ -1315,7 +1337,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
   const [applied,setApplied]=useState(false);
   const [appliedSummary,setAppliedSummary]=useState(null); // {count,value} capturés au moment de la validation
   const [scanning,setScanning]=useState(false);
-  const videoRef=useRef(null);const readerRef=useRef(null);
+  const videoRef=useRef(null);const readerRef=useRef(null);const camIdRef=useRef(null);
   const justScannedRef=useRef(false);
   const drinkItems=cart.filter(i=>i.drink&&!i.free);
   const qtyB=drinkItems.reduce((s,i)=>s+i.qty,0);
@@ -1325,7 +1347,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
   // Après un scan QR réussi, on vérifie le solde automatiquement (pas besoin de cliquer la loupe).
   useEffect(()=>{ if(justScannedRef.current){ justScannedRef.current=false; fetchMember(); } },[name]);
 
-  const startCam=async()=>{
+  const startCam=async(constraints)=>{
     // ZXing plutôt que l'API BarcodeDetector native : celle-ci n'existe pas du tout sur
     // iPhone/iPad (Safari) et est peu fiable sur beaucoup d'Android — c'était la cause
     // du scan qui "s'ouvre mais ne reconnaît rien". ZXing fonctionne partout.
@@ -1334,7 +1356,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       const reader=new ZXing.BrowserQRCodeReader();
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
+        constraints||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{
           if(!result)return;
           stopCam();setScanning(false);
@@ -1346,6 +1368,8 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
           }catch{setName(raw);}
         }
       );
+      const track=videoRef.current?.srcObject?.getVideoTracks?.()[0];
+      if(track)camIdRef.current=track.getSettings().deviceId;
     }catch{}
   };
   const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
@@ -1467,7 +1491,10 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
         {scanning?(<div style={{marginBottom:14}}>
           <video ref={videoRef} onClick={()=>refocusVideo(videoRef.current)} style={{width:"100%",height:170,objectFit:"cover",borderRadius:12,background:"#000",cursor:"pointer"}} muted playsInline/>
           <div style={{fontSize:10,color:T.mid,textAlign:"center",marginTop:2}}>Image floue ? Touchez-la pour refaire la mise au point</div>
-          <button onClick={()=>{stopCam();setScanning(false);}} style={{width:"100%",marginTop:6,padding:"8px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:13}}>Annuler le scan</button>
+          <div style={{display:"flex",gap:6,marginTop:6}}>
+            <button onClick={()=>switchCamera(videoRef.current,readerRef,camIdRef,startCam)} style={{flex:1,padding:"8px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12}}>🔄 Autre caméra</button>
+            <button onClick={()=>{stopCam();setScanning(false);}} style={{flex:1,padding:"8px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:13}}>Annuler le scan</button>
+          </div>
         </div>):(
           <button onClick={()=>setScanning(true)} style={{width:"100%",padding:"12px",background:T.dark,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:600,fontSize:13,marginBottom:10}}>
             📷 Scanner la carte QR du membre
@@ -1548,10 +1575,10 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
 
 // ═══ SCANNER CODE-BARRES ═══
 function ScannerModal({products,siteId,onFound,onClose}){
-  const videoRef=useRef(null);const readerRef=useRef(null);
+  const videoRef=useRef(null);const readerRef=useRef(null);const camIdRef=useRef(null);
   const [found,setFound]=useState(null);const [manual,setManual]=useState("");const [msg,setMsg]=useState("Pointez sur le code-barres");
   useEffect(()=>{startCam();return()=>stopCam();},[]);
-  const startCam=async()=>{
+  const startCam=async(constraints)=>{
     // ZXing plutôt que l'API BarcodeDetector native, absente sur iPhone/iPad (Safari)
     // et peu fiable sur beaucoup d'Android — cause du scan qui s'ouvrait sans jamais détecter.
     if(!window.ZXing){setMsg("Saisir manuellement ↓");return;}
@@ -1562,9 +1589,11 @@ function ScannerModal({products,siteId,onFound,onClose}){
       const reader=new ZXing.BrowserMultiFormatReader(hints);
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
+        constraints||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{ if(result)handle(result.getText()); }
       );
+      const track=videoRef.current?.srcObject?.getVideoTracks?.()[0];
+      if(track)camIdRef.current=track.getSettings().deviceId;
     }catch{setMsg("Caméra indisponible — saisir manuellement ↓");}
   };
   const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
@@ -1585,6 +1614,8 @@ function ScannerModal({products,siteId,onFound,onClose}){
           <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
             <div style={{width:180,height:80,border:"2px solid rgba(255,255,255,0.7)",borderRadius:6}}/>
           </div>
+          <button onClick={()=>switchCamera(videoRef.current,readerRef,camIdRef,startCam)}
+            style={{position:"absolute",bottom:8,right:8,padding:"6px 10px",background:"rgba(0,0,0,0.6)",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontSize:11}}>🔄 Autre caméra</button>
         </div>
         <div style={{padding:"14px 16px"}}>
           <div style={{fontSize:12,color:T.mid,textAlign:"center",marginBottom:10}}>{msg}</div>
@@ -1630,7 +1661,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
         </button>
       ))}
     </div>
-    {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve}/>}
+    {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
     {view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
     {view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
     {view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
@@ -1846,12 +1877,11 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
 }
 
 // ═══ PANNEAU CONTENANT INLINE (sous le produit, dans l'écran Stock) ═══
-function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,reserve,products,onSave}){
+function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,reserve,setReserve,products,onSave}){
   const [busy,setBusy]=useState(false);
   const [editingRemaining,setEditingRemaining]=useState(false);
   const cont=containers.find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString());
   const presets=parseContainers(prod.containers);
-  const stock=prod.stock[siteId]||0;
   const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
   const gaugeColor=prod.color||T.orange;
 
@@ -1878,12 +1908,51 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
     await adjustContainerApi(caisseUrl,siteId,prod,newRemaining,setContainers);
     setBusy(false);setEditingRemaining(false);
   };
+  // Corrige directement le NOMBRE de contenants d'une taille donnée en réserve (pas
+  // d'estimation à partir du stock en cl — que la vraie valeur saisie ici ou via
+  // Entrée rapide).
+  const doSetReserve=async(choice,newCount)=>{
+    if(isNaN(newCount)||newCount<0)return;
+    setBusy(true);
+    const r=await apiWrite(caisseUrl,{action:"setReserveCount",site:siteId,id:prod.id,label:choice.label,size:choice.size,count:newCount});
+    if(r.ok){
+      setReserve(prev=>{
+        const exists=prev.some(x=>x.site===siteId&&x.productId.toString()===prod.id.toString()&&x.label===choice.label&&x.size===choice.size);
+        if(exists)return prev.map(x=>(x.site===siteId&&x.productId.toString()===prod.id.toString()&&x.label===choice.label&&x.size===choice.size)?{...x,count:newCount}:x);
+        return[...prev,{site:siteId,productId:prod.id,label:choice.label,size:choice.size,count:newCount}];
+      });
+    }
+    setBusy(false);
+  };
 
   return(<div style={{padding:"10px 14px",background:"#FAFAFA"}}>
     <div style={{fontSize:10,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>🧴 Contenant — {prod.name}</div>
-    {cont?<>
+
+    {/* Nombre de contenants en réserve, par taille — valeur réelle et modifiable
+        directement, jamais une estimation calculée à partir du stock en cl. */}
+    {presets.map((c,i)=>{
+      const n=containerAvailable(reserve,0,siteId,prod.id,c.label,c.size);
+      const isOpenOne=cont&&cont.label===c.label&&cont.size===c.size;
+      return(<div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"5px 0",borderBottom:i<presets.length-1?`1px solid ${T.border}`:"none"}}>
+        <span style={{fontSize:12,color:T.dark,fontWeight:600}}>{c.label}</span>
+        <div style={{display:"flex",alignItems:"center",gap:7}}>
+          <input type="number" min="0" key={prod.id+"_"+c.label+"_"+n} defaultValue={n}
+            onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v)&&v!==n)doSetReserve(c,v);}}
+            onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
+            disabled={busy}
+            style={{width:46,padding:"3px 5px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:12,textAlign:"center"}}/>
+          <span style={{fontSize:10,color:T.mid}}>en stock</span>
+          {!isOpenOne&&<button disabled={busy||n===0} onClick={()=>doOpen(c)}
+            style={{padding:"5px 9px",background:n===0?"#ccc":T.green,color:"white",border:"none",borderRadius:7,cursor:(busy||n===0)?"default":"pointer",fontWeight:600,fontSize:11}}>
+            Ouvrir
+          </button>}
+        </div>
+      </div>);
+    })}
+
+    {cont&&<div style={{marginTop:8}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-        <span style={{fontSize:12,fontWeight:700,color:T.dark}}>{cont.label}</span>
+        <span style={{fontSize:12,fontWeight:700,color:T.dark}}>🔓 {cont.label} — ouvert</span>
         {editingRemaining?
           <div style={{display:"flex",alignItems:"center",gap:5}}>
             <input type="number" defaultValue={cont.remaining} autoFocus
@@ -1903,22 +1972,11 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
       <button onClick={doClose} disabled={busy} style={{width:"100%",padding:"8px",background:busy?"#eee":T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:busy?"default":"pointer",fontWeight:600,fontSize:12,color:T.dark}}>
         {busy?"⏳...":"🏁 Terminer ce contenant"}
       </button>
-    </>:<>
-      <div style={{fontSize:11,color:T.mid,marginBottom:8}}>Aucun contenant ouvert — les produits liés restent grisés à la caisse tant que ce n'est pas fait.</div>
-      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        {presets.map((c,i)=>{
-          const n=containerAvailable(reserve,stock,siteId,prod.id,c.label,c.size);
-          return(<button key={i} disabled={busy||n===0} onClick={()=>doOpen(c)}
-            style={{padding:"7px 10px",background:n===0?"#ccc":T.green,color:"white",border:"none",borderRadius:8,cursor:(busy||n===0)?"default":"pointer",fontWeight:600,fontSize:11,opacity:n===0?.6:1}}>
-            {busy?"⏳...":`+ Ouvrir ${c.label} (${n})`}
-          </button>);
-        })}
-      </div>
-    </>}
+    </div>}
   </div>);
 }
 
-function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,setContainers,reserve}){
+function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve}){
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:v<=10?"#EAB308":T.green;
   const updateQty=async(prod,site,newQty)=>{
     const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[site]:Math.max(0,newQty)}});
@@ -1953,24 +2011,24 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
                   background:s.id===siteId?s.color:"rgba(0,0,0,0.06)",
                   display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,
                   color:s.id===siteId?"white":T.mid}}>{prod.stock[s.id]||0}</div>)}
-                <div title="Total tous sites" style={{minWidth:28,height:24,borderRadius:5,padding:"0 4px",
-                  background:T.dark,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"white"}}>
-                  Σ {Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0)}
-                </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:4}}>
-                <button onClick={()=>updateQty(prod,siteId,stk-1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14}}>−</button>
+                <button onClick={()=>updateQty(prod,siteId,stk-1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14,flexShrink:0}}>−</button>
                 <input key={prod.id+"_"+stk} type="number" defaultValue={stk}
                   onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v)&&v!==stk)updateQty(prod,siteId,v);}}
                   onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
                   style={{width:46,fontSize:14,fontWeight:800,textAlign:"center",color:stockC(stk),
-                    border:`1px solid ${T.border}`,borderRadius:6,padding:"3px 0",outline:"none"}}/>
-                <button onClick={()=>updateQty(prod,siteId,stk+1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14}}>+</button>
+                    border:`1px solid ${T.border}`,borderRadius:6,padding:"3px 0",outline:"none",flexShrink:0}}/>
+                <button onClick={()=>updateQty(prod,siteId,stk+1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14,flexShrink:0}}>+</button>
+                <div title="Total tous sites" style={{width:40,height:24,borderRadius:5,marginLeft:4,flexShrink:0,
+                  background:T.dark,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"white"}}>
+                  {Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0)}
+                </div>
               </div>
             </div>,
             needsContainerPanel&&<div key={prod.id+"_cp"} style={{borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none"}}>
               <InlineContainerPanel prod={prod} siteId={siteId} caisseUrl={caisseUrl}
-                containers={containers} setContainers={setContainers} reserve={reserve} products={products} onSave={onSave}/>
+                containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} products={products} onSave={onSave}/>
             </div>];
           })}
         </div>
@@ -1980,7 +2038,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
 }
 
 function StockEntry({products,sites,caisseUrl,onSave}){
-  const videoRef=useRef(null);const readerRef=useRef(null);
+  const videoRef=useRef(null);const readerRef=useRef(null);const camIdRef=useRef(null);
   const [scannedProd,setScannedProd]=useState(null);
   const [site,setSite]=useState(sites[0]?.id||"s1");
   const [qty,setQty]=useState("");const [msg,setMsg]=useState("");const [scanning,setScanning]=useState(false);
@@ -1988,7 +2046,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
   const [validating,setValidating]=useState(false); // anti double-clic
 
   useEffect(()=>{if(scanning)startCam();return()=>stopCam();},[scanning]);
-  const startCam=async()=>{
+  const startCam=async(constraints)=>{
     // ZXing plutôt que l'API BarcodeDetector native, absente sur iPhone/iPad (Safari)
     // et peu fiable sur beaucoup d'Android — cause du scan qui s'ouvrait sans jamais détecter.
     if(!window.ZXing){setMsg("Caméra non disponible sur cet appareil — utilisez la liste ci-dessous");return;}
@@ -1999,7 +2057,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
       const reader=new ZXing.BrowserMultiFormatReader(hints);
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
+        constraints||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{
           if(!result)return;
           stopCam();setScanning(false);
@@ -2008,6 +2066,8 @@ function StockEntry({products,sites,caisseUrl,onSave}){
           if(p){setScannedProd(p);setContCounts({});}else setMsg("⚠ Produit non trouvé: "+code);
         }
       );
+      const track=videoRef.current?.srcObject?.getVideoTracks?.()[0];
+      if(track)camIdRef.current=track.getSettings().deviceId;
     }catch{setMsg("Caméra non disponible");}
   };
   const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
@@ -2041,7 +2101,10 @@ function StockEntry({products,sites,caisseUrl,onSave}){
     {scanning?(<div style={{marginBottom:14}}>
       <video ref={videoRef} onClick={()=>refocusVideo(videoRef.current)} style={{width:"100%",height:180,objectFit:"cover",borderRadius:12,background:"#000",cursor:"pointer"}} muted playsInline/>
       <div style={{fontSize:10,color:T.mid,textAlign:"center",marginTop:2}}>Image floue ? Touchez-la pour refaire la mise au point</div>
-      <button onClick={()=>{stopCam();setScanning(false);}} style={{width:"100%",marginTop:6,padding:"8px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:13}}>Annuler</button>
+      <div style={{display:"flex",gap:6,marginTop:6}}>
+        <button onClick={()=>switchCamera(videoRef.current,readerRef,camIdRef,startCam)} style={{flex:1,padding:"8px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12}}>🔄 Autre caméra</button>
+        <button onClick={()=>{stopCam();setScanning(false);}} style={{flex:1,padding:"8px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:13}}>Annuler</button>
+      </div>
     </div>):(
       <button onClick={()=>setScanning(true)} style={{width:"100%",padding:"14px",background:T.dark,color:"white",border:"none",borderRadius:12,cursor:"pointer",fontWeight:700,fontSize:14,marginBottom:10}}>
         📷 Scanner le code-barres produit
@@ -2345,12 +2408,12 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
 
 function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePortions,onManageAccompaniments,busy}){
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
-  const videoRef=useRef(null);const readerRef=useRef(null);
+  const videoRef=useRef(null);const readerRef=useRef(null);const camIdRef=useRef(null);
   const [scanningBarcode,setScanningBarcode]=useState(false);
   const [scanMsg,setScanMsg]=useState("");
 
   useEffect(()=>{ if(scanningBarcode)startBarcodeScan(); return()=>stopBarcodeScan(); },[scanningBarcode]);
-  const startBarcodeScan=async()=>{
+  const startBarcodeScan=async(constraints)=>{
     // Même moteur (ZXing) que le scanner de l'écran caisse : BarcodeDetector natif
     // n'existe pas sur iPhone/iPad (Safari) et est peu fiable sur beaucoup d'Android.
     if(!window.ZXing){setScanMsg("Caméra non disponible sur cet appareil");return;}
@@ -2361,13 +2424,15 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
       const reader=new ZXing.BrowserMultiFormatReader(hints);
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
+        constraints||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{
           if(!result)return;
           stopBarcodeScan();setScanningBarcode(false);
           setData(prev=>({...prev,barcode:result.getText().trim()}));
         }
       );
+      const track=videoRef.current?.srcObject?.getVideoTracks?.()[0];
+      if(track)camIdRef.current=track.getSettings().deviceId;
     }catch{setScanMsg("Caméra non disponible");}
   };
   const stopBarcodeScan=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
@@ -2392,6 +2457,8 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
         <video ref={videoRef} onClick={()=>refocusVideo(videoRef.current)} style={{width:"100%",height:160,objectFit:"cover",borderRadius:10,background:"#000",cursor:"pointer"}} muted playsInline/>
         <div style={{fontSize:10,color:T.mid,textAlign:"center",marginTop:2}}>Image floue ? Touchez-la pour refaire la mise au point</div>
         <div style={{fontSize:11,color:T.mid,textAlign:"center",marginTop:4}}>Pointez sur le code-barres du produit</div>
+        <button type="button" onClick={()=>switchCamera(videoRef.current,readerRef,camIdRef,startBarcodeScan)}
+          style={{width:"100%",marginTop:6,padding:"7px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12}}>🔄 Autre caméra</button>
         {scanMsg&&<div style={{fontSize:11,color:T.red,textAlign:"center",marginTop:2}}>{scanMsg}</div>}
       </div>}
       {data.id?
@@ -2508,8 +2575,15 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
     drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
-  const totalStockValue=products.reduce((s,p)=>s+(p.costPrice||0)*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
-  const totalPotentialMargin=products.reduce((s,p)=>s+((p.price||0)-(p.costPrice||0))*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
+  // Le prix d'achat/vente d'un produit au volume est saisi PAR PORTION (ex: 0,90€
+  // l'achat d'un verre de 25cl), mais son stock est compté en cl (ex: 3000cl pour un
+  // fût) — deux unités différentes. Sans ramener le prix "au cl" avant de multiplier
+  // par le stock, la valeur calculée était gonflée d'un facteur ~baseQty (25 à 30
+  // fois trop élevée pour un produit vendu au verre de 25-30cl).
+  const unitCost=p=>p.sellByVolume?(p.costPrice||0)/(p.baseQty||1):(p.costPrice||0);
+  const unitSell=p=>p.sellByVolume?(p.price||0)/(p.baseQty||1):(p.price||0);
+  const totalStockValue=products.reduce((s,p)=>s+unitCost(p)*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
+  const totalPotentialMargin=products.reduce((s,p)=>s+(unitSell(p)-unitCost(p))*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
 
   return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
     <div style={{display:"flex",gap:8,marginBottom:12}}>
@@ -2534,7 +2608,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
         <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
         <div style={{fontSize:11,color:T.mid}}>{p.cat} • {fmt(p.price)}{p.drink?" • 🍺":""}{p.sellByVolume?" • au "+p.unit:""}</div>
         {p.costPrice>0&&<div style={{fontSize:10,color:margeUnit>=0?"#2E7D32":T.red,fontWeight:600,marginTop:1}}>
-          Achat {fmt(p.costPrice)} • Marge {fmt(margeUnit)}{margePct!=null?` (${margePct.toFixed(0)}%)`:""} • Stock: {fmt(p.costPrice*stockTotal)}
+          Achat {fmt(p.costPrice)} • Marge {fmt(margeUnit)}{margePct!=null?` (${margePct.toFixed(0)}%)`:""} • Stock: {fmt(unitCost(p)*stockTotal)}
         </div>}
       </div>
       <button onClick={()=>setEdit({...p})} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
