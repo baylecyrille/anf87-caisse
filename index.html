@@ -400,7 +400,7 @@ function App(){
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}/>}
         {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
-        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl}/>}
+        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
@@ -2009,22 +2009,61 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
 }
 
 // ═══ REPORTS ═══
-function ReportsScreen({sites,caisseUrl}){
+function ReportsScreen({sites,caisseUrl,products,setCart,setTab}){
   const [sales,setSales]=useState([]);const [loading,setLoading]=useState(false);const [period,setPeriod]=useState("today");
+  const [viewMonth,setViewMonth]=useState(()=>{const d=new Date();return{y:d.getFullYear(),m:d.getMonth()};});
+  const [selectedDay,setSelectedDay]=useState(null); // "dd/mm/yyyy" sélectionné dans le calendrier
+  const [openSale,setOpenSale]=useState(null); // vente dont on affiche le détail
   const pad2=n=>String(n).padStart(2,"0");
   const todayD=new Date();
   const today=`${pad2(todayD.getDate())}/${pad2(todayD.getMonth()+1)}/${todayD.getFullYear()}`;
   useEffect(()=>{loadSales();},[]);
   const loadSales=async()=>{if(!caisseUrl)return;setLoading(true);
     const r=await api(caisseUrl,{action:"getSales"});if(r.ok)setSales(r.sales||[]);setLoading(false);};
-  const filtered=sales.filter(s=>period==="today"?s.date===today:true);
+
+  // Total € par jour (clé "dd/mm/yyyy"), pour l'affichage dans le calendrier.
+  const totalsByDay=(()=>{
+    const map={};
+    sales.forEach(s=>{ map[s.date]=(map[s.date]||0)+(+s.total||0); });
+    return map;
+  })();
+
+  const filtered=period==="today"?sales.filter(s=>s.date===today)
+    :period==="calendar"&&selectedDay?sales.filter(s=>s.date===selectedDay)
+    :period==="all"?sales:[];
   const totalCA=filtered.reduce((a,s)=>a+(+s.total||0),0);
   const bySite=sites.map(s=>({...s,ca:filtered.filter(v=>v.siteId===s.id).reduce((a,v)=>a+(+v.total||0),0),nb:filtered.filter(v=>v.siteId===s.id).length}));
+
+  // Grille du mois affiché (calendrier)
+  const calDays=(()=>{
+    const {y,m}=viewMonth;
+    const first=new Date(y,m,1);
+    const startOffset=(first.getDay()+6)%7; // lundi=0
+    const daysInMonth=new Date(y,m+1,0).getDate();
+    const cells=[];
+    for(let i=0;i<startOffset;i++)cells.push(null);
+    for(let d=1;d<=daysInMonth;d++)cells.push(d);
+    return cells;
+  })();
+  const monthLabel=new Date(viewMonth.y,viewMonth.m,1).toLocaleDateString("fr-FR",{month:"long",year:"numeric"});
+  const dateKeyFor=d=>`${pad2(d)}/${pad2(viewMonth.m+1)}/${viewMonth.y}`;
+
+  const reorder=sale=>{
+    let items=[]; try{items=JSON.parse(sale.items||"[]");}catch{}
+    const newCart=items.map(it=>{
+      const prod=products.find(p=>p.id.toString()===it.id.toString());
+      if(!prod)return null;
+      return{id:prod.id,pid:prod.id,name:prod.name,price:prod.price,qty:it.qty,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,free:false,unit:"unité"};
+    }).filter(Boolean);
+    if(newCart.length===0){window.alert("⚠️ Aucun des produits de cette commande n'existe encore dans le catalogue.");return;}
+    setCart(newCart);setTab("pos");setOpenSale(null);
+  };
+
   return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
       <div style={{display:"flex",gap:7}}>
-        {[["today","Aujourd'hui"],["all","Tout"]].map(([v,l])=>(
-          <button key={v} onClick={()=>setPeriod(v)} style={{padding:"6px 14px",borderRadius:20,border:"none",
+        {[["today","Aujourd'hui"],["calendar","📅 Calendrier"],["all","Tout"]].map(([v,l])=>(
+          <button key={v} onClick={()=>{setPeriod(v);if(v!=="calendar")setSelectedDay(null);}} style={{padding:"6px 14px",borderRadius:20,border:"none",
             background:period===v?T.red:T.card,color:period===v?"white":T.dark,fontSize:12,fontWeight:600,cursor:"pointer",boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
             {l}
           </button>
@@ -2033,29 +2072,109 @@ function ReportsScreen({sites,caisseUrl}){
       <button onClick={loadSales} style={{padding:"6px 12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600}}>{loading?"⏳":"↻"}</button>
     </div>
     {!caisseUrl&&<div style={{background:"#FFF3E0",borderRadius:10,padding:14,fontSize:13,marginBottom:12}}>⚙️ Configurez l'URL Apps Script dans Config.</div>}
-    <div style={{background:T.red,borderRadius:14,padding:"18px 16px",marginBottom:14,color:"white"}}>
-      <div style={{fontSize:11,opacity:.75,marginBottom:2}}>CHIFFRE D'AFFAIRES</div>
-      <div style={{fontSize:36,fontWeight:900}}>{fmt(totalCA)}</div>
-      <div style={{fontSize:12,opacity:.65}}>{filtered.length} vente(s)</div>
-    </div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:16}}>
-      {bySite.map(s=><div key={s.id} style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`}}>
-        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-          <span style={{width:8,height:8,borderRadius:"50%",background:s.color,display:"inline-block"}}/>
-          <span style={{fontSize:11,fontWeight:600,color:T.mid}}>{s.name}</span>
+
+    {period==="calendar"&&<>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+        <button onClick={()=>setViewMonth(v=>v.m===0?{y:v.y-1,m:11}:{y:v.y,m:v.m-1})} style={{padding:"6px 12px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:14}}>◀</button>
+        <div style={{fontWeight:700,fontSize:14,color:T.dark,textTransform:"capitalize"}}>{monthLabel}</div>
+        <button onClick={()=>setViewMonth(v=>v.m===11?{y:v.y+1,m:0}:{y:v.y,m:v.m+1})} style={{padding:"6px 12px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:14}}>▶</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:6}}>
+        {["L","M","M","J","V","S","D"].map((d,i)=><div key={i} style={{textAlign:"center",fontSize:10,color:T.mid,fontWeight:700}}>{d}</div>)}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:16}}>
+        {calDays.map((d,i)=>{
+          if(d===null)return <div key={i}/>;
+          const key=dateKeyFor(d);
+          const dayTotal=totalsByDay[key]||0;
+          const isToday=key===today;
+          const isSelected=key===selectedDay;
+          return(<button key={i} onClick={()=>setSelectedDay(key)}
+            style={{aspectRatio:"1",borderRadius:8,border:`1.5px solid ${isSelected?T.red:isToday?T.dark:T.border}`,
+              background:isSelected?T.red:dayTotal>0?"#FFF3E0":T.card,cursor:"pointer",padding:2,
+              display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+            <span style={{fontSize:11,fontWeight:isToday?800:600,color:isSelected?"white":T.dark}}>{d}</span>
+            {dayTotal>0&&<span style={{fontSize:8,fontWeight:700,color:isSelected?"white":T.orange}}>{fmt(dayTotal)}</span>}
+          </button>);
+        })}
+      </div>
+      {!selectedDay&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Touchez un jour pour voir ses ventes.</div>}
+    </>}
+
+    {(period!=="calendar"||selectedDay)&&<>
+      <div style={{background:T.red,borderRadius:14,padding:"18px 16px",marginBottom:14,color:"white"}}>
+        <div style={{fontSize:11,opacity:.75,marginBottom:2}}>{period==="calendar"?selectedDay:"CHIFFRE D'AFFAIRES"}</div>
+        <div style={{fontSize:36,fontWeight:900}}>{fmt(totalCA)}</div>
+        <div style={{fontSize:12,opacity:.65}}>{filtered.length} vente(s)</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:16}}>
+        {bySite.map(s=><div key={s.id} style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+            <span style={{width:8,height:8,borderRadius:"50%",background:s.color,display:"inline-block"}}/>
+            <span style={{fontSize:11,fontWeight:600,color:T.mid}}>{s.name}</span>
+          </div>
+          <div style={{fontSize:20,fontWeight:800,color:T.dark}}>{fmt(s.ca)}</div>
+          <div style={{fontSize:11,color:T.mid}}>{s.nb} vente(s)</div>
+        </div>)}
+      </div>
+      {filtered.slice(0,50).map(tx=>{
+        let payType=null; try{payType=JSON.parse(tx.payment||"{}").type;}catch{}
+        const isMatchOffert=payType==="matchOffert";
+        return(<button key={tx.id} onClick={()=>setOpenSale(tx)} style={{width:"100%",textAlign:"left",background:isMatchOffert?"#E8F5E9":T.card,borderRadius:10,padding:"10px 14px",marginBottom:6,border:`1px solid ${isMatchOffert?"#A5D6A7":T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
+        <div><div style={{fontSize:13,fontWeight:600,color:T.dark}}>{tx.time} • {sites.find(s=>s.id===tx.siteId)?.name||tx.siteId}</div>
+          <div style={{fontSize:11,color:T.mid}}>{tx.caissier&&"👤 "+tx.caissier}{tx.member&&" • 🍺 "+tx.member}{isMatchOffert&&" • ⚽ Offert match"}</div></div>
+        <div style={{fontWeight:800,color:isMatchOffert?T.green:T.red,fontSize:15}}>{isMatchOffert?"Offert":fmt(+tx.total)}</div>
+      </button>);})}
+    </>}
+
+    {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} onClose={()=>setOpenSale(null)} onReorder={reorder}/>}
+  </div>);
+}
+
+// ═══ DÉTAIL D'UNE VENTE (avec photos des produits, et reprise en panier) ═══
+function SaleDetailModal({sale,sites,products,onClose,onReorder}){
+  let items=[]; try{items=JSON.parse(sale.items||"[]");}catch{}
+  const lines=items.map(it=>({...it,prod:products.find(p=>p.id.toString()===it.id.toString())}));
+  let payType=null,payDetail=null; try{const pj=JSON.parse(sale.payment||"{}");payType=pj.type;payDetail=pj;}catch{}
+  const payLabel={cash:"💵 Espèces",cb:"💳 Carte Bleue",check:"📝 Chèque",split:"🔢 Note divisée",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes"}[payType]||"—";
+
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:230,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}
+    onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:420,maxHeight:"90vh",overflowY:"auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4}}>
+        <div>
+          <div style={{fontWeight:800,fontSize:17,color:T.dark}}>{sale.date} — {sale.time}</div>
+          <div style={{fontSize:12,color:T.mid}}>{sites.find(s=>s.id===sale.siteId)?.name||sale.siteId} • {payLabel}</div>
         </div>
-        <div style={{fontSize:20,fontWeight:800,color:T.dark}}>{fmt(s.ca)}</div>
-        <div style={{fontSize:11,color:T.mid}}>{s.nb} vente(s)</div>
-      </div>)}
+        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>
+      </div>
+      {sale.caissier&&<div style={{fontSize:11,color:T.mid,marginBottom:2}}>👤 Caissier : {sale.caissier}</div>}
+      {sale.member&&<div style={{fontSize:11,color:T.mid,marginBottom:10}}>🍺 Boissons offertes à : {sale.member}</div>}
+
+      <div style={{marginTop:12,marginBottom:12}}>
+        {lines.length===0&&<div style={{fontSize:12,color:T.mid,fontStyle:"italic"}}>Détail des articles non disponible pour cette vente.</div>}
+        {lines.map((l,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
+            {l.prod?.photo?<img src={l.prod.photo} style={{width:38,height:38,borderRadius:8,objectFit:"cover",flexShrink:0}}/>
+              :<span style={{fontSize:24,flexShrink:0}}>{l.prod?.emoji||"❓"}</span>}
+            <div style={{flex:1,fontSize:13,color:T.dark}}>{l.prod?.name||"(produit supprimé, ID "+l.id+")"}</div>
+            <div style={{fontSize:13,fontWeight:700,color:T.dark}}>×{l.qty}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:T.bg,borderRadius:10,padding:"10px 14px",marginBottom:14}}>
+        <span style={{fontSize:13,fontWeight:700,color:T.dark}}>Total</span>
+        <span style={{fontSize:20,fontWeight:900,color:T.red}}>{fmt(+sale.total)}</span>
+      </div>
+
+      <button onClick={()=>onReorder(sale)} disabled={lines.length===0}
+        style={{width:"100%",padding:"12px",background:lines.length===0?"#ccc":T.blue,color:"white",border:"none",borderRadius:10,cursor:lines.length===0?"default":"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
+        🔄 Recommencer cette commande (nouveau panier)
+      </button>
+      <div style={{fontSize:10,color:T.mid,textAlign:"center",marginBottom:10}}>Remet les mêmes produits dans le panier (aux prix actuels) — n'enregistre rien tant que vous n'encaissez pas.</div>
+      <button onClick={onClose} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Fermer</button>
     </div>
-    {filtered.slice(0,15).map(tx=>{
-      let payType=null; try{payType=JSON.parse(tx.payment||"{}").type;}catch{}
-      const isMatchOffert=payType==="matchOffert";
-      return(<div key={tx.id} style={{background:isMatchOffert?"#E8F5E9":T.card,borderRadius:10,padding:"10px 14px",marginBottom:6,border:`1px solid ${isMatchOffert?"#A5D6A7":T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-      <div><div style={{fontSize:13,fontWeight:600,color:T.dark}}>{tx.time} • {sites.find(s=>s.id===tx.siteId)?.name||tx.siteId}</div>
-        <div style={{fontSize:11,color:T.mid}}>{tx.caissier&&"👤 "+tx.caissier}{tx.member&&" • 🍺 "+tx.member}{isMatchOffert&&" • ⚽ Offert match"}</div></div>
-      <div style={{fontWeight:800,color:isMatchOffert?T.green:T.red,fontSize:15}}>{isMatchOffert?"Offert":fmt(+tx.total)}</div>
-    </div>);})}
   </div>);
 }
 

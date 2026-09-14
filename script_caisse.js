@@ -702,6 +702,6 @@ function getSales(e){
     if(p.site&&p.site!=="all"&&r[3]!==p.site)return false;
     if(p.date&&r[1]!==p.date)return false;
     return true;
-  }).map(function(r){return{id:r[0],date:r[1],time:r[2],siteId:r[3],siteName:r[4],total:r[5],payment:r[6],member:r[8],caissier:r[10]};});
+  }).map(function(r){return{id:r[0],date:r[1],time:r[2],siteId:r[3],siteName:r[4],total:r[5],payment:r[6],items:r[7],member:r[8],caissier:r[10]};});
   return{ok:true,sales:sales};
 }
