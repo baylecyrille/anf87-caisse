@@ -278,10 +278,12 @@ function savePortion(e){
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      if(photo==="__KEEP__")row[5]=sh.getRange(i+2,6).getValue(); // photo inchangée, non renvoyée
       sh.getRange(i+2,1,1,6).setValues([row]);
       return{ok:true,action:"updated"};
     }}
   }
+  if(photo==="__KEEP__")row[5]=""; // création : rien à garder
   sh.appendRow(row);
   return{ok:true,action:"created"};
 }
@@ -335,10 +337,12 @@ function saveCombo(e){
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      if(photo==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // photo inchangée, non renvoyée
       sh.getRange(i+2,1,1,5).setValues([row]);
       return{ok:true,action:"updated"};
     }}
   }
+  if(photo==="__KEEP__")row[4]=""; // création : rien à garder
   sh.appendRow(row);
   return{ok:true,action:"created"};
 }
@@ -559,9 +563,6 @@ function saveProduct(e){
     photo=parts.join("");
     for(var c2=0;c2<total;c2++)cache.remove("photo_"+p.id+"_"+c2); // nettoyage
   }
-  // Colonnes A:K = infos produit (jamais le stock, colonnes L:O)
-  var meta=[p.id,p.name,+p.price,p.cat,p.emoji,photo,p.barcode||"",
-    p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
   var costPrice=+p.costPrice||0;
   var presets=(p.presets||"").toString();
   var containers=(p.containers||"").toString();
@@ -569,6 +570,11 @@ function saveProduct(e){
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      // "__KEEP__" : la photo n'a pas changé côté appli, on ne l'a donc pas renvoyée
+      // (gain de temps important) — on garde simplement celle déjà enregistrée.
+      var finalPhoto = photo==="__KEEP__" ? sh.getRange(i+2,6).getValue() : photo;
+      var meta=[p.id,p.name,+p.price,p.cat,p.emoji,finalPhoto,p.barcode||"",
+        p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
       // Mise à jour : on NE touche PAS aux colonnes de stock (L:O), pour ne jamais écraser
       // une modification de stock faite entre-temps par un autre appareil/utilisateur.
       sh.getRange(i+2,7).setNumberFormat("@"); // Codebarres en texte : empêche Sheets de
@@ -582,10 +588,14 @@ function saveProduct(e){
       return{ok:true,action:"updated"};
     }}
   }
-  // Création d'un nouveau produit : stock initialisé à 0 sur tous les sites
-  // (les 4 colonnes historiques L:O, plus une colonne par site au-delà du 4e, jusqu'à
-  // les colonnes Y=25/Z=26 réservées à Contenants/Couleur — donc jusqu'à 11 sites
-  // au total sans collision).
+  // Création d'un nouveau produit : "__KEEP__" n'a pas de sens ici (rien à garder), on
+  // traite comme une photo vide dans ce cas précis (ne devrait normalement pas arriver).
+  var createPhoto = photo==="__KEEP__" ? "" : photo;
+  var meta=[p.id,p.name,+p.price,p.cat,p.emoji,createPhoto,p.barcode||"",
+    p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
+  // Stock initialisé à 0 sur tous les sites (les 4 colonnes historiques L:O, plus une
+  // colonne par site au-delà du 4e, jusqu'aux colonnes Y=25/Z=26 réservées à
+  // Contenants/Couleur — donc jusqu'à 11 sites au total sans collision).
   var nbSites=getSitesData(ss).length;
   var row=meta.slice();               // colonnes 1-11 (A:K)
   row.push(0,0,0,0);                  // colonnes 12-15 (L:O) — toujours réservées aux 4 premiers sites

@@ -1756,14 +1756,23 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
     if(!edit.name||!edit.price||edit.items.length===0)return;
     setBusy(true);
     const id=edit.id||uid();
-    const up=await uploadPhotoGeneric(caisseUrl,"uploadComboPhotoChunk",id,edit.photo);
-    if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
-    const extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
+    // Même optimisation que pour les produits/portions : photo renvoyée seulement si
+    // elle a changé, sinon "__KEEP__" garde celle déjà enregistrée côté serveur.
+    const original=edit.id?combos.find(c=>c.id===edit.id):null;
+    const photoChanged=!original||edit.photo!==(original.photo||"");
+    let photoParam,extra={};
+    if(photoChanged){
+      const up=await uploadPhotoGeneric(caisseUrl,"uploadComboPhotoChunk",id,edit.photo);
+      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
+      photoParam=up.photoParam;extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
+    }else{
+      photoParam="__KEEP__";
+    }
     const itemsStr=edit.items.map(it=>it.productId+":"+it.qty).join(",");
-    const r=await apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsStr,photo:up.photoParam,...extra});
+    const r=await apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsStr,photo:photoParam,...extra});
     if(r.ok){
       const newEntry={id,name:edit.name,price:+edit.price,items:edit.items.map(it=>({productId:it.productId,qty:+it.qty})),
-        photo:up.photoParam==="__CHUNKED__"?edit.photo:up.photoParam};
+        photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setCombos(prev=>[...prev.filter(c=>c.id!==id),newEntry]);
       setEdit(null);
     }
@@ -2476,12 +2485,22 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
     setSaving(false);
   };
-  const saveEdit=async()=>{if(saving)return;setSaving(true);const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
+  const saveEdit=async()=>{if(saving)return;setSaving(true);const original=products.find(p=>p.id===edit.id);const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
     if(caisseUrl){
-      const up=await uploadPhotoIfNeeded(edit.id,edit.photo);
-      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLes autres modifications ont été enregistrées, réessayez d'ajouter la photo ensuite.");}
-      const extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
-      await apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites),photo:up.ok?up.photoParam:edit.photo?"__CHUNKED__":"",...extra});
+      // Si la photo n'a pas changé, on ne la renvoie pas du tout — c'est de loin le
+      // champ le plus lourd (plusieurs dizaines de Ko envoyés en petits morceaux), pas
+      // la peine de la retransmettre juste parce qu'on a modifié le code-barres.
+      const photoChanged=edit.photo!==(original?.photo||"");
+      let photoParam,extra={};
+      if(photoChanged){
+        const up=await uploadPhotoIfNeeded(edit.id,edit.photo);
+        if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLes autres modifications ont été enregistrées, réessayez d'ajouter la photo ensuite.");}
+        photoParam=up.ok?up.photoParam:(edit.photo?"__CHUNKED__":"");
+        extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
+      }else{
+        photoParam="__KEEP__"; // indique au serveur de garder la photo déjà enregistrée telle quelle
+      }
+      await apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites),photo:photoParam,...extra});
     }
     setSaving(false);setEdit(null);};
   const delProd=async(id)=>{if(!window.confirm("Supprimer ?")||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
@@ -2614,12 +2633,22 @@ function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
     if(!form.name||!form.size||!form.price)return;
     setBusy(true);
     const id=editingId||uid();
-    const up=await uploadPhotoGeneric(caisseUrl,"uploadPortionPhotoChunk",id,form.photo);
-    if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
-    const extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
-    const r=await apiWrite(caisseUrl,{action:"savePortion",id,productId:product.id,name:form.name,size:+form.size,price:+form.price,photo:up.photoParam,...extra});
+    // Même optimisation que pour les produits : on ne renvoie la photo que si elle a
+    // changé — sinon "__KEEP__" indique au serveur de garder celle déjà enregistrée.
+    const original=editingId?myPortions.find(po=>po.id===editingId):null;
+    const photoChanged=!original||form.photo!==(original.photo||"");
+    let photoParam,extra={};
+    if(photoChanged){
+      const up=await uploadPhotoGeneric(caisseUrl,"uploadPortionPhotoChunk",id,form.photo);
+      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
+      photoParam=up.photoParam;extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
+    }else{
+      photoParam="__KEEP__";
+    }
+    const r=await apiWrite(caisseUrl,{action:"savePortion",id,productId:product.id,name:form.name,size:+form.size,price:+form.price,photo:photoParam,...extra});
     if(r.ok){
-      const newEntry={id,productId:product.id,name:form.name,size:+form.size,price:+form.price,photo:up.photoParam==="__CHUNKED__"?form.photo:up.photoParam};
+      const newEntry={id,productId:product.id,name:form.name,size:+form.size,price:+form.price,
+        photo:photoChanged?(photoParam==="__CHUNKED__"?form.photo:photoParam):(original?.photo||"")};
       setPortions(prev=>[...prev.filter(po=>po.id!==id),newEntry]);
       resetForm();
     }
