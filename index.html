@@ -82,16 +82,16 @@ function parseContainers(str){
 // "Ouvrir (2 Fûts 20L)" et l'équivalence affichée dans l'écran Contenants).
 const containerCount=(stock,size)=>size>0?Math.floor(stock/size):0;
 // Si une réserve précise a été enregistrée pour ce type de contenant (via Entrée
-// rapide), on l'utilise — plus fiable qu'un calcul dérivé du stock total en cl si
-// plusieurs tailles sont mélangées pour un même produit. Sinon, repli sur le calcul
-// dérivé (compatibilité avec le stock ajouté avant ce suivi précis).
+// rapide), on l'utilise. Sinon on affiche 0 — pas de calcul dérivé du stock total en
+// cl, qui donnait un nombre trompeur : on veut le vrai compte, tel que saisi, ou "0
+// pas encore renseigné" pour inciter à passer par Entrée rapide.
 const preciseReserveCount=(reserve,siteId,productId,label,size)=>{
   const entry=(reserve||[]).find(r=>r.site===siteId&&r.productId.toString()===productId.toString()&&r.label===label&&r.size===size);
   return entry?entry.count:null;
 };
 const containerAvailable=(reserve,stock,siteId,productId,label,size)=>{
   const precise=preciseReserveCount(reserve,siteId,productId,label,size);
-  return precise!=null?precise:containerCount(stock,size);
+  return precise!=null?precise:0;
 };
 
 // Ouvre/ferme un contenant — utilisé à la fois depuis l'écran caisse (POS) et
