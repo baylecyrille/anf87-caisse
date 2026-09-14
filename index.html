@@ -1004,9 +1004,9 @@ function VolumeModal({prod,onClose,onAdd,portions}){
   </div>);
 }
 
-function PaymentOptionButton({e,l,s,c,onClick}){
-  return(<button onClick={onClick} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"15px",
-      background:T.bg,border:`1px solid ${T.border}`,borderRadius:13,cursor:"pointer",marginBottom:9,textAlign:"left"}}>
+function PaymentOptionButton({e,l,s,c,onClick,disabled}){
+  return(<button onClick={onClick} disabled={disabled} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"15px",
+      background:disabled?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:13,cursor:disabled?"default":"pointer",marginBottom:9,textAlign:"left",opacity:disabled?.6:1}}>
       <div style={{width:46,height:46,borderRadius:12,background:c,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{e}</div>
       <div><div style={{fontWeight:700,fontSize:15,color:T.dark}}>{l}</div>{s&&<div style={{fontSize:12,color:T.mid}}>{s}</div>}</div>
     </button>);
@@ -1016,19 +1016,25 @@ function PaymentOptionButton({e,l,s,c,onClick}){
 function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBoissons,openSplit}){
   const [step,setStep]=useState("select");
   const [given,setGiven]=useState("");const [checkN,setCheckN]=useState("");
+  const [submitting,setSubmitting]=useState(false); // anti double-clic / double-encaissement
   const drinkItems=cart.filter(i=>i.drink);const freeItems=cart.filter(i=>i.free);
   const paidTotal=cart.reduce((s,i)=>s+(i.free?0:i.price*i.qty),0);
   const ov={position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"};
   const sh={background:T.card,borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,padding:"20px 18px 34px",maxHeight:"92vh",overflowY:"auto"};
 
+  // Empêche de valider deux fois (double-clic, double-tap) : le bouton se bloque dès
+  // le premier clic. onDone déclenche ensuite finalizeSale (async) qui referme cette
+  // fenêtre une fois terminé — pas besoin de réarmer submitting après coup.
+  const submit=payment=>{ if(submitting)return; setSubmitting(true); onDone(payment); };
   const handleSumUp=()=>{
+    if(submitting)return; setSubmitting(true);
     // Envoi direct au TPE SumUp
     const a=paidTotal.toFixed(2);
     const desc=encodeURIComponent("ANF87 "+site.name+" - "+cart.map(i=>i.name).join(", ").slice(0,50));
     window.location.href=`sumupmerchant://pay?amount=${a}&currency=EUR&title=${desc}&affiliate-key=ANF87`;
-    setTimeout(()=>{if(window.confirm("✅ Paiement CB confirmé par le TPE SumUp ?"))onDone({type:"cb"});},2000);
+    setTimeout(()=>{if(window.confirm("✅ Paiement CB confirmé par le TPE SumUp ?"))onDone({type:"cb"});else setSubmitting(false);},2000);
   };
-  const handleCash=()=>{const g=parseFloat(given.replace(",","."));if(isNaN(g)||g<paidTotal)return;onDone({type:"cash",given:g,change:+(g-paidTotal).toFixed(2)});};
+  const handleCash=()=>{if(submitting)return;const g=parseFloat(given.replace(",","."));if(isNaN(g)||g<paidTotal)return;setSubmitting(true);onDone({type:"cash",given:g,change:+(g-paidTotal).toFixed(2)});};
 
   return(<div style={ov} onClick={e=>e.target===e.currentTarget&&onClose()}>
     <div style={sh}>
@@ -1067,7 +1073,7 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBo
         </button>
         <PaymentOptionButton e="💵" l="Espèces" s="Calcul automatique de la monnaie" c={T.green} onClick={()=>setStep("cash")}/>
         <PaymentOptionButton e="📝" l="Chèque" s="Saisir numéro de chèque" c={T.blue} onClick={()=>setStep("check")}/>
-        <PaymentOptionButton e="💳" l="Carte Bleue — SumUp" s="Lance directement le TPE SumUp" c="#5856D6" onClick={handleSumUp}/>
+        <PaymentOptionButton e="💳" l={submitting?"⏳ Validation...":"Carte Bleue — SumUp"} s="Lance directement le TPE SumUp" c="#5856D6" onClick={handleSumUp} disabled={submitting}/>
       </>}
       {step==="matchOffert"&&<>
         <button onClick={()=>setStep("select")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
@@ -1078,8 +1084,8 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBo
           <div style={{fontSize:30,fontWeight:900,color:"#2E7D32"}}>{fmt(paidTotal)}</div>
           <div style={{fontSize:12,color:"#2E7D32",marginTop:2}}>{cart.reduce((s,i)=>s+i.qty,0)} article(s) — {site.name}</div>
         </div>
-        <button onClick={()=>onDone({type:"matchOffert"})} style={{width:"100%",padding:15,background:T.green,color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:"pointer"}}>
-          ✓ Confirmer — Offrir gratuitement
+        <button onClick={()=>submit({type:"matchOffert"})} disabled={submitting} style={{width:"100%",padding:15,background:submitting?"#ccc":T.green,color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:submitting?"default":"pointer"}}>
+          {submitting?"⏳ Validation...":"✓ Confirmer — Offrir gratuitement"}
         </button>
       </>}
       {step==="cash"&&<>
@@ -1102,9 +1108,9 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBo
           <span style={{color:"#2E7D32",fontWeight:600,fontSize:15}}>Monnaie à rendre</span>
           <span style={{color:"#2E7D32",fontWeight:900,fontSize:26}}>{fmt(parseFloat(given.replace(",","."))-paidTotal)}</span>
         </div>}
-        <button onClick={handleCash} disabled={!given||parseFloat(given.replace(",","."))<paidTotal}
-          style={{width:"100%",padding:15,background:(given&&parseFloat(given.replace(",","."))>=paidTotal)?T.green:"#ccc",color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:"pointer"}}>
-          ✓ Valider
+        <button onClick={handleCash} disabled={submitting||!given||parseFloat(given.replace(",","."))<paidTotal}
+          style={{width:"100%",padding:15,background:submitting?"#ccc":(given&&parseFloat(given.replace(",","."))>=paidTotal)?T.green:"#ccc",color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:submitting?"default":"pointer"}}>
+          {submitting?"⏳ Validation...":"✓ Valider"}
         </button>
       </>}
       {step==="check"&&<>
@@ -1117,8 +1123,8 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBo
         <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>N° chèque (optionnel)</label>
         <input value={checkN} onChange={e=>setCheckN(e.target.value)} placeholder="Ex: 1234567"
           style={{width:"100%",padding:"13px",fontSize:15,border:`2px solid ${T.border}`,borderRadius:12,marginBottom:14,outline:"none"}}/>
-        <button onClick={()=>onDone({type:"check",num:checkN})}
-          style={{width:"100%",padding:15,background:T.blue,color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:"pointer"}}>✓ Valider</button>
+        <button onClick={()=>submit({type:"check",num:checkN})} disabled={submitting}
+          style={{width:"100%",padding:15,background:submitting?"#ccc":T.blue,color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:submitting?"default":"pointer"}}>{submitting?"⏳ Validation...":"✓ Valider"}</button>
       </>}
     </div>
   </div>);
@@ -1133,6 +1139,7 @@ function SplitModal({total,onClose,onComplete}){
   const [activeIdx,setActiveIdx]=useState(null);
   const [step,setStep]=useState("select");
   const [given,setGiven]=useState("");const [checkN,setCheckN]=useState("");
+  const [completing,setCompleting]=useState(false); // anti double-clic sur le dernier paiement
   const perPerson=+(total/persons).toFixed(2);
   const paidTotal=payments.reduce((s,p)=>s+p.amount,0);
   const remaining=Math.max(0,+(total-paidTotal).toFixed(2));
@@ -1146,12 +1153,13 @@ function SplitModal({total,onClose,onComplete}){
   const closePay=()=>{setActiveIdx(null);setStep("select");};
 
   const confirmPayment=(type,extra)=>{
+    if(completing)return;
     const amt=amountFor(activeIdx);
     const newPayments=[...payments,{idx:activeIdx,type,amount:amt,...(extra||{})}];
     setPayments(newPayments);
     closePay();
     const stillOwed=+(total-newPayments.reduce((s,p)=>s+p.amount,0)).toFixed(2);
-    if(stillOwed<=0.001)onComplete(newPayments);
+    if(stillOwed<=0.001){setCompleting(true);onComplete(newPayments);}
   };
 
   const activeAmt=activeIdx!=null?amountFor(activeIdx):0;
@@ -1226,9 +1234,9 @@ function SplitModal({total,onClose,onComplete}){
             <div style={{width:40,height:40,borderRadius:10,background:T.blue,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>📝</div>
             <div style={{fontWeight:700,fontSize:14,color:T.dark}}>Chèque</div>
           </button>
-          <button onClick={()=>confirmPayment("cb")} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:"pointer",textAlign:"left"}}>
+          <button onClick={()=>confirmPayment("cb")} disabled={completing} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:completing?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:completing?"default":"pointer",textAlign:"left",opacity:completing?.6:1}}>
             <div style={{width:40,height:40,borderRadius:10,background:"#5856D6",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>💳</div>
-            <div style={{fontWeight:700,fontSize:14,color:T.dark}}>Carte Bleue</div>
+            <div style={{fontWeight:700,fontSize:14,color:T.dark}}>{completing?"⏳ Validation...":"Carte Bleue"}</div>
           </button>
         </>}
         {step==="cash"&&<>
@@ -1239,15 +1247,15 @@ function SplitModal({total,onClose,onComplete}){
             <span style={{color:"#2E7D32",fontWeight:600,fontSize:14}}>Monnaie à rendre</span>
             <span style={{color:"#2E7D32",fontWeight:900,fontSize:20}}>{fmt(parseFloat(given.replace(",","."))-activeAmt)}</span>
           </div>}
-          <button onClick={()=>{const g=parseFloat(given.replace(",","."));if(isNaN(g)||g<activeAmt)return;confirmPayment("cash",{given:g,change:+(g-activeAmt).toFixed(2)});}}
-            disabled={!given||parseFloat(given.replace(",","."))<activeAmt}
-            style={{width:"100%",padding:14,background:given&&parseFloat(given.replace(",","."))>=activeAmt?T.green:"#ccc",color:"white",border:"none",borderRadius:12,fontWeight:700,fontSize:15,cursor:"pointer"}}>✓ Valider</button>
+          <button onClick={()=>{if(completing)return;const g=parseFloat(given.replace(",","."));if(isNaN(g)||g<activeAmt)return;confirmPayment("cash",{given:g,change:+(g-activeAmt).toFixed(2)});}}
+            disabled={completing||!given||parseFloat(given.replace(",","."))<activeAmt}
+            style={{width:"100%",padding:14,background:completing?"#ccc":(given&&parseFloat(given.replace(",","."))>=activeAmt?T.green:"#ccc"),color:"white",border:"none",borderRadius:12,fontWeight:700,fontSize:15,cursor:completing?"default":"pointer"}}>{completing?"⏳ Validation...":"✓ Valider"}</button>
         </>}
         {step==="check"&&<>
           <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>N° chèque (optionnel)</label>
           <input value={checkN} onChange={e=>setCheckN(e.target.value)} placeholder="Ex: 1234567"
             style={{width:"100%",padding:"13px",fontSize:15,border:`2px solid ${T.border}`,borderRadius:12,marginBottom:14,outline:"none"}}/>
-          <button onClick={()=>confirmPayment("check",{checkNum:checkN})} style={{width:"100%",padding:14,background:T.blue,color:"white",border:"none",borderRadius:12,fontWeight:700,fontSize:15,cursor:"pointer"}}>✓ Valider</button>
+          <button onClick={()=>confirmPayment("check",{checkNum:checkN})} disabled={completing} style={{width:"100%",padding:14,background:completing?"#ccc":T.blue,color:"white",border:"none",borderRadius:12,fontWeight:700,fontSize:15,cursor:completing?"default":"pointer"}}>{completing?"⏳ Validation...":"✓ Valider"}</button>
         </>}
         </>
       )}
@@ -1845,6 +1853,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
   const [site,setSite]=useState(sites[0]?.id||"s1");
   const [qty,setQty]=useState("");const [msg,setMsg]=useState("");const [scanning,setScanning]=useState(false);
   const [contCounts,setContCounts]=useState({}); // label -> nombre de contenants reçus
+  const [validating,setValidating]=useState(false); // anti double-clic
 
   useEffect(()=>{if(scanning)startCam();return()=>stopCam();},[scanning]);
   const startCam=async()=>{
@@ -1872,7 +1881,8 @@ function StockEntry({products,sites,caisseUrl,onSave}){
   const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
 
   const validate=async()=>{
-    if(!scannedProd||!qty)return;
+    if(!scannedProd||!qty||validating)return;
+    setValidating(true);
     const newQty=(scannedProd.stock[site]||0)+(+qty);
     const upd=products.map(p=>p.id!==scannedProd.id?p:{...p,stock:{...p.stock,[site]:newQty}});
     onSave(upd);
@@ -1889,7 +1899,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
       }
     }
     setMsg(`✅ +${qty} ${scannedProd.name} sur ${sites.find(s=>s.id===site)?.name}`);
-    setScannedProd(null);setQty("");setContCounts({});
+    setScannedProd(null);setQty("");setContCounts({});setValidating(false);
     setTimeout(()=>setMsg(""),3000);
   };
 
@@ -1949,8 +1959,8 @@ function StockEntry({products,sites,caisseUrl,onSave}){
       <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:6}}>Quantité reçue{scannedProd.sellByVolume?" (cl, ou via le tableau ci-dessus)":""}</label>
       <input value={qty} onChange={e=>setQty(e.target.value)} type="number" min="1" placeholder="Ex: 24"
         style={{width:"100%",padding:"14px",fontSize:20,fontWeight:700,border:`2px solid ${T.border}`,borderRadius:10,marginBottom:12,outline:"none",textAlign:"right"}}/>
-      <button onClick={validate} disabled={!qty} style={{width:"100%",padding:"14px",background:qty?T.green:"#ccc",color:"white",border:"none",borderRadius:12,cursor:"pointer",fontWeight:700,fontSize:15}}>
-        ✓ Valider l'entrée
+      <button onClick={validate} disabled={!qty||validating} style={{width:"100%",padding:"14px",background:validating?"#ccc":(qty?T.green:"#ccc"),color:"white",border:"none",borderRadius:12,cursor:validating?"default":"pointer",fontWeight:700,fontSize:15}}>
+        {validating?"⏳ Validation...":"✓ Valider l'entrée"}
       </button>
     </div>}
   </div>);
@@ -2200,7 +2210,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
   </div>);
 }
 
-function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePortions,onManageAccompaniments}){
+function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePortions,onManageAccompaniments,busy}){
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const videoRef=useRef(null);const readerRef=useRef(null);
   const [scanningBarcode,setScanningBarcode]=useState(false);
@@ -2307,8 +2317,8 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
           <span style={{fontSize:11,color:T.mid}}>Ex : bière → jaune, café → marron, vin rouge → bordeaux…</span>
         </div>
       </>}
-      <button onClick={onSubmit} style={{width:"100%",padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>
-        {label.startsWith("+")?label:"💾 Enregistrer"}
+      <button onClick={onSubmit} disabled={busy} style={{width:"100%",padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>
+        {busy?"⏳ Enregistrement...":(label.startsWith("+")?label:"💾 Enregistrer")}
       </button>
     </div>
   );
@@ -2319,6 +2329,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
   const [portionsFor,setPortionsFor]=useState(null); // produit dont on gère les portions
   const [accompFor,setAccompFor]=useState(null); // produit dont on gère les accompagnements
+  const [saving,setSaving]=useState(false); // anti double-clic (ajout/modif/suppression produit)
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
   const handlePhoto=(e,setter)=>{const f=e.target.files[0];if(!f)return;
@@ -2326,7 +2337,8 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   };
   const uploadPhotoIfNeeded=(id,photoDataUrl)=>uploadPhotoGeneric(caisseUrl,"uploadPhotoChunk",id,photoDataUrl);
 
-  const addProd=async()=>{if(!newP.name||!newP.price)return;
+  const addProd=async()=>{if(!newP.name||!newP.price||saving)return;
+    setSaving(true);
     const id=uid();const stock=Object.fromEntries(sites.map(s=>[s.id,0]));
     const p={...newP,id,price:+newP.price,costPrice:+newP.costPrice||0,drink:!!newP.drink,sellByVolume:!!newP.sellByVolume,baseQty:+newP.baseQty||1,stock};
     const arr=[...products,p];onSave(arr);
@@ -2337,17 +2349,18 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       await apiWrite(caisseUrl,{action:"saveProduct",id,...flattenProd(p,sites),photo:up.ok?up.photoParam:"",...extra});
     }
     setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
+    setSaving(false);
   };
-  const saveEdit=async()=>{const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
+  const saveEdit=async()=>{if(saving)return;setSaving(true);const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
     if(caisseUrl){
       const up=await uploadPhotoIfNeeded(edit.id,edit.photo);
       if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLes autres modifications ont été enregistrées, réessayez d'ajouter la photo ensuite.");}
       const extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
       await apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites),photo:up.ok?up.photoParam:edit.photo?"__CHUNKED__":"",...extra});
     }
-    setEdit(null);};
-  const delProd=async(id)=>{if(!window.confirm("Supprimer ?"))return;onSave(products.filter(p=>p.id!==id));
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});};
+    setSaving(false);setEdit(null);};
+  const delProd=async(id)=>{if(!window.confirm("Supprimer ?")||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});setSaving(false);};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
     drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
@@ -2365,7 +2378,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
         <div style={{fontSize:18,fontWeight:900}}>{fmt(totalPotentialMargin)}</div>
       </div>
     </div>
-    <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} handlePhoto={handlePhoto}/>
+    <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} handlePhoto={handlePhoto} busy={saving}/>
     {products.map(p=>{
       const margeUnit=(p.price||0)-(p.costPrice||0);
       const margePct=p.costPrice>0?(margeUnit/p.costPrice*100):null;
@@ -2386,7 +2399,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>✏️ Modifier {edit.name}</div>
-        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)} onManageAccompaniments={p=>setAccompFor(p)}/>
+        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)} onManageAccompaniments={p=>setAccompFor(p)} busy={saving}/>
         <button onClick={()=>setEdit(null)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:6}}>Annuler</button>
       </div>
     </div>}
@@ -2539,30 +2552,31 @@ function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
 function CatsAdmin({categories,onSave,caisseUrl}){
   const [newName,setNewName]=useState("");
   const [editId,setEditId]=useState(null);const [editName,setEditName]=useState("");
-  const add=async()=>{if(!newName.trim())return;const id="c"+uid();const arr=[...categories,{id,name:newName.trim()}];
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id,name:newName.trim()});setNewName("");};
-  const saveEdit=async()=>{const arr=categories.map(c=>c.id===editId?{...c,name:editName}:c);
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id:editId,name:editName});setEditId(null);};
-  const del=async(id)=>{if(!window.confirm("Supprimer cette catégorie ?"))return;
-    onSave(categories.filter(c=>c.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteCategory",id});};
+  const [busy,setBusy]=useState(false); // anti double-clic
+  const add=async()=>{if(!newName.trim()||busy)return;setBusy(true);const id="c"+uid();const arr=[...categories,{id,name:newName.trim()}];
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id,name:newName.trim()});setNewName("");setBusy(false);};
+  const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=categories.map(c=>c.id===editId?{...c,name:editName}:c);
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id:editId,name:editName});setEditId(null);setBusy(false);};
+  const del=async(id)=>{if(!window.confirm("Supprimer cette catégorie ?")||busy)return;setBusy(true);
+    onSave(categories.filter(c=>c.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteCategory",id});setBusy(false);};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>+ Nouvelle catégorie</div>
       <div style={{display:"flex",gap:8}}>
         <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="Nom de la catégorie"
           style={{flex:1,padding:"10px 12px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:14,outline:"none"}}/>
-        <button onClick={add} style={{padding:"10px 16px",background:T.red,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700}}>+</button>
+        <button onClick={add} disabled={busy} style={{padding:"10px 16px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:8,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳":"+"}</button>
       </div>
     </div>
     {categories.map(c=><div key={c.id} style={{background:T.card,borderRadius:10,padding:"12px 14px",marginBottom:8,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
       {editId===c.id?<>
         <input value={editName} onChange={e=>setEditName(e.target.value)} style={{flex:1,padding:"8px 10px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:14,outline:"none"}}/>
-        <button onClick={saveEdit} style={{padding:"8px 12px",background:T.green,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700}}>✓</button>
+        <button onClick={saveEdit} disabled={busy} style={{padding:"8px 12px",background:busy?"#ccc":T.green,color:"white",border:"none",borderRadius:8,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳":"✓"}</button>
         <button onClick={()=>setEditId(null)} style={{padding:"8px 12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer"}}>✕</button>
       </>:<>
         <div style={{flex:1,fontSize:14,fontWeight:600,color:T.dark}}>📂 {c.name}</div>
         <button onClick={()=>{setEditId(c.id);setEditName(c.name);}} style={{padding:"6px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:12}}>✏️</button>
-        <button onClick={()=>del(c.id)} style={{padding:"6px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+        <button onClick={()=>del(c.id)} disabled={busy} style={{padding:"6px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:busy?"default":"pointer",color:T.red}}>🗑</button>
       </>}
     </div>)}
   </div>);
@@ -2571,12 +2585,13 @@ function CatsAdmin({categories,onSave,caisseUrl}){
 function SitesAdmin({sites,onSave,caisseUrl}){
   const [newS,setNewS]=useState({name:"",village:"",color:"#CC0000"});
   const [editS,setEditS]=useState(null);
+  const [busy,setBusy]=useState(false); // anti double-clic
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
-  const add=async()=>{if(!newS.name)return;const id="s"+uid().slice(-4);const arr=[...sites,{...newS,id}];
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS});setNewS({name:"",village:"",color:"#CC0000"});};
-  const saveEdit=async()=>{const arr=sites.map(s=>s.id===editS.id?editS:s);
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color});setEditS(null);};
-  const del=async(id)=>{if(!window.confirm("Supprimer ?"))return;onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteSite",id});};
+  const add=async()=>{if(!newS.name||busy)return;setBusy(true);const id="s"+uid().slice(-4);const arr=[...sites,{...newS,id}];
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS});setNewS({name:"",village:"",color:"#CC0000"});setBusy(false);};
+  const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=sites.map(s=>s.id===editS.id?editS:s);
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color});setBusy(false);setEditS(null);};
+  const del=async(id)=>{if(!window.confirm("Supprimer ?")||busy)return;setBusy(true);onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteSite",id});setBusy(false);};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>+ Nouveau site</div>
@@ -2587,13 +2602,13 @@ function SitesAdmin({sites,onSave,caisseUrl}){
         <input type="color" value={newS.color} onChange={e=>setNewS({...newS,color:e.target.value})} style={{width:44,height:32,border:`1px solid ${T.border}`,borderRadius:6,cursor:"pointer"}}/>
         <span style={{fontSize:12,color:T.mid}}>{newS.color}</span>
       </div>
-      <button onClick={add} style={{width:"100%",padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>Ajouter</button>
+      <button onClick={add} disabled={busy} style={{width:"100%",padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Ajouter"}</button>
     </div>
     {sites.map(s=><div key={s.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
       <span style={{width:14,height:14,borderRadius:"50%",background:s.color,display:"inline-block",flexShrink:0}}/>
       <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:T.dark}}>{s.name}</div><div style={{fontSize:11,color:T.mid}}>{s.village}</div></div>
       <button onClick={()=>setEditS({...s})} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
-      <button onClick={()=>del(s.id)} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+      <button onClick={()=>del(s.id)} disabled={busy} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:busy?"default":"pointer",color:T.red}}>🗑</button>
     </div>)}
     {editS&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:340}}>
@@ -2605,8 +2620,8 @@ function SitesAdmin({sites,onSave,caisseUrl}){
           <input type="color" value={editS.color} onChange={e=>setEditS({...editS,color:e.target.value})} style={{width:44,height:32,border:`1px solid ${T.border}`,borderRadius:6,cursor:"pointer"}}/>
         </div>
         <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>setEditS(null)} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
-          <button onClick={saveEdit} style={{flex:2,padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>Enregistrer</button>
+          <button onClick={()=>setEditS(null)} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={saveEdit} disabled={busy} style={{flex:2,padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Enregistrer"}</button>
         </div>
       </div>
     </div>}
@@ -2616,13 +2631,14 @@ function SitesAdmin({sites,onSave,caisseUrl}){
 function UsersAdmin({users,onSave,caisseUrl}){
   const [newU,setNewU]=useState({name:"",pin:"",role:"cashier"});
   const [editU,setEditU]=useState(null);
+  const [busy,setBusy]=useState(false); // anti double-clic
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
-  const add=async()=>{if(!newU.name||!newU.pin)return;const id="u"+uid();const arr=[...users,{...newU,id}];
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id,...newU});setNewU({name:"",pin:"",role:"cashier"});};
-  const saveEdit=async()=>{const arr=users.map(u=>u.id===editU.id?editU:u);
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role});setEditU(null);};
+  const add=async()=>{if(!newU.name||!newU.pin||busy)return;setBusy(true);const id="u"+uid();const arr=[...users,{...newU,id}];
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id,...newU});setNewU({name:"",pin:"",role:"cashier"});setBusy(false);};
+  const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=users.map(u=>u.id===editU.id?editU:u);
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role});setBusy(false);setEditU(null);};
   const del=async(id)=>{if(users.length<=1){alert("Impossible de supprimer le dernier utilisateur");return;}
-    if(!window.confirm("Supprimer ?"))return;onSave(users.filter(u=>u.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteUser",id});};
+    if(!window.confirm("Supprimer ?")||busy)return;setBusy(true);onSave(users.filter(u=>u.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteUser",id});setBusy(false);};
   const roleLabel={admin:"🔑 Admin",cashier:"💳 Caissier"};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:"#E3F2FD",borderRadius:12,padding:12,marginBottom:14,fontSize:13,color:"#1565C0"}}>ℹ️ <strong>Admin</strong> : accès complet. <strong>Caissier</strong> : accès caisse uniquement. Si aucun utilisateur, connexion libre.</div>
@@ -2633,7 +2649,7 @@ function UsersAdmin({users,onSave,caisseUrl}){
       <select value={newU.role} onChange={e=>setNewU({...newU,role:e.target.value})} style={{...inp}}>
         <option value="admin">Admin (accès complet)</option><option value="cashier">Caissier (caisse uniquement)</option>
       </select>
-      <button onClick={add} style={{width:"100%",padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>Ajouter</button>
+      <button onClick={add} disabled={busy} style={{width:"100%",padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Ajouter"}</button>
     </div>
     {users.map(u=><div key={u.id} style={{background:T.card,borderRadius:10,padding:"12px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
       <div style={{flex:1}}>
@@ -2641,7 +2657,7 @@ function UsersAdmin({users,onSave,caisseUrl}){
         <div style={{fontSize:12,color:T.mid}}>{roleLabel[u.role]||u.role} • PIN: {"●".repeat(u.pin?.length||4)}</div>
       </div>
       <button onClick={()=>setEditU({...u})} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
-      <button onClick={()=>del(u.id)} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+      <button onClick={()=>del(u.id)} disabled={busy} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:busy?"default":"pointer",color:T.red}}>🗑</button>
     </div>)}
     {editU&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:340}}>
@@ -2652,8 +2668,8 @@ function UsersAdmin({users,onSave,caisseUrl}){
           <option value="admin">Admin</option><option value="cashier">Caissier</option>
         </select>
         <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>setEditU(null)} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
-          <button onClick={saveEdit} style={{flex:2,padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>Enregistrer</button>
+          <button onClick={()=>setEditU(null)} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={saveEdit} disabled={busy} style={{flex:2,padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Enregistrer"}</button>
         </div>
       </div>
     </div>}
@@ -2698,6 +2714,7 @@ function MyProfile({currentUser,setCU,caisseUrl}){
 
 function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU}){
   const [cu,setCu]=useState(caisseUrl);const [bu,setBu]=useState(boissonsUrl);const [msg,setMsg]=useState("");
+  const [initBusy,setInitBusy]=useState(false); // anti double-clic sur l'initialisation
   // Une URL Apps Script valide ressemble à https://script.google.com/macros/s/XXXX/exec
   // (souvent copiée-collée avec un espace ou un retour à la ligne en trop, ce qui casse
   // TOUS les appels réseau sans message clair -> on nettoie et on vérifie avant d'enregistrer).
@@ -2711,9 +2728,11 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU})
     setTimeout(()=>window.location.reload(),900);
   };
   const initSheets=async()=>{
+    if(initBusy)return;setInitBusy(true);
     setMsg("⏳ Initialisation...");
     const r=await onInit();
     setMsg(r?.ok?"✅ "+r.message:"❌ "+(r?.error||"Échec de connexion. Vérifiez l'URL du script Caisse ci-dessus (espaces, /exec en fin d'URL) et que le déploiement Apps Script est bien accessible en \"Anyone\"."));
+    setInitBusy(false);
     setTimeout(()=>setMsg(""),8000);
   };
   const inp=ok=>({width:"100%",padding:"11px 12px",border:`1px solid ${ok?T.border:T.red}`,borderRadius:8,fontSize:12,outline:"none",marginBottom:4,wordBreak:"break-all"});
@@ -2732,7 +2751,7 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU})
     </div>
     <div style={{background:T.card,borderRadius:12,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:12}}>Google Sheets</div>
-      <button onClick={initSheets} style={{width:"100%",padding:"12px",background:"#1565C0",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,marginBottom:8}}>🗄 Initialiser les feuilles (1ère utilisation)</button>
+      <button onClick={initSheets} disabled={initBusy} style={{width:"100%",padding:"12px",background:initBusy?"#ccc":"#1565C0",color:"white",border:"none",borderRadius:10,cursor:initBusy?"default":"pointer",fontWeight:700,marginBottom:8}}>{initBusy?"⏳ Initialisation...":"🗄 Initialiser les feuilles (1ère utilisation)"}</button>
       <button onClick={onSync} style={{width:"100%",padding:"12px",background:T.dark,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>↻ Synchroniser depuis Google Sheets</button>
     </div>
     <div style={{background:"#E8F5E9",borderRadius:12,padding:14,border:"1px solid #A5D6A7",marginBottom:14}}>
