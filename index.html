@@ -80,6 +80,30 @@ function parseContainers(str){
 }
 // Combien de contenants pleins de cette taille tiennent dans le stock actuel (pour
 // "Ouvrir (2 Fûts 20L)" et l'équivalence affichée dans l'écran Contenants).
+// Contraintes caméra partagées par tous les scanners (QR + codes-barres). Sur
+// certains téléphones Android (Samsung en particulier), demander juste
+// facingMode:"environment" laisse l'appareil choisir n'importe quel objectif — il
+// prend parfois le grand-angle au lieu du principal, qui a du mal à faire la mise au
+// point de près et donne une image floue impossible à scanner. On demande une
+// résolution plus élevée (pousse vers l'objectif principal) et la mise au point
+// automatique en continu quand le téléphone la supporte.
+const SCANNER_VIDEO_CONSTRAINTS={video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720},
+  advanced:[{focusMode:"continuous"}]}};
+// Force une nouvelle tentative de mise au point (appui sur l'image) — utile sur les
+// téléphones où la mise au point automatique en continu n'est pas fiable au démarrage.
+// On bascule brièvement en mode manuel puis on revient en continu : ça déclenche une
+// nouvelle recherche de netteté sur la plupart des pilotes caméra Android.
+const refocusVideo=videoEl=>{
+  try{
+    const track=videoEl?.srcObject?.getVideoTracks?.()[0];
+    if(!track||!track.getCapabilities)return;
+    const caps=track.getCapabilities();
+    if(caps.focusMode&&caps.focusMode.includes("continuous")){
+      track.applyConstraints({advanced:[{focusMode:"manual"}]}).catch(()=>{})
+        .then(()=>track.applyConstraints({advanced:[{focusMode:"continuous"}]}).catch(()=>{}));
+    }
+  }catch{}
+};
 const containerCount=(stock,size)=>size>0?Math.floor(stock/size):0;
 // Si une réserve précise a été enregistrée pour ce type de contenant (via Entrée
 // rapide), on l'utilise. Sinon on affiche 0 — pas de calcul dérivé du stock total en
@@ -1310,7 +1334,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       const reader=new ZXing.BrowserQRCodeReader();
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        {video:{facingMode:"environment"}}, videoRef.current,
+        SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{
           if(!result)return;
           stopCam();setScanning(false);
@@ -1441,7 +1465,8 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
 
       {!applied?<>
         {scanning?(<div style={{marginBottom:14}}>
-          <video ref={videoRef} style={{width:"100%",height:170,objectFit:"cover",borderRadius:12,background:"#000"}} muted playsInline/>
+          <video ref={videoRef} onClick={()=>refocusVideo(videoRef.current)} style={{width:"100%",height:170,objectFit:"cover",borderRadius:12,background:"#000",cursor:"pointer"}} muted playsInline/>
+          <div style={{fontSize:10,color:T.mid,textAlign:"center",marginTop:2}}>Image floue ? Touchez-la pour refaire la mise au point</div>
           <button onClick={()=>{stopCam();setScanning(false);}} style={{width:"100%",marginTop:6,padding:"8px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:13}}>Annuler le scan</button>
         </div>):(
           <button onClick={()=>setScanning(true)} style={{width:"100%",padding:"12px",background:T.dark,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:600,fontSize:13,marginBottom:10}}>
@@ -1537,7 +1562,7 @@ function ScannerModal({products,siteId,onFound,onClose}){
       const reader=new ZXing.BrowserMultiFormatReader(hints);
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        {video:{facingMode:"environment"}}, videoRef.current,
+        SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{ if(result)handle(result.getText()); }
       );
     }catch{setMsg("Caméra indisponible — saisir manuellement ↓");}
@@ -1556,7 +1581,7 @@ function ScannerModal({products,siteId,onFound,onClose}){
       </div>
       {!found?<>
         <div style={{position:"relative",background:"#000",height:200}}>
-          <video ref={videoRef} style={{width:"100%",height:"100%",objectFit:"cover"}} muted playsInline/>
+          <video ref={videoRef} onClick={()=>refocusVideo(videoRef.current)} style={{width:"100%",height:"100%",objectFit:"cover",cursor:"pointer"}} muted playsInline/>
           <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
             <div style={{width:180,height:80,border:"2px solid rgba(255,255,255,0.7)",borderRadius:6}}/>
           </div>
@@ -1965,7 +1990,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
       const reader=new ZXing.BrowserMultiFormatReader(hints);
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        {video:{facingMode:"environment"}}, videoRef.current,
+        SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{
           if(!result)return;
           stopCam();setScanning(false);
@@ -2005,7 +2030,8 @@ function StockEntry({products,sites,caisseUrl,onSave}){
     <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:14}}>📥 Entrée rapide de stock</div>
     {/* Scan */}
     {scanning?(<div style={{marginBottom:14}}>
-      <video ref={videoRef} style={{width:"100%",height:180,objectFit:"cover",borderRadius:12,background:"#000"}} muted playsInline/>
+      <video ref={videoRef} onClick={()=>refocusVideo(videoRef.current)} style={{width:"100%",height:180,objectFit:"cover",borderRadius:12,background:"#000",cursor:"pointer"}} muted playsInline/>
+      <div style={{fontSize:10,color:T.mid,textAlign:"center",marginTop:2}}>Image floue ? Touchez-la pour refaire la mise au point</div>
       <button onClick={()=>{stopCam();setScanning(false);}} style={{width:"100%",marginTop:6,padding:"8px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:13}}>Annuler</button>
     </div>):(
       <button onClick={()=>setScanning(true)} style={{width:"100%",padding:"14px",background:T.dark,color:"white",border:"none",borderRadius:12,cursor:"pointer",fontWeight:700,fontSize:14,marginBottom:10}}>
@@ -2326,7 +2352,7 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
       const reader=new ZXing.BrowserMultiFormatReader(hints);
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        {video:{facingMode:"environment"}}, videoRef.current,
+        SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{
           if(!result)return;
           stopBarcodeScan();setScanningBarcode(false);
@@ -2354,7 +2380,8 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
         </div>
       </div>
       {scanningBarcode&&<div style={{marginBottom:10}}>
-        <video ref={videoRef} style={{width:"100%",height:160,objectFit:"cover",borderRadius:10,background:"#000"}} muted playsInline/>
+        <video ref={videoRef} onClick={()=>refocusVideo(videoRef.current)} style={{width:"100%",height:160,objectFit:"cover",borderRadius:10,background:"#000",cursor:"pointer"}} muted playsInline/>
+        <div style={{fontSize:10,color:T.mid,textAlign:"center",marginTop:2}}>Image floue ? Touchez-la pour refaire la mise au point</div>
         <div style={{fontSize:11,color:T.mid,textAlign:"center",marginTop:4}}>Pointez sur le code-barres du produit</div>
         {scanMsg&&<div style={{fontSize:11,color:T.red,textAlign:"center",marginTop:2}}>{scanMsg}</div>}
       </div>}
