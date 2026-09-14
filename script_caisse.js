@@ -650,8 +650,17 @@ function transferStock(e){
 function saveSale(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), p=e.parameter;
   var tz=Session.getScriptTimeZone(), now=new Date(), saleId=now.getTime().toString();
-  sh.appendRow([saleId,Utilities.formatDate(now,tz,"dd/MM/yyyy"),Utilities.formatDate(now,tz,"HH:mm:ss"),
+  var dateStr=Utilities.formatDate(now,tz,"dd/MM/yyyy"), heureStr=Utilities.formatDate(now,tz,"HH:mm:ss");
+  sh.appendRow([saleId,dateStr,heureStr,
     p.site,p.siteName,+p.total,p.payment,p.items,p.member||"",+p.nbItems,p.caissier||"",p.splitPart||""]);
+  // Empêche Google Sheets de convertir les colonnes Date/Heure en vraies dates (ce qui
+  // cassait le filtre "Aujourd'hui" et les totaux dans les Rapports : la date revenait
+  // au format ISO complet au lieu du "dd/MM/yyyy" attendu par l'appli, donc plus rien
+  // ne correspondait) — on force le format texte puis on réécrit la valeur pour que
+  // Sheets ne la réinterprète plus comme une date.
+  var lastRow=sh.getLastRow();
+  sh.getRange(lastRow,2).setNumberFormat("@").setValue(dateStr);
+  sh.getRange(lastRow,3).setNumberFormat("@").setValue(heureStr);
   // Décrémenter stock
   var prodSh=ss.getSheetByName("Produits"), col=siteColumn(ss,p.site);
   var items; try{items=JSON.parse(safeDecodeItems(p.items));}catch(err){items=[];}
@@ -696,12 +705,19 @@ function saveSale(e){
 function getSales(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), p=e.parameter;
   if(!sh||sh.getLastRow()<=1)return{ok:true,sales:[]};
+  var tz=Session.getScriptTimeZone();
+  // Certaines lignes déjà enregistrées ont été converties en vraies dates par Google
+  // Sheets (voir saveSale) : on les reformate à la volée en "dd/MM/yyyy"/"HH:mm:ss"
+  // pour que les anciennes ventes redeviennent lisibles dans les Rapports, pas
+  // seulement les nouvelles.
+  var fmtDate=function(v){ return v instanceof Date ? Utilities.formatDate(v,tz,"dd/MM/yyyy") : v; };
+  var fmtTime=function(v){ return v instanceof Date ? Utilities.formatDate(v,tz,"HH:mm:ss") : v; };
   var data=sh.getRange(2,1,sh.getLastRow()-1,12).getValues();
   var sales=data.filter(function(r){
     if(!r[0])return false;
     if(p.site&&p.site!=="all"&&r[3]!==p.site)return false;
-    if(p.date&&r[1]!==p.date)return false;
+    if(p.date&&fmtDate(r[1])!==p.date)return false;
     return true;
-  }).map(function(r){return{id:r[0],date:r[1],time:r[2],siteId:r[3],siteName:r[4],total:r[5],payment:r[6],items:r[7],member:r[8],caissier:r[10]};});
+  }).map(function(r){return{id:r[0],date:fmtDate(r[1]),time:fmtTime(r[2]),siteId:r[3],siteName:r[4],total:r[5],payment:r[6],items:r[7],member:r[8],caissier:r[10]};});
   return{ok:true,sales:sales};
 }
