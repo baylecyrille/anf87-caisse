@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve"];
+  "saveProductOrder","addToReserve","adjustContainer"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -46,6 +46,7 @@ function doGet(e) {
       case "uploadPhotoChunk":result = uploadPhotoChunk(e); break;
       case "openContainer":   result = openContainer(e); break;
       case "closeContainer":  result = closeContainer(e); break;
+      case "adjustContainer": result = adjustContainer(e); break;
       case "savePortion":     result = savePortion(e); break;
       case "deletePortion":   result = deletePortion(e); break;
       case "uploadPortionPhotoChunk": result = uploadPortionPhotoChunk(e); break;
@@ -505,6 +506,37 @@ function closeContainer(e){
       }
       sh.deleteRow(i+2);
       return{ok:true,reconciled:remaining};
+    }
+  }
+  return{ok:false,error:"Contenant introuvable"};
+}
+// Corrige directement la jauge d'un contenant ouvert (ex: erreur de saisie, écart
+// constaté à l'inventaire) — ajuste AUSSI le stock global du produit du même écart,
+// pour que jauge et stock restent cohérents entre eux.
+function adjustContainer(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Contenants"), p=e.parameter;
+  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Aucun contenant ouvert"};
+  var newRemaining=+p.remaining; if(isNaN(newRemaining)||newRemaining<0)return{ok:false,error:"Valeur invalide"};
+  var data=sh.getRange(2,1,sh.getLastRow()-1,6).getValues();
+  for(var i=0;i<data.length;i++){
+    if(data[i][0].toString()===p.site.toString()&&data[i][1].toString()===p.id.toString()){
+      var oldRemaining=+data[i][4]||0;
+      var delta=newRemaining-oldRemaining;
+      sh.getRange(i+2,5).setValue(newRemaining);
+      if(delta!==0){
+        var prodSh=ss.getSheetByName("Produits"), col=siteColumn(ss,p.site);
+        if(col){
+          var pIds=prodSh.getRange(2,1,prodSh.getLastRow()-1,1).getValues();
+          for(var j=0;j<pIds.length;j++){
+            if(pIds[j][0].toString()===p.id.toString()){
+              var cell=prodSh.getRange(j+2,col);
+              cell.setValue(Math.max(0,+cell.getValue()+delta));
+              break;
+            }
+          }
+        }
+      }
+      return{ok:true,newRemaining:newRemaining};
     }
   }
   return{ok:false,error:"Contenant introuvable"};

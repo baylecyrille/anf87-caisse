@@ -113,6 +113,15 @@ async function closeContainerApi(caisseUrl,siteId,prod,setContainers){
   }
   return r;
 }
+// Corrige directement la jauge d'un contenant ouvert (ex: écart constaté à
+// l'inventaire) — ajuste aussi le stock produit du même écart, côté serveur.
+async function adjustContainerApi(caisseUrl,siteId,prod,newRemaining,setContainers){
+  const r=await apiWrite(caisseUrl,{action:"adjustContainer",site:siteId,id:prod.id,remaining:newRemaining});
+  if(r.ok){
+    setContainers(prev=>prev.map(c=>(c.site===siteId&&c.productId.toString()===prod.id.toString())?{...c,remaining:newRemaining}:c));
+  }
+  return r;
+}
 // Redimensionne/compresse une photo côté navigateur avant stockage (400px max, JPEG
 // 70%) — réutilisé pour les photos produit ET les photos de portion.
 function resizePhotoFile(file){
@@ -294,12 +303,16 @@ function App(){
     if(missing){window.alert("⚠️ Ce menu contient un produit qui n'existe plus, il ne peut pas être ajouté.");return;}
     const insuffisant=items.find(it=>(it.prod.stock[siteId]||0)<it.qty);
     if(insuffisant){window.alert("⚠️ Stock insuffisant pour ce menu (\""+insuffisant.prod.name+"\").");return;}
+    // Un menu contenant au moins une boisson est éligible à la carte boissons
+    // offertes (comme un produit boisson classique) — la valeur totale du menu
+    // devient alors offrable.
+    const containsDrink=items.some(it=>it.prod.drink);
     setCart(prev=>{
       const ex=prev.find(i=>i.pid===combo.id&&i.isCombo);
       if(ex)return prev.map(i=>i===ex?{...i,qty:i.qty+1}:i);
       return[...prev,{id:combo.id+"-"+Date.now(),pid:combo.id,isCombo:true,
         comboItems:items.map(it=>({pid:it.pid,qty:it.qty})),
-        name:combo.name,price:combo.price,emoji:"🍽",photo:combo.photo,drink:false,qty:1,free:false,unit:"menu"}];
+        name:combo.name,price:combo.price,emoji:"🍽",photo:combo.photo,drink:containsDrink,qty:1,free:false,unit:"menu"}];
     });
   };
   const removeFromCart=id=>setCart(prev=>{const ex=prev.find(i=>i.id===id);
@@ -692,6 +705,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           const stk=p.stock[siteId]||0;
           const isDrink=p.drink;
           const myPortions=p.sellByVolume?portions.filter(po=>po.productId.toString()===p.id.toString()):[];
+          // Si des tailles de contenant sont configurées pour ce produit, il faut
+          // qu'un contenant soit ouvert (écran Contenants / bandeau caisse) avant de
+          // pouvoir le vendre — évite de vendre un fût qui n'est pas encore entamé.
+          const needsContainer=p.sellByVolume&&parseContainers(p.containers).length>0;
+          const containerOpen=!needsContainer||containers.some(c=>c.site===siteId&&c.productId.toString()===p.id.toString());
+          const sellable=stk>0&&containerOpen;
           // Produit vendu au volume avec des portions configurées (ex: Demi/Pichet 1L/
           // Pichet 1,5L) : un bouton par portion, ajouté directement au panier sans
           // passer par la fenêtre de choix de quantité. Chaque portion a sa propre
@@ -705,21 +724,21 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
                   opacity:dragId===p.id.toString()?0.35:1,
                   outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
                   outlineOffset:2,borderRadius:14}}>
-              <button onClick={()=>{if(reorderMode)return;stk>0&&addVolumeToCart(p,portion.size,p.unit,portion.price);}} disabled={stk<=0&&!reorderMode}
+              <button onClick={()=>{if(reorderMode)return;sellable&&addVolumeToCart(p,portion.size,p.unit,portion.price);}} disabled={!sellable&&!reorderMode}
                 style={photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
-                    cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.45:1,
-                    border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
-                  :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
-                    borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
+                    cursor:reorderMode?"grab":sellable?"pointer":"not-allowed",opacity:!sellable&&!reorderMode?.45:1,
+                    border:`2px solid ${isDrink&&sellable?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
+                  :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&sellable?"#FF9F0A":T.border}`,
+                    borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":sellable?"pointer":"not-allowed",opacity:!sellable&&!reorderMode?.4:1,
                     textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
                 onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
                 onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
                 {photo?<>
                   <img src={photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
                   <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0) 38%,rgba(0,0,0,0.8) 100%)"}}/>
-                  {isDrink&&stk>0&&<div style={{position:"absolute",top:6,left:6,background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
+                  {isDrink&&sellable&&<div style={{position:"absolute",top:6,left:6,background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
                   <div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>
-                    {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
+                    {!containerOpen?"🔒 Fermé":stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
                   </div>
                   <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
                     <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{portion.name} — {portion.size}{p.unit}</div>
@@ -727,12 +746,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
                   </div>
                 </>:<>
                   <div style={{fontSize:30,marginBottom:6}}>{p.emoji}</div>
-                  {isDrink&&stk>0&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
+                  {isDrink&&sellable&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
                   <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:1,lineHeight:1.2}}>{portion.name}</div>
                   <div style={{fontSize:11,color:T.mid,marginBottom:3}}>{portion.size}{p.unit}</div>
                   <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(portion.price)}</div>
-                  <div style={{fontSize:10,fontWeight:600,color:stockC(stk),marginTop:3}}>
-                    {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
+                  <div style={{fontSize:10,fontWeight:600,color:!containerOpen?T.orange:stockC(stk),marginTop:3}}>
+                    {!containerOpen?"🔒 Contenant fermé":stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
                   </div>
                 </>}
               </button>
@@ -1034,7 +1053,8 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBo
     window.location.href=`sumupmerchant://pay?amount=${a}&currency=EUR&title=${desc}&affiliate-key=ANF87`;
     setTimeout(()=>{if(window.confirm("✅ Paiement CB confirmé par le TPE SumUp ?"))onDone({type:"cb"});else setSubmitting(false);},2000);
   };
-  const handleCash=()=>{if(submitting)return;const g=parseFloat(given.replace(",","."));if(isNaN(g)||g<paidTotal)return;setSubmitting(true);onDone({type:"cash",given:g,change:+(g-paidTotal).toFixed(2)});};
+  const doCashPayment=g=>{if(submitting)return;if(isNaN(g)||g<paidTotal)return;setSubmitting(true);onDone({type:"cash",given:g,change:+(g-paidTotal).toFixed(2)});};
+  const handleCash=()=>{doCashPayment(parseFloat(given.replace(",",".")));};
 
   return(<div style={ov} onClick={e=>e.target===e.currentTarget&&onClose()}>
     <div style={sh}>
@@ -1096,12 +1116,12 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,openBo
           <div style={{fontSize:30,fontWeight:900,color:T.red}}>{fmt(paidTotal)}</div>
         </div>
         <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Montant remis</label>
-        <input value={given} onChange={e=>setGiven(e.target.value)} type="number" step="0.50" placeholder="0,00"
+        <input value={given} onChange={e=>{setGiven(e.target.value);const g=parseFloat(e.target.value.replace(",","."));if(!isNaN(g)&&Math.abs(g-paidTotal)<0.001)doCashPayment(g);}} type="number" step="0.50" placeholder="0,00"
           style={{width:"100%",padding:"14px",fontSize:24,fontWeight:700,border:`2px solid ${T.border}`,borderRadius:12,textAlign:"right",marginBottom:10,outline:"none"}}/>
         <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:12}}>
           {/* Montants uniques (évite de proposer 2x la même valeur, ex: quand le total est déjà rond) */}
           {[...new Set([paidTotal,Math.ceil(paidTotal),Math.ceil(paidTotal/5)*5,Math.ceil(paidTotal/10)*10])].map((v,i)=>(
-            <button key={i} onClick={()=>setGiven(v.toFixed(2))} style={{padding:"10px 4px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,fontSize:12,fontWeight:700,cursor:"pointer"}}>{fmt(v)}</button>
+            <button key={i} onClick={()=>{setGiven(v.toFixed(2));if(Math.abs(v-paidTotal)<0.001)doCashPayment(v);}} style={{padding:"10px 4px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,fontSize:12,fontWeight:700,cursor:"pointer"}}>{fmt(v)}</button>
           ))}
         </div>
         {given&&parseFloat(given.replace(",","."))>=paidTotal&&<div style={{background:"#E8F5E9",borderRadius:12,padding:14,marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -1241,7 +1261,7 @@ function SplitModal({total,onClose,onComplete}){
         </>}
         {step==="cash"&&<>
           <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Montant remis</label>
-          <input value={given} onChange={e=>setGiven(e.target.value)} type="number" step="0.50" placeholder="0,00"
+          <input value={given} onChange={e=>{setGiven(e.target.value);const g=parseFloat(e.target.value.replace(",","."));if(!completing&&!isNaN(g)&&Math.abs(g-activeAmt)<0.001)confirmPayment("cash",{given:g,change:0});}} type="number" step="0.50" placeholder="0,00"
             style={{width:"100%",padding:"14px",fontSize:22,fontWeight:700,border:`2px solid ${T.border}`,borderRadius:12,textAlign:"right",marginBottom:10,outline:"none"}}/>
           {given&&parseFloat(given.replace(",","."))>=activeAmt&&<div style={{background:"#E8F5E9",borderRadius:12,padding:12,marginBottom:12,display:"flex",justifyContent:"space-between"}}>
             <span style={{color:"#2E7D32",fontWeight:600,fontSize:14}}>Monnaie à rendre</span>
@@ -1585,7 +1605,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
         </button>
       ))}
     </div>
-    {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave}/>}
+    {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve}/>}
     {view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
     {view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
     {view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
@@ -1791,7 +1811,80 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
   </div>);
 }
 
-function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave}){
+// ═══ PANNEAU CONTENANT INLINE (sous le produit, dans l'écran Stock) ═══
+function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,reserve,products,onSave}){
+  const [busy,setBusy]=useState(false);
+  const [editingRemaining,setEditingRemaining]=useState(false);
+  const cont=containers.find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString());
+  const presets=parseContainers(prod.containers);
+  const stock=prod.stock[siteId]||0;
+  const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
+  const gaugeColor=prod.color||T.orange;
+
+  const doOpen=async(choice)=>{
+    setBusy(true);
+    await openContainerApi(caisseUrl,siteId,prod,choice,setContainers);
+    setBusy(false);
+  };
+  const doClose=async()=>{
+    if(!window.confirm(`Terminer ${cont.label} ? Il reste ${cont.remaining}${prod.unit}, cette quantité sera déduite du stock pour corriger l'écart.`))return;
+    setBusy(true);
+    await closeContainerApi(caisseUrl,siteId,prod,setContainers);
+    setBusy(false);
+  };
+  const doAdjust=async(newRemaining)=>{
+    if(isNaN(newRemaining)||newRemaining<0||!cont)return;
+    const delta=newRemaining-cont.remaining;
+    setBusy(true);
+    // Reflet immédiat sur le stock local (le serveur ajuste pareil de son côté).
+    if(delta!==0){
+      const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)+delta)}});
+      onSave(upd);
+    }
+    await adjustContainerApi(caisseUrl,siteId,prod,newRemaining,setContainers);
+    setBusy(false);setEditingRemaining(false);
+  };
+
+  return(<div style={{padding:"10px 14px",background:"#FAFAFA"}}>
+    <div style={{fontSize:10,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>🧴 Contenant — {prod.name}</div>
+    {cont?<>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <span style={{fontSize:12,fontWeight:700,color:T.dark}}>{cont.label}</span>
+        {editingRemaining?
+          <div style={{display:"flex",alignItems:"center",gap:5}}>
+            <input type="number" defaultValue={cont.remaining} autoFocus
+              onBlur={e=>doAdjust(parseInt(e.target.value,10))}
+              onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape")setEditingRemaining(false);}}
+              style={{width:60,padding:"3px 6px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:12,textAlign:"center"}}/>
+            <span style={{fontSize:11,color:T.mid}}>/{cont.size}{prod.unit}</span>
+          </div>
+          :<button onClick={()=>setEditingRemaining(true)} disabled={busy} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:T.blue,fontWeight:600}}>
+            {cont.remaining}/{cont.size}{prod.unit} ✏️
+          </button>}
+      </div>
+      <div style={{height:10,background:T.border,borderRadius:5,overflow:"hidden",marginBottom:6}}>
+        <div style={{height:"100%",width:pct+"%",background:gaugeColor,transition:"width .3s"}}/>
+      </div>
+      <div style={{fontSize:10,color:T.mid,marginBottom:8}}>Ouvert le {cont.openedAt} — touchez le chiffre pour corriger directement la jauge</div>
+      <button onClick={doClose} disabled={busy} style={{width:"100%",padding:"8px",background:busy?"#eee":T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:busy?"default":"pointer",fontWeight:600,fontSize:12,color:T.dark}}>
+        {busy?"⏳...":"🏁 Terminer ce contenant"}
+      </button>
+    </>:<>
+      <div style={{fontSize:11,color:T.mid,marginBottom:8}}>Aucun contenant ouvert — les produits liés restent grisés à la caisse tant que ce n'est pas fait.</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        {presets.map((c,i)=>{
+          const n=containerAvailable(reserve,stock,siteId,prod.id,c.label,c.size);
+          return(<button key={i} disabled={busy||n===0} onClick={()=>doOpen(c)}
+            style={{padding:"7px 10px",background:n===0?"#ccc":T.green,color:"white",border:"none",borderRadius:8,cursor:(busy||n===0)?"default":"pointer",fontWeight:600,fontSize:11,opacity:n===0?.6:1}}>
+            {busy?"⏳...":`+ Ouvrir ${c.label} (${n})`}
+          </button>);
+        })}
+      </div>
+    </>}
+  </div>);
+}
+
+function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,setContainers,reserve}){
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:v<=10?"#EAB308":T.green;
   const updateQty=async(prod,site,newQty)=>{
     const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[site]:Math.max(0,newQty)}});
@@ -1811,9 +1904,10 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave}){
       {cats.map(cat=><div key={cat} style={{marginBottom:14}}>
         <div style={{fontSize:11,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>{cat}</div>
         <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
-          {products.filter(p=>p.cat===cat).map((prod,idx,arr)=>{
+          {products.filter(p=>p.cat===cat).flatMap((prod,idx,arr)=>{
+            const needsContainerPanel=prod.sellByVolume&&parseContainers(prod.containers).length>0;
             const stk=prod.stock[siteId]||0;
-            return(<div key={prod.id} style={{display:"flex",alignItems:"center",padding:"11px 14px",borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",gap:10}}>
+            return [<div key={prod.id} style={{display:"flex",alignItems:"center",padding:"11px 14px",borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",gap:10}}>
               {prod.photo?<img src={prod.photo} style={{width:28,height:28,borderRadius:6,objectFit:"cover",flexShrink:0}}/>
                 :<span style={{fontSize:22,flexShrink:0}}>{prod.emoji}</span>}
               <div style={{flex:1,minWidth:0}}>
@@ -1839,7 +1933,11 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave}){
                     border:`1px solid ${T.border}`,borderRadius:6,padding:"3px 0",outline:"none"}}/>
                 <button onClick={()=>updateQty(prod,siteId,stk+1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14}}>+</button>
               </div>
-            </div>);
+            </div>,
+            needsContainerPanel&&<div key={prod.id+"_cp"} style={{borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none"}}>
+              <InlineContainerPanel prod={prod} siteId={siteId} caisseUrl={caisseUrl}
+                containers={containers} setContainers={setContainers} reserve={reserve} products={products} onSave={onSave}/>
+            </div>];
           })}
         </div>
       </div>)}
