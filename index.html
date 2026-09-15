@@ -294,8 +294,12 @@ function App(){
   const [volumeProd,setVolumeProd]=useState(null); // produit à vendre au verre
   const caisseUrl=LS.get("anf87_caisse_url")||"";
   const boissonsUrl=LS.get("anf87_url")||"";
-  const sumupKey=LS.get("anf87_sumup_key")||"";
-  const sumupAppId=LS.get("anf87_sumup_appid")||"";
+  // Réglages partagés par tout le club (clé Affiliate SumUp, App ID) — stockés sur
+  // Google Sheets pour suivre automatiquement sur tous les appareils, avec repli sur
+  // localStorage tant qu'aucune synchro n'a encore eu lieu (1er lancement, hors-ligne).
+  const [config,setConfig]=useState(LS.get("anf87_config")||{});
+  const sumupKey=config.sumup_key!==undefined?config.sumup_key:(LS.get("anf87_sumup_key")||"");
+  const sumupAppId=config.sumup_appid!==undefined?config.sumup_appid:(LS.get("anf87_sumup_appid")||"");
   const site=sites.find(s=>s.id===siteId)||sites[0]||{id:"s1",name:"Buvette",color:T.red};
   const isAdmin=!users.length||currentUser?.role==="admin";
 
@@ -326,6 +330,7 @@ function App(){
       setCombos(r.combos||[]);LS.set("anf87_combos",r.combos||[]);
       setAccompaniments(r.accompaniments||[]);LS.set("anf87_accompaniments",r.accompaniments||[]);
       setReserve(r.reserve||[]);LS.set("anf87_reserve",r.reserve||[]);
+      setConfig(r.config||{});LS.set("anf87_config",r.config||{});
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);LS.set("anf87_lastsync",t);
       setSyncError(null);
@@ -490,7 +495,7 @@ function App(){
           accompaniments={accompaniments} setAccompaniments={setAccompaniments}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})} currentUser={currentUser} setCU={setCU}
-          sumupKey={sumupKey} sumupAppId={sumupAppId}/>}
+          sumupKey={sumupKey} sumupAppId={sumupAppId} setConfig={setConfig}/>}
       </div>
 
       {/* ── NAVIGATION ── */}
@@ -3026,10 +3031,11 @@ function MyProfile({currentUser,setCU,caisseUrl}){
   </div>);
 }
 
-function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,sumupKey,sumupAppId}){
+function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,sumupKey,sumupAppId,setConfig}){
   const [cu,setCu]=useState(caisseUrl);const [bu,setBu]=useState(boissonsUrl);const [msg,setMsg]=useState("");
   const [sk,setSk]=useState(sumupKey||"");const [said,setSaid]=useState(sumupAppId||"");
   const [initBusy,setInitBusy]=useState(false); // anti double-clic sur l'initialisation
+  const [savingConfig,setSavingConfig]=useState(false); // anti double-clic sur la sauvegarde SumUp
   // Une URL Apps Script valide ressemble à https://script.google.com/macros/s/XXXX/exec
   // (souvent copiée-collée avec un espace ou un retour à la ligne en trop, ce qui casse
   // TOUS les appels réseau sans message clair -> on nettoie et on vérifie avant d'enregistrer).
@@ -3038,10 +3044,23 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
   const save=()=>{
     const cuT=cu.trim(), buT=bu.trim();
     LS.set("anf87_caisse_url",cuT);LS.set("anf87_url",buT);
-    LS.set("anf87_sumup_key",sk.trim());LS.set("anf87_sumup_appid",said.trim());
     setCu(cuT);setBu(buT);
     setMsg("✅ URLs enregistrées, rechargement…");
     setTimeout(()=>window.location.reload(),900);
+  };
+  // Enregistrés sur Google Sheets (feuille "Config") — partagés automatiquement par
+  // tous les appareils du club, contrairement aux URLs ci-dessus qui restent locales.
+  const saveSumup=async()=>{
+    if(savingConfig||!caisseUrl)return;
+    setSavingConfig(true);
+    const skT=sk.trim(),saidT=said.trim();
+    await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_key",value:skT});
+    await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_appid",value:saidT});
+    setConfig(prev=>({...prev,sumup_key:skT,sumup_appid:saidT}));
+    LS.set("anf87_sumup_key",skT);LS.set("anf87_sumup_appid",saidT); // repli local, cohérence
+    setSavingConfig(false);
+    setMsg("✅ Réglages SumUp enregistrés (partagés sur tous vos appareils)");
+    setTimeout(()=>setMsg(""),3000);
   };
   const initSheets=async()=>{
     if(initBusy)return;setInitBusy(true);
@@ -3078,7 +3097,11 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
         style={{width:"100%",padding:"10px 12px",border:"1px solid #A5D6A7",borderRadius:8,fontSize:13,marginBottom:9,outline:"none"}}/>
       <label style={{fontSize:12,fontWeight:600,color:"#2E7D32",display:"block",marginBottom:4}}>App ID SumUp (optionnel, selon la config de votre clé)</label>
       <input value={said} onChange={e=>setSaid(e.target.value)} placeholder="ex: com.anf87.caisse"
-        style={{width:"100%",padding:"10px 12px",border:"1px solid #A5D6A7",borderRadius:8,fontSize:13,outline:"none"}}/>
+        style={{width:"100%",padding:"10px 12px",border:"1px solid #A5D6A7",borderRadius:8,fontSize:13,marginBottom:9,outline:"none"}}/>
+      <button onClick={saveSumup} disabled={savingConfig||!caisseUrl} style={{width:"100%",padding:"11px",background:savingConfig?"#ccc":"#2E7D32",color:"white",border:"none",borderRadius:9,cursor:(savingConfig||!caisseUrl)?"default":"pointer",fontWeight:700,fontSize:13}}>
+        {savingConfig?"⏳ Enregistrement...":"💾 Enregistrer (partagé sur tous les appareils)"}
+      </button>
+      {!caisseUrl&&<div style={{fontSize:11,color:"#2E7D32",marginTop:6}}>Configurez d'abord l'URL Script Caisse ci-dessus pour pouvoir enregistrer ce réglage sur Google Sheets.</div>}
     </div>
   </div>);
 }

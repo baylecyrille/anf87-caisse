@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve","adjustContainer","setReserveCount"];
+  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -48,6 +48,7 @@ function doGet(e) {
       case "closeContainer":  result = closeContainer(e); break;
       case "adjustContainer": result = adjustContainer(e); break;
       case "setReserveCount":  result = setReserveCount(e); break;
+      case "saveConfig":       result = saveConfig(e); break;
       case "savePortion":     result = savePortion(e); break;
       case "deletePortion":   result = deletePortion(e); break;
       case "uploadPortionPhotoChunk": result = uploadPortionPhotoChunk(e); break;
@@ -143,6 +144,13 @@ function initSheets() {
     res.getRange(1,1,1,5).setFontWeight("bold");
     res.setFrozenRows(1);
   }
+  // Réglages globaux du club (clé/valeur) — clé Affiliate SumUp, App ID SumUp...
+  var cfg = getOrCreate(ss,"Config");
+  if(cfg.getLastRow()<=1){
+    cfg.getRange(1,1,1,2).setValues([["Clé","Valeur"]]);
+    cfg.getRange(1,1,1,2).setFontWeight("bold");
+    cfg.setFrozenRows(1);
+  }
   // Portions de vente (paliers) : demis/pichets/tailles de gobelet... avec leur
   // propre photo, liées à un produit "liquide" (celui vendu au volume).
   var port = getOrCreate(ss,"Portions");
@@ -185,7 +193,34 @@ function getAllData(){
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
     categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss),
     portions:getPortionsData(ss), combos:getCombosData(ss), accompaniments:getAccompanimentsData(ss),
-    reserve:getReserveData(ss), ts:Date.now()};
+    reserve:getReserveData(ss), config:getConfig(ss), ts:Date.now()};
+}
+
+// Réglages globaux du club (clé/valeur) — ex: clé Affiliate SumUp, App ID SumUp.
+// Contrairement à l'ordre des produits (propre à chaque utilisateur), ces réglages
+// sont partagés par tout le monde : une seule config SumUp pour tout le club.
+function getConfig(ss){
+  var sh=ss.getSheetByName("Config"); if(!sh||sh.getLastRow()<=1)return {};
+  var data=sh.getRange(2,1,sh.getLastRow()-1,2).getValues(), cfg={};
+  data.forEach(function(r){ if(r[0])cfg[r[0].toString()]=r[1]||""; });
+  return cfg;
+}
+function saveConfig(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Config"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,2).setValues([["Clé","Valeur"]]);
+    sh.getRange(1,1,1,2).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  if(!p.key)return{ok:false,error:"Clé manquante"};
+  if(sh.getLastRow()>1){
+    var keys=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+    for(var i=0;i<keys.length;i++){if(keys[i][0].toString()===p.key.toString()){
+      sh.getRange(i+2,2).setValue(p.value||"");
+      return{ok:true};
+    }}
+  }
+  sh.appendRow([p.key,p.value||""]);
+  return{ok:true};
 }
 
 function getReserveData(ss){
