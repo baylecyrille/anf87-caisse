@@ -1598,15 +1598,27 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
           {memberInfo.error?<div style={{color:"#C62828",fontWeight:700,fontSize:14}}>❌ {memberInfo.error}</div>
             :licenceBlocked?
               <div>
-                <div style={{fontWeight:800,fontSize:15,color:"#E65100",marginBottom:2}}>{memberInfo.nom}</div>
-                {memberInfo.numLicence&&<div style={{fontSize:11,color:"#E65100",opacity:.8,marginBottom:6}}>{memberInfo.numLicence}</div>}
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+                  {memberInfo.photo?<img src={memberInfo.photo} style={{width:44,height:44,borderRadius:10,objectFit:"cover",flexShrink:0}}/>
+                    :<div style={{width:44,height:44,borderRadius:10,background:"rgba(230,81,0,0.1)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>👤</div>}
+                  <div>
+                    <div style={{fontWeight:800,fontSize:15,color:"#E65100"}}>{memberInfo.nom}</div>
+                    {memberInfo.numLicence&&<div style={{fontSize:11,color:"#E65100",opacity:.8}}>{memberInfo.numLicence}</div>}
+                  </div>
+                </div>
                 <div style={{color:"#E65100",fontWeight:700,fontSize:13,lineHeight:1.4}}>
                   🔒 Merci de régler la licence pour débloquer {totalDrinkValue>0?fmt(totalDrinkValue)+" offert(s)":"la consommation offerte"}.
                 </div>
               </div>
             :<div>
-              <div style={{fontWeight:800,fontSize:15,color:"#2E7D32",marginBottom:2}}>{memberInfo.nom}</div>
-              {memberInfo.numLicence&&<div style={{fontSize:11,color:"#2E7D32",opacity:.8,marginBottom:6}}>{memberInfo.numLicence}</div>}
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                {memberInfo.photo?<img src={memberInfo.photo} style={{width:44,height:44,borderRadius:10,objectFit:"cover",flexShrink:0}}/>
+                  :<div style={{width:44,height:44,borderRadius:10,background:"rgba(46,125,50,0.1)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>👤</div>}
+                <div>
+                  <div style={{fontWeight:800,fontSize:15,color:"#2E7D32"}}>{memberInfo.nom}</div>
+                  {memberInfo.numLicence&&<div style={{fontSize:11,color:"#2E7D32",opacity:.8}}>{memberInfo.numLicence}</div>}
+                </div>
+              </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
                 {[["Consommé",fmt(memberInfo.compteur),"#CC0000"],["Restant",fmt(memberInfo.solde),"#2E7D32"],["Maximum",fmt(memberInfo.maximum),"#1565C0"]].map(([l,v,c])=>(
                   <div key={l} style={{textAlign:"center",background:"white",borderRadius:8,padding:"8px 4px"}}>

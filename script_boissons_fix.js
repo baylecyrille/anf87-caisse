@@ -46,7 +46,8 @@ function getMember(e){
         ok:true, nom:data[i][COL_NOM], id:data[i][COL_ID],
         compteur:compteur, maximum:maximum, solde:maximum-compteur,
         licence:(data[i][COL_LICENCE]||"").toString().toLowerCase(),
-        numLicence:(data[i][COL_NUMLICENCE]||"").toString()
+        numLicence:(data[i][COL_NUMLICENCE]||"").toString(),
+        photo:(data[i][COL_PHOTO]||"").toString()
       })).setMimeType(ContentService.MimeType.JSON);
     }
     return ContentService.createTextOutput(JSON.stringify({ok:false,error:"Membre introuvable"}))
