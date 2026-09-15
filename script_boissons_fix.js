@@ -13,6 +13,10 @@ function doGet(e){
   var action=e.parameter.action||"menu";
   if(action==="logdetails")return logDetails(e);
   if(action==="getmember")return getMember(e);
+  if(action==="getmembers")return getMembers(e);
+  if(action==="savemember")return saveMember(e);
+  if(action==="deletemember")return deleteMember(e);
+  if(action==="uploadmemberphotochunk")return uploadMemberPhotoChunk(e);
   return handleRequest(e);
 }
 // Réutilise exactement la même logique pour les requêtes POST (au cas où l'appli
@@ -54,6 +58,102 @@ function getMember(e){
     return ContentService.createTextOutput(JSON.stringify({ok:false,error:err.toString()}))
       .setMimeType(ContentService.MimeType.JSON);
   }
+}
+
+// ── Colonne I (index 8) = Photo de la carte membre (base64), gérée depuis Admin →
+// Cartes Boissons de l'appli. N'existait pas avant ce correctif : on ne fait que
+// l'ajouter, sans jamais toucher aux colonnes A-H déjà utilisées.
+var COL_PHOTO=8;
+
+// ── getMembers : liste tous les membres pour l'écran d'admin "Cartes Boissons" ──
+function getMembers(e){
+  try{
+    var ss=SpreadsheetApp.getActiveSpreadsheet(), sheet=ss.getSheets()[0];
+    var data=sheet.getDataRange().getValues();
+    var members=[];
+    for(var i=1;i<data.length;i++){
+      if(!data[i][COL_ID])continue;
+      members.push({
+        id:data[i][COL_ID], nom:data[i][COL_NOM],
+        compteur:+data[i][COL_COMPTEUR]||0, licence:(data[i][COL_LICENCE]||"").toString(),
+        maximum:+data[i][COL_MAXIMUM]||0, solde:+data[i][COL_SOLDE]||0,
+        numLicence:(data[i][COL_NUMLICENCE]||"").toString(), photo:(data[i][COL_PHOTO]||"").toString()
+      });
+    }
+    return ContentService.createTextOutput(JSON.stringify({ok:true,members:members}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }catch(err){
+    return ContentService.createTextOutput(JSON.stringify({ok:false,error:err.toString()}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// ── saveMember : crée ou met à jour un membre. Ne touche JAMAIS à la colonne G
+// ("Nombre entraînement", gérée par le club pour calculer le Maximum) ──
+function saveMember(e){
+  try{
+    var ss=SpreadsheetApp.getActiveSpreadsheet(), sheet=ss.getSheets()[0], p=e.parameter;
+    if(!p.id||!p.nom)return ContentService.createTextOutput(JSON.stringify({ok:false,error:"ID et Nom obligatoires"})).setMimeType(ContentService.MimeType.JSON);
+    var photo=p.photo||"";
+    if(photo==="__CHUNKED__"){
+      var total=+p.photoChunks||0, cache=CacheService.getScriptCache(), parts=[];
+      for(var c=0;c<total;c++){
+        var part=cache.get("memberphoto_"+p.id+"_"+c);
+        if(part===null)return ContentService.createTextOutput(JSON.stringify({ok:false,error:"Photo incomplète (morceau "+(c+1)+"/"+total+"), réessayez."})).setMimeType(ContentService.MimeType.JSON);
+        parts.push(part);
+      }
+      photo=parts.join("");
+      for(var c2=0;c2<total;c2++)cache.remove("memberphoto_"+p.id+"_"+c2);
+    }
+    var data=sheet.getDataRange().getValues();
+    var compteur=+p.compteur||0, maximum=+p.maximum||0, solde=maximum-compteur;
+    for(var i=1;i<data.length;i++){
+      if(data[i][COL_ID]&&data[i][COL_ID].toString()===p.id.toString()){
+        var row=i+1;
+        sheet.getRange(row,COL_NOM+1).setValue(p.nom);
+        sheet.getRange(row,COL_COMPTEUR+1).setValue(compteur);
+        sheet.getRange(row,COL_LICENCE+1).setValue(p.licence||"");
+        sheet.getRange(row,COL_MAXIMUM+1).setValue(maximum);
+        sheet.getRange(row,COL_SOLDE+1).setValue(solde);
+        sheet.getRange(row,COL_NUMLICENCE+1).setValue(p.numLicence||"");
+        if(photo==="__KEEP__")photo=sheet.getRange(row,COL_PHOTO+1).getValue(); // photo inchangée, non renvoyée
+        sheet.getRange(row,COL_PHOTO+1).setValue(photo);
+        return ContentService.createTextOutput(JSON.stringify({ok:true,action:"updated"})).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    // Nouveau membre : colonne G (Nombre entraînement) laissée vide, gérée par le club.
+    var newRow=[];
+    newRow[COL_ID]=p.id; newRow[COL_NOM]=p.nom; newRow[COL_COMPTEUR]=compteur;
+    newRow[COL_LICENCE]=p.licence||""; newRow[COL_MAXIMUM]=maximum; newRow[COL_SOLDE]=solde;
+    newRow[6]=""; newRow[COL_NUMLICENCE]=p.numLicence||""; newRow[COL_PHOTO]=photo==="__KEEP__"?"":photo;
+    sheet.appendRow(newRow);
+    return ContentService.createTextOutput(JSON.stringify({ok:true,action:"created"})).setMimeType(ContentService.MimeType.JSON);
+  }catch(err){
+    return ContentService.createTextOutput(JSON.stringify({ok:false,error:err.toString()})).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+function deleteMember(e){
+  try{
+    var ss=SpreadsheetApp.getActiveSpreadsheet(), sheet=ss.getSheets()[0], id=e.parameter.id;
+    var data=sheet.getDataRange().getValues();
+    for(var i=1;i<data.length;i++){
+      if(data[i][COL_ID]&&data[i][COL_ID].toString()===id.toString()){
+        sheet.deleteRow(i+1);
+        return ContentService.createTextOutput(JSON.stringify({ok:true})).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    return ContentService.createTextOutput(JSON.stringify({ok:false,error:"Membre introuvable"})).setMimeType(ContentService.MimeType.JSON);
+  }catch(err){
+    return ContentService.createTextOutput(JSON.stringify({ok:false,error:err.toString()})).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+// Même mécanisme d'envoi par morceaux que côté Caisse (POST peu fiable sur ce
+// déploiement, et une photo entière en un seul GET dépasse la longueur d'URL max).
+function uploadMemberPhotoChunk(e){
+  var p=e.parameter;
+  if(!p.id||p.idx===undefined||!p.chunk)return ContentService.createTextOutput(JSON.stringify({ok:false,error:"Paramètres manquants"})).setMimeType(ContentService.MimeType.JSON);
+  CacheService.getScriptCache().put("memberphoto_"+p.id+"_"+p.idx, p.chunk, 600);
+  return ContentService.createTextOutput(JSON.stringify({ok:true})).setMimeType(ContentService.MimeType.JSON);
 }
 
 // ── logDetails : reçoit appareil+GPS, écrit dans Historique ──

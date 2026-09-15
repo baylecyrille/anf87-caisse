@@ -213,6 +213,28 @@ function resizePhotoFile(file){
     reader.readAsDataURL(file);
   });
 }
+// Recadre en carré CENTRÉ (style photo d'identité — le plus petit côté de la photo
+// devient le côté du carré, centré sur l'image) puis réduit à une taille fixe et
+// compresse — utilisé pour les photos de carte membre (Cartes Boissons).
+function cropSquarePhoto(file){
+  return new Promise(resolve=>{
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const img=new Image();
+      img.onload=()=>{
+        const size=Math.min(img.width,img.height);
+        const sx=(img.width-size)/2, sy=(img.height-size)/2;
+        const outSize=320;
+        const canvas=document.createElement("canvas");canvas.width=outSize;canvas.height=outSize;
+        canvas.getContext("2d").drawImage(img,sx,sy,size,size,0,0,outSize,outSize);
+        resolve(canvas.toDataURL("image/jpeg",0.75));
+      };
+      img.onerror=()=>resolve(ev.target.result);
+      img.src=ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 // Envoie une photo en plusieurs petits morceaux (GET, le POST ne fonctionne pas de
 // façon fiable sur ce déploiement) — "chunkAction" paramétrable pour réutiliser ce
 // mécanisme aussi bien pour les photos produit que pour les photos de portion.
@@ -493,7 +515,7 @@ function App(){
         {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
-          onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl}
+          onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
           accompaniments={accompaniments} setAccompaniments={setAccompaniments}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
@@ -1827,6 +1849,144 @@ function ContainersScreen({products,sites,siteId,setSiteId,caisseUrl,containers,
 }
 
 // ═══ GESTION DES COMBOS/MENUS (plusieurs produits différents en une vente) ═══
+// ═══ CARTES BOISSONS (feuille Membres du script Boissons Offertes) ═══
+function CardsAdmin({boissonsUrl}){
+  const [members,setMembers]=useState(null); // null = pas encore chargé
+  const [loading,setLoading]=useState(false);
+  const [errMsg,setErrMsg]=useState("");
+  const [edit,setEdit]=useState(null); // membre en cours d'édition, ou {} pour nouveau
+  const [busy,setBusy]=useState(false);
+  const [search,setSearch]=useState("");
+
+  const load=async()=>{
+    if(!boissonsUrl){setErrMsg("Configurez d'abord l'URL Script Boissons dans ⚙️ Configuration.");return;}
+    setLoading(true);setErrMsg("");
+    const r=await api(boissonsUrl,{action:"getmembers"});
+    if(r.ok)setMembers(r.members||[]);
+    else setErrMsg(r.error||"Échec du chargement");
+    setLoading(false);
+  };
+  useEffect(()=>{load();},[boissonsUrl]);
+
+  const startNew=()=>setEdit({id:"",nom:"",compteur:0,licence:"oui",maximum:0,numLicence:"",photo:""});
+  const startEdit=m=>setEdit({...m});
+
+  const handlePhoto=e=>{const f=e.target.files[0];if(!f)return;
+    cropSquarePhoto(f).then(url=>setEdit(prev=>({...prev,photo:url})));
+  };
+
+  const save=async()=>{
+    if(!edit.nom.trim()||busy)return;
+    setBusy(true);
+    const id=edit.id||uid();
+    const original=edit.id?members.find(m=>m.id.toString()===edit.id.toString()):null;
+    const photoChanged=!original||edit.photo!==(original.photo||"");
+    let photoParam,extra={};
+    if(photoChanged){
+      const up=await uploadPhotoGeneric(boissonsUrl,"uploadmemberphotochunk",id,edit.photo);
+      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
+      photoParam=up.photoParam;extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
+    }else{
+      photoParam="__KEEP__";
+    }
+    const r=await api(boissonsUrl,{action:"savemember",id,nom:edit.nom.trim(),compteur:edit.compteur,
+      licence:edit.licence,maximum:edit.maximum,numLicence:edit.numLicence,photo:photoParam,...extra});
+    if(r.ok){
+      const newEntry={id,nom:edit.nom.trim(),compteur:+edit.compteur||0,licence:edit.licence,
+        maximum:+edit.maximum||0,solde:(+edit.maximum||0)-(+edit.compteur||0),numLicence:edit.numLicence||"",
+        photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
+      setMembers(prev=>[...prev.filter(m=>m.id.toString()!==id.toString()),newEntry]);
+      setEdit(null);
+    }else{
+      window.alert("⚠️ Échec de l'enregistrement : "+(r.error||"connexion"));
+    }
+    setBusy(false);
+  };
+
+  const del=async id=>{
+    if(!window.confirm("Supprimer cette carte membre ?")||busy)return;
+    setBusy(true);
+    const r=await api(boissonsUrl,{action:"deletemember",id});
+    if(r.ok)setMembers(prev=>prev.filter(m=>m.id.toString()!==id.toString()));
+    else window.alert("⚠️ Échec de la suppression : "+(r.error||"connexion"));
+    setBusy(false);
+  };
+
+  const filtered=(members||[]).filter(m=>m.nom.toLowerCase().includes(search.trim().toLowerCase()));
+
+  return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
+    <button onClick={startNew} style={{width:"100%",padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,marginBottom:12}}>
+      + Nouvelle carte membre
+    </button>
+    {errMsg&&<div style={{background:"#FFF0F0",borderRadius:10,padding:"10px 12px",marginBottom:12,fontSize:13,color:T.red}}>{errMsg}</div>}
+    {loading&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>⏳ Chargement...</div>}
+    {members&&<>
+      <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Rechercher un membre…"
+        style={{width:"100%",padding:"10px 12px",border:`1px solid ${T.border}`,borderRadius:10,fontSize:13,marginBottom:12,outline:"none"}}/>
+      {filtered.map(m=>(
+        <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,background:T.card,borderRadius:10,padding:"10px 14px",marginBottom:7,border:`1px solid ${T.border}`}}>
+          {m.photo?<img src={m.photo} style={{width:40,height:40,borderRadius:8,objectFit:"cover",flexShrink:0}}/>
+            :<div style={{width:40,height:40,borderRadius:8,background:T.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>👤</div>}
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.nom}</div>
+            <div style={{fontSize:11,color:m.licence==="non"?T.red:T.mid}}>
+              {fmt(m.compteur)} / {fmt(m.maximum)} • {m.licence==="non"?"🔒 Licence non réglée":"Licence OK"}{m.numLicence?" • n°"+m.numLicence:""}
+            </div>
+          </div>
+          <button onClick={()=>startEdit(m)} style={{padding:"6px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
+          <button onClick={()=>del(m.id)} disabled={busy} style={{padding:"6px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:busy?"default":"pointer",color:T.red}}>🗑</button>
+        </div>
+      ))}
+      {filtered.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Aucun membre trouvé</div>}
+    </>}
+
+    {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
+      <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
+        <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>{edit.id?"✏️ Modifier":"+ Nouvelle carte"}</div>
+
+        <div style={{display:"flex",justifyContent:"center",marginBottom:14}}>
+          {edit.photo?<img src={edit.photo} style={{width:100,height:100,borderRadius:12,objectFit:"cover"}}/>
+            :<div style={{width:100,height:100,borderRadius:12,background:T.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:40}}>👤</div>}
+        </div>
+        <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4,textAlign:"center"}}>
+          Photo (ouvrir la galerie ou prendre directement — recadrée en carré et réduite automatiquement)
+        </label>
+        <input type="file" accept="image/*" onChange={handlePhoto} style={{display:"block",margin:"0 auto 14px",fontSize:12}}/>
+
+        <input placeholder="Nom" value={edit.nom} onChange={e=>setEdit({...edit,nom:e.target.value})}
+          style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:7}}/>
+        <input placeholder="N° de licence" value={edit.numLicence} onChange={e=>setEdit({...edit,numLicence:e.target.value})}
+          style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:7}}/>
+        <div style={{display:"flex",gap:7,marginBottom:7}}>
+          <div style={{flex:1}}>
+            <label style={{fontSize:11,color:T.mid,display:"block",marginBottom:3}}>Consommé (€)</label>
+            <input type="number" step="0.50" value={edit.compteur} onChange={e=>setEdit({...edit,compteur:e.target.value})}
+              style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13}}/>
+          </div>
+          <div style={{flex:1}}>
+            <label style={{fontSize:11,color:T.mid,display:"block",marginBottom:3}}>Maximum (€)</label>
+            <input type="number" step="0.50" value={edit.maximum} onChange={e=>setEdit({...edit,maximum:e.target.value})}
+              style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13}}/>
+          </div>
+        </div>
+        <label style={{fontSize:11,color:T.mid,display:"block",marginBottom:3}}>Licence réglée ?</label>
+        <select value={edit.licence} onChange={e=>setEdit({...edit,licence:e.target.value})}
+          style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:14}}>
+          <option value="oui">✅ Oui</option>
+          <option value="non">🔒 Non (bloque les boissons offertes)</option>
+        </select>
+
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setEdit(null)} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={save} disabled={busy||!edit.nom.trim()} style={{flex:2,padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>
+            {busy?"⏳ Enregistrement...":"💾 Enregistrer"}
+          </button>
+        </div>
+      </div>
+    </div>}
+  </div>);
+}
+
 function CombosAdmin({products,combos,setCombos,caisseUrl}){
   const [edit,setEdit]=useState(null); // combo en cours d'édition, ou {} pour nouveau
   const [busy,setBusy]=useState(false);
@@ -2560,11 +2720,11 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
 }
 
 // ═══ ADMIN ═══
-function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,portions,setPortions,combos,setCombos,accompaniments,setAccompaniments}){
+function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,accompaniments,setAccompaniments}){
   const [tab,setTab]=useState("products");
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{display:"flex",background:T.card,borderBottom:`1px solid ${T.border}`,overflowX:"auto",flexShrink:0}}>
-      {[["products","🏷 Produits"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"]].map(([v,l])=>(
+      {[["products","🏷 Produits"],["combos","🍽 Menus"],["cartes","🍺 Cartes Boissons"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"]].map(([v,l])=>(
         <button key={v} onClick={()=>setTab(v)} style={{flexShrink:0,padding:"12px 16px",border:"none",background:"none",cursor:"pointer",
           fontSize:13,fontWeight:600,color:tab===v?T.red:T.mid,borderBottom:tab===v?`2px solid ${T.red}`:"2px solid transparent"}}>
           {l}
@@ -2574,6 +2734,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
     <div style={{flex:1,overflow:"hidden"}}>
       {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments}/>}
       {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} caisseUrl={caisseUrl}/>}
+      {tab==="cartes"&&<CardsAdmin boissonsUrl={boissonsUrl}/>}
       {tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
       {tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl}/>}
       {tab==="users"&&<UsersAdmin users={users} onSave={onSaveUsers} caisseUrl={caisseUrl}/>}
