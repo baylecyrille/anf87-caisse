@@ -1047,7 +1047,9 @@ function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose
               :<span style={{fontSize:24,flexShrink:0}}>{item.emoji}</span>}
             <div style={{flex:1}}>
               <div style={{fontSize:14,fontWeight:600,color:T.dark}}>{item.name}</div>
-              <div style={{fontSize:13,color:item.free?T.green:T.red,fontWeight:700}}>{item.free?"OFFERT":fmt(item.price*item.qty)}</div>
+              <div style={{fontSize:13,color:item.free?T.green:(item.reduced?T.orange:T.red),fontWeight:700}}>
+                {item.free?"OFFERT":item.reduced?`${fmt(item.price*item.qty)} — Tarif réduit (offre carte boissons)`:fmt(item.price*item.qty)}
+              </div>
             </div>
             <div style={{display:"flex",alignItems:"center",gap:6}}>
               <button onClick={()=>removeFromCart(item.id)} style={{width:28,height:28,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:16}}>−</button>
@@ -1483,19 +1485,18 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       if(remainingBudget<=0.001){newCart.push(item);leftoverDrinkCost+=item.price*item.qty;return;}
       const lineValue=item.price*item.qty;
       if(lineValue<=remainingBudget+0.001){
-        // Le solde couvre la ligne en entier.
+        // Le solde couvre la ligne en entier : UNE seule ligne, marquée "offerte".
         newCart.push({...item,free:true});
         actuallyFreeValue+=lineValue;
         remainingBudget-=lineValue;
       }else{
-        // Le solde ne couvre qu'une PARTIE du montant de cette ligne : on déduit ce
-        // qui reste de budget de la facture, sans changer la quantité physique (le
-        // client reçoit toujours sa/ses boisson(s) en entier — seul le montant
-        // facturé change). On matérialise la part offerte par une ligne "reçu"
-        // séparée (sans impact sur le stock, déjà compté par la ligne d'origine).
+        // Le solde ne couvre qu'une PARTIE du montant : on réduit directement le prix
+        // de CETTE MÊME ligne (une seule, pas de ligne "reçu" séparée — ça donnait
+        // l'impression fausse d'une boisson offerte EN PLUS de la boisson payante,
+        // au lieu d'une seule boisson à tarif réduit).
         const freeAmt=+remainingBudget.toFixed(2);
-        newCart.push({...item,price:+(item.price-freeAmt/item.qty).toFixed(4)}); // ligne d'origine, montant réduit
-        newCart.push({...item,id:item.id+"-offert-"+Date.now(),qty:1,vol:undefined,price:freeAmt,free:true,noStock:true}); // reçu de la part offerte
+        const newPrice=+(item.price-freeAmt/item.qty).toFixed(4);
+        newCart.push({...item,price:newPrice,reduced:true,originalPrice:item.price});
         actuallyFreeValue+=freeAmt;
         leftoverDrinkCost+=lineValue-freeAmt;
         remainingBudget=0;
@@ -1635,13 +1636,19 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
           }
         </div>}
 
-        {/* Boissons concernées */}
+        {/* Boissons concernées — aperçu EXACT de ce que donnera le panier après
+            validation (même calcul, computeFreeSplit), pour ne jamais montrer autre
+            chose que ce qui sera réellement appliqué. */}
         <div style={{background:"#FFF8E1",borderRadius:10,padding:12,marginBottom:14}}>
-          {drinkItems.map((i,idx)=><div key={idx} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"3px 0"}}>
-            <span>{i.emoji} {i.name} ×{i.qty}</span><span style={{fontWeight:700}}>{fmt(i.price*i.qty)}</span>
-          </div>)}
+          {computeFreeSplit(cart,licenceBlocked?0:(knownSolde!=null?knownSolde:Infinity)).newCart
+            .filter(i=>i.drink).map((i,idx)=>(
+            <div key={idx} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"3px 0"}}>
+              <span>{i.emoji} {i.name} ×{i.qty}{i.reduced?" (tarif réduit)":""}</span>
+              <span style={{fontWeight:700,color:i.free?T.green:i.reduced?T.orange:T.dark}}>{i.free?"OFFERT":fmt(i.price*i.qty)}</span>
+            </div>
+          ))}
           <div style={{borderTop:`1px dashed ${T.border}`,marginTop:8,paddingTop:8,display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:14}}>
-            <span>{knownSolde!=null&&plannedFreeValue<totalDrinkValue?"Offert (plafonné)":"Total offert"}</span>
+            <span>Montant offert</span>
             <span style={{color:T.orange}}>{fmt(plannedFreeValue)}</span>
           </div>
         </div>
