@@ -76,7 +76,11 @@ function getMembers(e){
       members.push({
         id:data[i][COL_ID], nom:data[i][COL_NOM],
         compteur:+data[i][COL_COMPTEUR]||0, licence:(data[i][COL_LICENCE]||"").toString(),
+        // Maximum et Solde sont des cellules CALCULÉES par une formule dans la
+        // feuille (à partir du nombre d'entraînements) — on les lit pour affichage
+        // uniquement, jamais réécrites depuis l'appli (voir saveMember).
         maximum:+data[i][COL_MAXIMUM]||0, solde:+data[i][COL_SOLDE]||0,
+        entrainements:+data[i][6]||0,
         numLicence:(data[i][COL_NUMLICENCE]||"").toString(), photo:(data[i][COL_PHOTO]||"").toString()
       });
     }
@@ -89,7 +93,9 @@ function getMembers(e){
 }
 
 // ── saveMember : crée ou met à jour un membre. Ne touche JAMAIS à la colonne G
-// ("Nombre entraînement", gérée par le club pour calculer le Maximum) ──
+// ("Nombre entraînement", gérée par le club) NI aux colonnes Maximum/Solde : ce sont
+// des cellules calculées par une formule dans la feuille, les écraser avec une
+// valeur brute détruirait la formule. ──
 function saveMember(e){
   try{
     var ss=SpreadsheetApp.getActiveSpreadsheet(), sheet=ss.getSheets()[0], p=e.parameter;
@@ -106,26 +112,25 @@ function saveMember(e){
       for(var c2=0;c2<total;c2++)cache.remove("memberphoto_"+p.id+"_"+c2);
     }
     var data=sheet.getDataRange().getValues();
-    var compteur=+p.compteur||0, maximum=+p.maximum||0, solde=maximum-compteur;
+    var compteur=+p.compteur||0;
     for(var i=1;i<data.length;i++){
       if(data[i][COL_ID]&&data[i][COL_ID].toString()===p.id.toString()){
         var row=i+1;
         sheet.getRange(row,COL_NOM+1).setValue(p.nom);
         sheet.getRange(row,COL_COMPTEUR+1).setValue(compteur);
         sheet.getRange(row,COL_LICENCE+1).setValue(p.licence||"");
-        sheet.getRange(row,COL_MAXIMUM+1).setValue(maximum);
-        sheet.getRange(row,COL_SOLDE+1).setValue(solde);
         sheet.getRange(row,COL_NUMLICENCE+1).setValue(p.numLicence||"");
         if(photo==="__KEEP__")photo=sheet.getRange(row,COL_PHOTO+1).getValue(); // photo inchangée, non renvoyée
         sheet.getRange(row,COL_PHOTO+1).setValue(photo);
         return ContentService.createTextOutput(JSON.stringify({ok:true,action:"updated"})).setMimeType(ContentService.MimeType.JSON);
       }
     }
-    // Nouveau membre : colonne G (Nombre entraînement) laissée vide, gérée par le club.
+    // Nouveau membre : colonnes G (Nombre entraînement), E (Maximum) et F (Solde)
+    // laissées vides — c'est la formule de la feuille qui les calculera.
     var newRow=[];
     newRow[COL_ID]=p.id; newRow[COL_NOM]=p.nom; newRow[COL_COMPTEUR]=compteur;
-    newRow[COL_LICENCE]=p.licence||""; newRow[COL_MAXIMUM]=maximum; newRow[COL_SOLDE]=solde;
-    newRow[6]=""; newRow[COL_NUMLICENCE]=p.numLicence||""; newRow[COL_PHOTO]=photo==="__KEEP__"?"":photo;
+    newRow[COL_LICENCE]=p.licence||"";
+    newRow[COL_NUMLICENCE]=p.numLicence||""; newRow[COL_PHOTO]=photo==="__KEEP__"?"":photo;
     sheet.appendRow(newRow);
     return ContentService.createTextOutput(JSON.stringify({ok:true,action:"created"})).setMimeType(ContentService.MimeType.JSON);
   }catch(err){
