@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig"];
+  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -49,6 +49,7 @@ function doGet(e) {
       case "adjustContainer": result = adjustContainer(e); break;
       case "setReserveCount":  result = setReserveCount(e); break;
       case "saveConfig":       result = saveConfig(e); break;
+      case "updateSale":       result = updateSale(e); break;
       case "savePortion":     result = savePortion(e); break;
       case "deletePortion":   result = deletePortion(e); break;
       case "uploadPortionPhotoChunk": result = uploadPortionPhotoChunk(e); break;
@@ -803,6 +804,24 @@ function saveSale(e){
   var result={ok:true,saleId:saleId,stockUpdated:decremented};
   if(notFound.length)result.stockWarning="Stock NON décompté (site="+p.site+", colonne="+col+") pour ID(s): "+notFound.join(", ");
   return result;
+}
+// Modifie une vente déjà enregistrée EN PLACE (même ID, même date/heure/site) — ne
+// touche que le total et le détail des articles. Utilisé pour corriger une commande
+// passée sans créer une nouvelle vente à la date du jour. Le stock doit être ajusté
+// séparément côté client (delta entre l'ancien et le nouveau contenu).
+function updateSale(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), p=e.parameter;
+  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Aucune vente enregistrée"};
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){
+    if(ids[i][0].toString()===p.id.toString()){
+      sh.getRange(i+2,6).setValue(+p.total||0);   // F = Total
+      sh.getRange(i+2,8).setValue(p.items||"");   // H = Articles
+      sh.getRange(i+2,10).setValue(+p.nbItems||0);// J = NbArticles
+      return{ok:true};
+    }
+  }
+  return{ok:false,error:"Vente introuvable"};
 }
 function getSales(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), p=e.parameter;

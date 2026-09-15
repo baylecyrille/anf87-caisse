@@ -488,7 +488,7 @@ function App(){
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}/>}
         {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
-        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab}/>}
+        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
@@ -2306,7 +2306,7 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
 }
 
 // ═══ REPORTS ═══
-function ReportsScreen({sites,caisseUrl,products,setCart,setTab}){
+function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts}){
   const [sales,setSales]=useState([]);const [loading,setLoading]=useState(false);const [period,setPeriod]=useState("today");
   const [viewMonth,setViewMonth]=useState(()=>{const d=new Date();return{y:d.getFullYear(),m:d.getMonth()};});
   const [selectedDay,setSelectedDay]=useState(null); // "dd/mm/yyyy" sélectionné dans le calendrier
@@ -2350,6 +2350,18 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab}){
     const newCart=items.map(it=>{
       const prod=products.find(p=>p.id.toString()===it.id.toString());
       if(!prod)return null;
+      // Pour un produit vendu au volume, it.qty stocké dans la vente est le total de
+      // cl consommés (ex: 644cl), PAS un nombre d'unités — le prix du produit, lui,
+      // est par portion de base (ex: 2,50€ les 25cl). Les traiter comme un simple
+      // nombre d'unités multipliait le prix par le nombre de cl (644× au lieu de
+      // ramener au cl d'abord) — d'où le montant totalement aberrant constaté.
+      if(prod.sellByVolume){
+        const vol=+it.qty||0;
+        const unitPrice=(prod.price||0)/(prod.baseQty||1);
+        return{id:prod.id+"-"+Date.now()+"-"+Math.random().toString(36).slice(2),pid:prod.id,
+          name:prod.name+" "+vol+(prod.unit||"cl"),price:+(unitPrice*vol).toFixed(2),qty:1,vol:vol,
+          emoji:prod.emoji,photo:prod.photo,drink:prod.drink,free:false,unit:prod.unit||"cl"};
+      }
       return{id:prod.id,pid:prod.id,name:prod.name,price:prod.price,qty:it.qty,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,free:false,unit:"unité"};
     }).filter(Boolean);
     if(newCart.length===0){window.alert("⚠️ Aucun des produits de cette commande n'existe encore dans le catalogue.");return;}
@@ -2424,29 +2436,83 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab}){
       </button>);})}
     </>}
 
-    {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} onClose={()=>setOpenSale(null)} onReorder={reorder}/>}
+    {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} caisseUrl={caisseUrl} onSaveProducts={onSaveProducts}
+      onClose={()=>setOpenSale(null)} onReorder={reorder}
+      onSaleUpdated={updated=>{ setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s)); setOpenSale(updated); }}/>}
   </div>);
 }
 
 // ═══ DÉTAIL D'UNE VENTE (avec photos des produits, et reprise en panier) ═══
-function SaleDetailModal({sale,sites,products,onClose,onReorder}){
+function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,onReorder,onSaleUpdated}){
+  const [editMode,setEditMode]=useState(false);
+  const [saving,setSaving]=useState(false);
   let items=[]; try{items=JSON.parse(sale.items||"[]");}catch{}
   const lines=items.map(it=>({...it,prod:products.find(p=>p.id.toString()===it.id.toString())}));
+  const [editedQtys,setEditedQtys]=useState(()=>Object.fromEntries(lines.map((l,i)=>[i,l.qty])));
   let payType=null,payDetail=null; try{const pj=JSON.parse(sale.payment||"{}");payType=pj.type;payDetail=pj;}catch{}
   const payLabel={cash:"💵 Espèces",cb:"💳 Carte Bleue",check:"📝 Chèque",split:"🔢 Note divisée",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes"}[payType]||"—";
 
+  // Prix d'une ligne au tarif ACTUEL du catalogue : pour un produit au volume, qty
+  // représente des cl (pas un nombre d'unités) — même logique que "Recommencer cette
+  // commande", pour ne jamais reproduire l'erreur de calcul déjà rencontrée.
+  const lineTotal=(prod,qty)=>{
+    if(!prod)return 0;
+    if(prod.sellByVolume)return((prod.price||0)/(prod.baseQty||1))*qty;
+    return(prod.price||0)*qty;
+  };
+  const editedTotal=lines.reduce((s,l,i)=>s+lineTotal(l.prod,+editedQtys[i]||0),0);
+
+  const startEdit=()=>{setEditedQtys(Object.fromEntries(lines.map((l,i)=>[i,l.qty])));setEditMode(true);};
+
+  const saveEdits=async()=>{
+    if(saving)return;setSaving(true);
+    // Nouveau détail (on retire les lignes ramenées à 0) + nouveau total au tarif actuel.
+    const newItems=lines.map((l,i)=>({id:l.id,qty:+editedQtys[i]||0})).filter(it=>it.qty>0);
+    const newTotal=+editedTotal.toFixed(2);
+    const nbItems=newItems.reduce((s,it)=>s+it.qty,0);
+
+    // Écart de stock par produit : ce qui a changé entre l'ancien et le nouveau
+    // contenu doit être répercuté sur le stock du SITE de cette vente (pas forcément
+    // le site actuellement sélectionné dans l'appli).
+    const deltaByProduct={};
+    lines.forEach((l,i)=>{ deltaByProduct[l.id]=(deltaByProduct[l.id]||0)+((+l.qty||0)-(+editedQtys[i]||0)); });
+    const deltaEntries=Object.entries(deltaByProduct).filter(([_,d])=>d!==0);
+
+    if(caisseUrl){
+      const r=await apiWrite(caisseUrl,{action:"updateSale",id:sale.id,total:newTotal,items:JSON.stringify(newItems),nbItems});
+      if(!r.ok){window.alert("⚠️ Échec de l'enregistrement : "+(r.error||"connexion")+". Rien n'a été modifié.");setSaving(false);return;}
+      for(const[pid,delta]of deltaEntries){
+        await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:sale.siteId,qty:delta,mode:"delta"});
+      }
+    }
+    // Reflet local immédiat du stock (le delta positif = on rend du stock, négatif = on en reprend).
+    if(deltaEntries.length&&onSaveProducts){
+      const upd=products.map(p=>{
+        const d=deltaByProduct[p.id];
+        if(!d)return p;
+        return{...p,stock:{...p.stock,[sale.siteId]:Math.max(0,(p.stock[sale.siteId]||0)+d)}};
+      });
+      onSaveProducts(upd);
+    }
+    setSaving(false);setEditMode(false);
+    onSaleUpdated&&onSaleUpdated({id:sale.id,total:newTotal,items:JSON.stringify(newItems)});
+  };
+
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:230,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}
-    onClick={e=>e.target===e.currentTarget&&onClose()}>
+    onClick={e=>e.target===e.currentTarget&&!saving&&onClose()}>
     <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:420,maxHeight:"90vh",overflowY:"auto"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4}}>
         <div>
           <div style={{fontWeight:800,fontSize:17,color:T.dark}}>{sale.date} — {sale.time}</div>
           <div style={{fontSize:12,color:T.mid}}>{sites.find(s=>s.id===sale.siteId)?.name||sale.siteId} • {payLabel}</div>
         </div>
-        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>
+        {!saving&&<button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>}
       </div>
       {sale.caissier&&<div style={{fontSize:11,color:T.mid,marginBottom:2}}>👤 Caissier : {sale.caissier}</div>}
       {sale.member&&<div style={{fontSize:11,color:T.mid,marginBottom:10}}>🍺 Boissons offertes à : {sale.member}</div>}
+      {editMode&&<div style={{background:"#FFF3E0",borderRadius:8,padding:"8px 10px",marginTop:8,marginBottom:4,fontSize:11,color:"#E65100"}}>
+        ✏️ Modification de cette vente — la date et l'heure d'origine sont conservées. Le total est recalculé au tarif actuel du catalogue.
+      </div>}
 
       <div style={{marginTop:12,marginBottom:12}}>
         {lines.length===0&&<div style={{fontSize:12,color:T.mid,fontStyle:"italic"}}>Détail des articles non disponible pour cette vente.</div>}
@@ -2455,22 +2521,42 @@ function SaleDetailModal({sale,sites,products,onClose,onReorder}){
             {l.prod?.photo?<img src={l.prod.photo} style={{width:38,height:38,borderRadius:8,objectFit:"cover",flexShrink:0}}/>
               :<span style={{fontSize:24,flexShrink:0}}>{l.prod?.emoji||"❓"}</span>}
             <div style={{flex:1,fontSize:13,color:T.dark}}>{l.prod?.name||"(produit supprimé, ID "+l.id+")"}</div>
-            <div style={{fontSize:13,fontWeight:700,color:T.dark}}>×{l.qty}</div>
+            {editMode
+              ?<div style={{display:"flex",alignItems:"center",gap:4}}>
+                <input type="number" min="0" value={editedQtys[i]} disabled={!l.prod||saving}
+                  onChange={e=>setEditedQtys(q=>({...q,[i]:Math.max(0,+e.target.value||0)}))}
+                  style={{width:64,padding:"5px 6px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:13,textAlign:"center"}}/>
+                {l.prod?.sellByVolume&&<span style={{fontSize:11,color:T.mid}}>{l.prod.unit||"cl"}</span>}
+              </div>
+              :<div style={{fontSize:13,fontWeight:700,color:T.dark}}>×{l.qty}</div>}
           </div>
         ))}
       </div>
 
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:T.bg,borderRadius:10,padding:"10px 14px",marginBottom:14}}>
-        <span style={{fontSize:13,fontWeight:700,color:T.dark}}>Total</span>
-        <span style={{fontSize:20,fontWeight:900,color:T.red}}>{fmt(+sale.total)}</span>
+        <span style={{fontSize:13,fontWeight:700,color:T.dark}}>Total{editMode?" (recalculé)":""}</span>
+        <span style={{fontSize:20,fontWeight:900,color:T.red}}>{fmt(editMode?editedTotal:+sale.total)}</span>
       </div>
 
-      <button onClick={()=>onReorder(sale)} disabled={lines.length===0}
-        style={{width:"100%",padding:"12px",background:lines.length===0?"#ccc":T.blue,color:"white",border:"none",borderRadius:10,cursor:lines.length===0?"default":"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
-        🔄 Recommencer cette commande (nouveau panier)
-      </button>
-      <div style={{fontSize:10,color:T.mid,textAlign:"center",marginBottom:10}}>Remet les mêmes produits dans le panier (aux prix actuels) — n'enregistre rien tant que vous n'encaissez pas.</div>
-      <button onClick={onClose} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Fermer</button>
+      {editMode?<>
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
+          <button onClick={()=>setEditMode(false)} disabled={saving} style={{flex:1,padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:saving?"default":"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={saveEdits} disabled={saving} style={{flex:2,padding:"12px",background:saving?"#ccc":T.green,color:"white",border:"none",borderRadius:10,cursor:saving?"default":"pointer",fontWeight:700}}>
+            {saving?"⏳ Enregistrement...":"💾 Enregistrer les modifications"}
+          </button>
+        </div>
+        <div style={{fontSize:10,color:T.mid,textAlign:"center"}}>Le stock est ajusté automatiquement selon l'écart avec la vente d'origine.</div>
+      </>:<>
+        <button onClick={startEdit} style={{width:"100%",padding:"12px",background:"#FF9F0A",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
+          ✏️ Modifier cette vente (même date)
+        </button>
+        <button onClick={()=>onReorder(sale)} disabled={lines.length===0}
+          style={{width:"100%",padding:"12px",background:lines.length===0?"#ccc":T.blue,color:"white",border:"none",borderRadius:10,cursor:lines.length===0?"default":"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
+          🔄 Recommencer cette commande (nouveau panier)
+        </button>
+        <div style={{fontSize:10,color:T.mid,textAlign:"center",marginBottom:10}}>Remet les mêmes produits dans le panier (aux prix actuels) — n'enregistre rien tant que vous n'encaissez pas.</div>
+        <button onClick={onClose} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Fermer</button>
+      </>}
     </div>
   </div>);
 }
