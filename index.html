@@ -2159,11 +2159,11 @@ function StockEntry({products,sites,caisseUrl,onSave}){
       </button>
     )}
     {!scanning&&<>
-      <div style={{fontSize:12,color:T.mid,textAlign:"center",margin:"6px 0 10px"}}>— ou taper le nom du produit —</div>
+      <div style={{fontSize:12,color:T.mid,textAlign:"center",margin:"6px 0 10px"}}>— ou choisir dans la liste / taper le nom du produit —</div>
       <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Rechercher un produit…"
         style={{width:"100%",padding:"12px",border:`1px solid ${T.border}`,borderRadius:10,fontSize:14,marginBottom:8,outline:"none",color:T.dark}}/>
-      {search.trim()&&<div style={{maxHeight:220,overflowY:"auto",border:`1px solid ${T.border}`,borderRadius:10,marginBottom:14}}>
-        {products.filter(p=>p.name.toLowerCase().includes(search.trim().toLowerCase())).slice(0,20).map(p=>(
+      <div style={{maxHeight:260,overflowY:"auto",border:`1px solid ${T.border}`,borderRadius:10,marginBottom:14}}>
+        {products.filter(p=>p.name.toLowerCase().includes(search.trim().toLowerCase())).map(p=>(
           <button key={p.id} onClick={()=>{setScannedProd(p);setMsg("");setContCounts({});setSearch("");}}
             style={{display:"flex",alignItems:"center",gap:10,width:"100%",padding:"9px 12px",background:"white",border:"none",
               borderBottom:`1px solid ${T.border}`,cursor:"pointer",textAlign:"left"}}>
@@ -2173,7 +2173,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
         ))}
         {products.filter(p=>p.name.toLowerCase().includes(search.trim().toLowerCase())).length===0&&
           <div style={{padding:"12px",fontSize:13,color:T.mid,textAlign:"center"}}>Aucun produit trouvé</div>}
-      </div>}
+      </div>
     </>}
     {msg&&<div style={{background:msg.startsWith("✅")?"#E8F5E9":"#FFF3E0",borderRadius:10,padding:"10px 12px",marginBottom:12,fontSize:14,fontWeight:600,color:msg.startsWith("✅")?"#2E7D32":T.orange}}>{msg}</div>}
     {/* Produit trouvé */}
