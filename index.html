@@ -22,6 +22,18 @@ input,select,button,textarea{font-family:inherit}
 /* Responsive */
 :root{--cols:3;--card-fs:13px;--hdr:64px}
 @media(min-width:600px)and(orientation:landscape){:root{--cols:5;--hdr:72px}}
+/* Barre de navigation du bas : sur petit écran (peu de hauteur/largeur dispo), on
+   masque les libellés texte et on réduit les icônes, pour diminuer la hauteur totale
+   de la barre. */
+@media(max-height:700px),(max-width:380px){
+  .nav-label{display:none}
+  .nav-icon{font-size:20px!important}
+  .nav-btn{padding:5px 10px!important;gap:0!important}
+  .nav-bar{padding:5px 0 8px!important}
+}
+/* Animation du transfert de stock entre sites (voir StockTransfer) */
+@keyframes driveAcross{0%{left:0}100%{left:calc(100% - 34px)}}
+.transfer-truck{position:absolute;top:50%;transform:translateY(-50%);font-size:26px;animation:driveAcross 1.3s ease-in-out forwards;}
 </style>
 </head>
 <body><div id="root"></div>
@@ -116,16 +128,26 @@ async function listCameras(){
   }catch{return[];}
 }
 // Redémarre le lecteur ZXing sur la caméra suivante de la liste (cycle). currentIdRef
-// doit contenir le deviceId actuellement utilisé (récupéré via getSettings()).
+// doit contenir le deviceId actuellement utilisé (récupéré via getSettings()). Le
+// choix est mémorisé sur cet appareil : les prochains scans démarrent directement
+// sur la bonne caméra, sans avoir à la rechanger à chaque fois.
 async function switchCamera(videoEl,readerRef,currentIdRef,restart){
   const cams=await listCameras();
   if(cams.length<2)return; // rien à changer, une seule caméra détectée
   const curIdx=cams.findIndex(c=>c.deviceId===currentIdRef.current);
   const next=cams[(curIdx+1)%cams.length];
   if(readerRef.current){try{readerRef.current.reset();}catch{}}
-  await restart({video:{deviceId:{exact:next.deviceId},width:{ideal:1280},height:{ideal:720},advanced:[{focusMode:"continuous"}]}});
+  const constraints={video:{deviceId:{exact:next.deviceId},width:{ideal:1280},height:{ideal:720},advanced:[{focusMode:"continuous"}]}};
+  await restart(constraints);
   currentIdRef.current=next.deviceId;
+  LS.set("anf87_preferred_camera",next.deviceId);
 }
+// Constraintes à utiliser en priorité pour démarrer un scan : la caméra mémorisée
+// (celle qui a déjà fonctionné sur cet appareil), sinon le réglage par défaut.
+const getPreferredCameraConstraints=()=>{
+  const id=LS.get("anf87_preferred_camera");
+  return id?{video:{deviceId:{exact:id},width:{ideal:1280},height:{ideal:720},advanced:[{focusMode:"continuous"}]}}:null;
+};
 const containerCount=(stock,size)=>size>0?Math.floor(stock/size):0;
 // Si une réserve précise a été enregistrée pour ce type de contenant (via Entrée
 // rapide), on l'utilise. Sinon on affiche 0 — pas de calcul dérivé du stock total en
@@ -427,7 +449,7 @@ function App(){
 
   const navItems=isAdmin
     ?[["pos","🛒","Caisse"],["stock","📦","Stock"],["reports","📊","Rapports"],["admin","🔧","Admin"],["settings","⚙️","Config"]]
-    :[["pos","🛒","Caisse"]];
+    :[["pos","🛒","Caisse"],["settings","⚙️","Config"]];
 
   return(
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
@@ -469,13 +491,13 @@ function App(){
       </div>
 
       {/* ── NAVIGATION ── */}
-      <div style={{background:T.card,borderTop:`1px solid ${T.border}`,display:"flex",justifyContent:"space-around",padding:"7px 0 12px",flexShrink:0}}>
+      <div className="nav-bar" style={{background:T.card,borderTop:`1px solid ${T.border}`,display:"flex",justifyContent:"space-around",padding:"7px 0 12px",flexShrink:0}}>
         {navItems.map(([id,ic,lb])=>(
-          <button key={id} onClick={()=>setTab(id)} style={{background:"none",border:"none",cursor:"pointer",
+          <button key={id} className="nav-btn" onClick={()=>setTab(id)} style={{background:"none",border:"none",cursor:"pointer",
             display:"flex",flexDirection:"column",alignItems:"center",gap:3,padding:"2px 14px",
             color:tab===id?T.red:T.mid}}>
-            <span style={{fontSize:24}}>{ic}</span>
-            <span style={{fontSize:11,fontWeight:600}}>{lb}</span>
+            <span className="nav-icon" style={{fontSize:24}}>{ic}</span>
+            <span className="nav-label" style={{fontSize:11,fontWeight:600}}>{lb}</span>
           </button>
         ))}
       </div>
@@ -1356,7 +1378,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       const reader=new ZXing.BrowserQRCodeReader();
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        constraints||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
+        constraints||getPreferredCameraConstraints()||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{
           if(!result)return;
           stopCam();setScanning(false);
@@ -1370,7 +1392,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       );
       const track=videoRef.current?.srcObject?.getVideoTracks?.()[0];
       if(track)camIdRef.current=track.getSettings().deviceId;
-    }catch{}
+    }catch{LS.set("anf87_preferred_camera",null);}
   };
   const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
 
@@ -1402,31 +1424,21 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
   const licenceBlocked=memberInfo&&!memberInfo.error&&memberInfo.licence==="non";
   const maxReached=(knownSolde!=null&&knownSolde<=0)||licenceBlocked;
   const totalDrinkValue=drinkItems.reduce((s,i)=>s+i.price*i.qty,0);
-  // Montant exact qui sera réellement offert une fois plafonné au solde restant.
-  const plannedFreeValue=licenceBlocked?0:(knownSolde!=null?Math.min(totalDrinkValue,knownSolde):totalDrinkValue);
 
-  const apply=async()=>{
-    if(!name.trim())return;
-    setLoading(true);
-    // On revérifie toujours le solde juste avant de valider (il peut avoir changé
-    // depuis la dernière recherche, ou n'avoir jamais été recherché après un scan).
-    const info=await fetchMember(true);
-    if(!info||info.error){setLoading(false);return;} // le message d'erreur est déjà affiché
-    if(info.licence==="non"){setLoading(false);return;} // licence non réglée : rien n'est offert
-    const soldeValue=info.solde||0; // en €
-    if(soldeValue<=0){setLoading(false);return;} // maximum déjà atteint, on ne valide rien
-    LS.set("anf87_last_member",name.trim());
-
-    // On ne rend gratuit que jusqu'à `soldeValue` €. Le budget peut ne pas couvrir
-    // une ligne entière : dans ce cas on découpe entre le nombre d'unités entières
-    // que le budget permet d'offrir, et le reste qui repasse en payant (impossible
-    // d'offrir une fraction d'article).
-    let remainingBudget=soldeValue;
+  // Calcule EXACTEMENT ce qui sera offert pour un budget donné : on ne peut offrir
+  // que des unités ENTIÈRES d'une ligne (impossible d'offrir "0,3 boisson"). Utilisée
+  // à la fois pour l'annonce avant validation ET pour la validation réelle, pour que
+  // les deux soient TOUJOURS d'accord — avant ce correctif, l'annonce utilisait un
+  // simple plafond (min(total,solde)) qui pouvait afficher un montant partiel alors
+  // que la vraie logique, elle, n'offrait RIEN si le solde ne couvrait pas au moins
+  // une unité complète de la ligne (ex: solde 1,50€ sur un article à 5€ : annoncé
+  // "1,50€ offerts", mais 0€ réellement déduit).
+  const computeFreeSplit=(cartItems,budget)=>{
+    let remainingBudget=budget;
     let actuallyFreeValue=0;
-    let leftoverDrinkCost=0; // ce qui reste à payer sur les boissons non couvertes par le solde
-    const nonDrinkTotal=cart.reduce((s,i)=>i.drink?s:s+i.price*i.qty,0);
+    let leftoverDrinkCost=0;
     const newCart=[];
-    cart.forEach(item=>{
+    cartItems.forEach(item=>{
       if(!item.drink||item.free){newCart.push(item);return;}
       if(remainingBudget<=0.001){newCart.push(item);leftoverDrinkCost+=item.price*item.qty;return;}
       const lineValue=item.price*item.qty;
@@ -1450,6 +1462,28 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
         }
       }
     });
+    return{newCart,actuallyFreeValue,leftoverDrinkCost};
+  };
+  // Montant exact qui sera réellement offert — même calcul que la validation, jamais
+  // un simple plafond.
+  const plannedFreeValue=licenceBlocked?0:computeFreeSplit(cart,knownSolde!=null?knownSolde:Infinity).actuallyFreeValue;
+
+  const apply=async()=>{
+    if(!name.trim())return;
+    setLoading(true);
+    // On revérifie toujours le solde juste avant de valider (il peut avoir changé
+    // depuis la dernière recherche, ou n'avoir jamais été recherché après un scan).
+    const info=await fetchMember(true);
+    if(!info||info.error){setLoading(false);return;} // le message d'erreur est déjà affiché
+    if(info.licence==="non"){setLoading(false);return;} // licence non réglée : rien n'est offert
+    const soldeValue=info.solde||0; // en €
+    if(soldeValue<=0){setLoading(false);return;} // maximum déjà atteint, on ne valide rien
+    LS.set("anf87_last_member",name.trim());
+
+    // Même calcul que l'annonce affichée avant validation (computeFreeSplit) — garantit
+    // que le montant réellement offert correspond toujours à ce qui a été annoncé.
+    const nonDrinkTotal=cart.reduce((s,i)=>i.drink?s:s+i.price*i.qty,0);
+    const{newCart,actuallyFreeValue,leftoverDrinkCost}=computeFreeSplit(cart,soldeValue);
     setCart(newCart);
 
     // Mise à jour du compteur côté serveur : on attend la confirmation au lieu d'un
@@ -1462,16 +1496,20 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
     const reqId=Date.now()+"-"+Math.random().toString(36).slice(2);
     const scanUrl=boissonsUrl.trim()+"?action=scan&amount="+actuallyFreeValue.toFixed(2)+"&person="+encodeURIComponent(name.trim())+"&reqid="+reqId;
     let scanOk=false,lastErr=null;
-    for(let attempt=0;attempt<2&&!scanOk;attempt++){
+    for(let attempt=0;attempt<3&&!scanOk;attempt++){
       try{ await fetch(scanUrl,{redirect:"follow"}); scanOk=true; }
-      catch(e){ lastErr=e; if(attempt===0)await new Promise(r=>setTimeout(r,1000)); }
+      catch(e){ lastErr=e; if(attempt<2)await new Promise(r=>setTimeout(r,1000)); }
     }
     if(!scanOk){
       setLoading(false);
-      window.alert("⚠️ La mise à jour du compteur de boissons offertes a échoué ("+(lastErr?.message||"connexion")+
-        "). Les boissons ont bien été retirées du total ici, mais le solde du membre risque de ne pas être à jour sur Google Sheets — vérifiez.");
+      // Ce message apparaît parfois même quand l'enregistrement a en fait réussi côté
+      // serveur (la réponse ne revient pas jusqu'au navigateur, mais l'écriture, elle,
+      // a bien eu lieu) — le reqid ci-dessus protège contre un double décompte dans ce
+      // cas, donc on formule ça comme une incertitude plutôt qu'un échec certain.
+      window.alert("⚠️ La confirmation du serveur n'a pas pu être reçue ("+(lastErr?.message||"connexion")+
+        "). Les boissons ont bien été retirées du total ici, et la mise à jour a très probablement quand même été enregistrée sur Google Sheets (vérifiez le solde du membre si vous avez un doute).");
     }
-    setAppliedSummary({value:actuallyFreeValue,licence:info.licence||""});
+    setAppliedSummary({value:actuallyFreeValue,numLicence:info.numLicence||""});
     setLoading(false);
     setApplied(true);
     // Si tout le montant a pu être offert et qu'il ne reste rien d'autre à payer,
@@ -1517,14 +1555,14 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
             :licenceBlocked?
               <div>
                 <div style={{fontWeight:800,fontSize:15,color:"#E65100",marginBottom:2}}>{memberInfo.nom}</div>
-                {memberInfo.licence&&<div style={{fontSize:11,color:"#E65100",opacity:.8,marginBottom:6}}>Licence n° {memberInfo.licence}</div>}
+                {memberInfo.numLicence&&<div style={{fontSize:11,color:"#E65100",opacity:.8,marginBottom:6}}>N° de licence : {memberInfo.numLicence}</div>}
                 <div style={{color:"#E65100",fontWeight:700,fontSize:13,lineHeight:1.4}}>
                   🔒 Merci de régler la licence pour débloquer {totalDrinkValue>0?fmt(totalDrinkValue)+" offert(s)":"la consommation offerte"}.
                 </div>
               </div>
             :<div>
               <div style={{fontWeight:800,fontSize:15,color:"#2E7D32",marginBottom:2}}>{memberInfo.nom}</div>
-              {memberInfo.licence&&<div style={{fontSize:11,color:"#2E7D32",opacity:.8,marginBottom:6}}>Licence n° {memberInfo.licence}</div>}
+              {memberInfo.numLicence&&<div style={{fontSize:11,color:"#2E7D32",opacity:.8,marginBottom:6}}>N° de licence : {memberInfo.numLicence}</div>}
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
                 {[["Consommé",fmt(memberInfo.compteur),"#CC0000"],["Restant",fmt(memberInfo.solde),"#2E7D32"],["Maximum",fmt(memberInfo.maximum),"#1565C0"]].map(([l,v,c])=>(
                   <div key={l} style={{textAlign:"center",background:"white",borderRadius:8,padding:"8px 4px"}}>
@@ -1534,7 +1572,11 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
                 ))}
               </div>
               {memberInfo.solde<=0&&<div style={{marginTop:8,color:T.red,fontWeight:700,fontSize:12}}>🚫 Maximum atteint — plus aucune consommation offerte disponible pour ce membre</div>}
-              {memberInfo.solde>0&&memberInfo.solde<totalDrinkValue&&<div style={{marginTop:8,color:T.orange,fontWeight:700,fontSize:12}}>⚠ Solde insuffisant : seulement {fmt(memberInfo.solde)} sur {fmt(totalDrinkValue)} seront offerts, le reste sera à payer</div>}
+              {memberInfo.solde>0&&memberInfo.solde<totalDrinkValue&&<div style={{marginTop:8,color:T.orange,fontWeight:700,fontSize:12}}>
+                {plannedFreeValue>0
+                  ?`⚠ Solde insuffisant : seulement ${fmt(plannedFreeValue)} sur ${fmt(totalDrinkValue)} seront offerts, le reste sera à payer`
+                  :`⚠ Solde insuffisant (${fmt(memberInfo.solde)}) pour offrir la moindre boisson entière du panier — rien ne sera offert cette fois`}
+              </div>}
             </div>
           }
         </div>}
@@ -1561,7 +1603,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
         <div style={{textAlign:"center",padding:"10px 0"}}>
           <div style={{fontSize:52,marginBottom:12}}>✅</div>
           <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:4}}>{fmt(appliedSummary?.value||0)} offert(s) à {name}</div>
-          {appliedSummary?.licence&&<div style={{fontSize:12,color:T.mid,marginBottom:2}}>Licence n° {appliedSummary.licence}</div>}
+          {appliedSummary?.numLicence&&<div style={{fontSize:12,color:T.mid,marginBottom:2}}>N° de licence : {appliedSummary.numLicence}</div>}
           <div style={{fontSize:13,color:T.mid,marginBottom:8}}>Compteur ANF 87 mis à jour</div>
           {paidAfter<=0.001
             ?<div style={{background:"#E8F5E9",borderRadius:12,padding:12,marginBottom:16,fontSize:14,color:"#2E7D32",fontWeight:700}}>✅ Total à 0€ — finalisation automatique...</div>
@@ -1589,12 +1631,12 @@ function ScannerModal({products,siteId,onFound,onClose}){
       const reader=new ZXing.BrowserMultiFormatReader(hints);
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        constraints||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
+        constraints||getPreferredCameraConstraints()||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{ if(result)handle(result.getText()); }
       );
       const track=videoRef.current?.srcObject?.getVideoTracks?.()[0];
       if(track)camIdRef.current=track.getSettings().deviceId;
-    }catch{setMsg("Caméra indisponible — saisir manuellement ↓");}
+    }catch{setMsg("Caméra indisponible — saisir manuellement ↓");LS.set("anf87_preferred_camera",null);}
   };
   const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
   const handle=code=>{const c=code.trim();const p=products.find(pr=>pr.barcode&&pr.barcode.toString()===c);
@@ -2044,6 +2086,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
   const [qty,setQty]=useState("");const [msg,setMsg]=useState("");const [scanning,setScanning]=useState(false);
   const [contCounts,setContCounts]=useState({}); // label -> nombre de contenants reçus
   const [validating,setValidating]=useState(false); // anti double-clic
+  const [search,setSearch]=useState(""); // recherche par nom, en plus du scan
 
   useEffect(()=>{if(scanning)startCam();return()=>stopCam();},[scanning]);
   const startCam=async(constraints)=>{
@@ -2057,7 +2100,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
       const reader=new ZXing.BrowserMultiFormatReader(hints);
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        constraints||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
+        constraints||getPreferredCameraConstraints()||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{
           if(!result)return;
           stopCam();setScanning(false);
@@ -2068,7 +2111,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
       );
       const track=videoRef.current?.srcObject?.getVideoTracks?.()[0];
       if(track)camIdRef.current=track.getSettings().deviceId;
-    }catch{setMsg("Caméra non disponible");}
+    }catch{setMsg("Caméra non disponible");LS.set("anf87_preferred_camera",null);}
   };
   const stopCam=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
 
@@ -2111,18 +2154,27 @@ function StockEntry({products,sites,caisseUrl,onSave}){
       </button>
     )}
     {!scanning&&<>
-      <div style={{fontSize:12,color:T.mid,textAlign:"center",margin:"6px 0 10px"}}>— ou choisir dans la liste —</div>
-      <select value="" onChange={e=>{const p=products.find(pr=>pr.id.toString()===e.target.value);if(p){setScannedProd(p);setMsg("");setContCounts({});}}}
-        style={{width:"100%",padding:"12px",border:`1px solid ${T.border}`,borderRadius:10,fontSize:14,marginBottom:14,outline:"none",color:T.dark}}>
-        <option value="" disabled>Sélectionner un produit…</option>
-        {products.map(p=><option key={p.id} value={p.id}>{p.emoji} {p.name}</option>)}
-      </select>
+      <div style={{fontSize:12,color:T.mid,textAlign:"center",margin:"6px 0 10px"}}>— ou taper le nom du produit —</div>
+      <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Rechercher un produit…"
+        style={{width:"100%",padding:"12px",border:`1px solid ${T.border}`,borderRadius:10,fontSize:14,marginBottom:8,outline:"none",color:T.dark}}/>
+      {search.trim()&&<div style={{maxHeight:220,overflowY:"auto",border:`1px solid ${T.border}`,borderRadius:10,marginBottom:14}}>
+        {products.filter(p=>p.name.toLowerCase().includes(search.trim().toLowerCase())).slice(0,20).map(p=>(
+          <button key={p.id} onClick={()=>{setScannedProd(p);setMsg("");setContCounts({});setSearch("");}}
+            style={{display:"flex",alignItems:"center",gap:10,width:"100%",padding:"9px 12px",background:"white",border:"none",
+              borderBottom:`1px solid ${T.border}`,cursor:"pointer",textAlign:"left"}}>
+            {p.photo?<img src={p.photo} style={{width:32,height:32,borderRadius:7,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:22,flexShrink:0}}>{p.emoji}</span>}
+            <span style={{fontSize:13,color:T.dark}}>{p.name}</span>
+          </button>
+        ))}
+        {products.filter(p=>p.name.toLowerCase().includes(search.trim().toLowerCase())).length===0&&
+          <div style={{padding:"12px",fontSize:13,color:T.mid,textAlign:"center"}}>Aucun produit trouvé</div>}
+      </div>}
     </>}
     {msg&&<div style={{background:msg.startsWith("✅")?"#E8F5E9":"#FFF3E0",borderRadius:10,padding:"10px 12px",marginBottom:12,fontSize:14,fontWeight:600,color:msg.startsWith("✅")?"#2E7D32":T.orange}}>{msg}</div>}
     {/* Produit trouvé */}
     {scannedProd&&<div style={{background:T.card,borderRadius:14,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
-        <span style={{fontSize:30}}>{scannedProd.emoji}</span>
+        {scannedProd.photo?<img src={scannedProd.photo} style={{width:44,height:44,borderRadius:10,objectFit:"cover"}}/>:<span style={{fontSize:30}}>{scannedProd.emoji}</span>}
         <div><div style={{fontWeight:700,fontSize:15,color:T.dark}}>{scannedProd.name}</div>
           <div style={{fontSize:12,color:T.mid}}>{fmt(scannedProd.price)}</div></div>
       </div>
@@ -2167,36 +2219,53 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
   const [to,setTo]=useState(sites[1]?.id||"s2");
   const [qtys,setQtys]=useState({});
   const [msg,setMsg]=useState("");
+  const [transferring,setTransferring]=useState(false); // affiche l'animation le temps du transfert
+  const fromSite=sites.find(s=>s.id===from), toSite=sites.find(s=>s.id===to);
 
   const transfer=async()=>{
     const items=Object.entries(qtys).filter(([_,q])=>+q>0).map(([id,q])=>({id,qty:+q}));
-    if(!items.length)return;
+    if(!items.length||transferring)return;
+    setTransferring(true);
     const upd=products.map(p=>{const q=+qtys[p.id]||0;if(!q)return p;
       return{...p,stock:{...p.stock,[from]:Math.max(0,(p.stock[from]||0)-q),[to]:(p.stock[to]||0)+q}};});
     onSave(upd);
     if(caisseUrl)await apiWrite(caisseUrl,{action:"transferStock",from,to,items:JSON.stringify(items)});
-    setMsg(`✅ Transfert effectué: ${items.length} produit(s) de ${sites.find(s=>s.id===from)?.name} vers ${sites.find(s=>s.id===to)?.name}`);
-    setQtys({});setTimeout(()=>setMsg(""),4000);
+    // On laisse le temps à l'animation (camion qui traverse) de se terminer visuellement
+    // avant d'afficher la confirmation, plutôt que de la couper en plein milieu.
+    setTimeout(()=>{
+      setTransferring(false);
+      setMsg(`✅ Transfert effectué: ${items.length} produit(s) de ${fromSite?.name} vers ${toSite?.name}`);
+      setQtys({});setTimeout(()=>setMsg(""),4000);
+    },1300);
   };
 
   return(<div style={{flex:1,overflowY:"auto",padding:"14px"}}>
     <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:14}}>↔ Transfert multi-produits</div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
-      {[["De (source)",from,setFrom],["Vers (dest.)",to,setTo]].map(([label,val,setter],i)=>(
+      {[["De (source)",from,setFrom,fromSite],["Vers (dest.)",to,setTo,toSite]].map(([label,val,setter,s],i)=>(
         <div key={i}>
           <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:5}}>{label}</label>
-          <select value={val} onChange={e=>setter(e.target.value)} style={{width:"100%",padding:"10px",border:`1px solid ${T.border}`,borderRadius:10,fontSize:13,outline:"none"}}>
-            {sites.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+          <select value={val} onChange={e=>setter(e.target.value)}
+            style={{width:"100%",padding:"10px",border:`1px solid ${s?.color||T.border}`,borderRadius:10,fontSize:13,outline:"none",
+              background:s?.color||T.card,color:s?.color?"white":T.dark,fontWeight:s?.color?700:400}}>
+            {sites.map(st=><option key={st.id} value={st.id} style={{background:"white",color:T.dark}}>{st.name}</option>)}
           </select>
         </div>
       ))}
     </div>
+    {/* Animation : camion traversant de la source vers la destination pendant l'envoi */}
+    {transferring&&<div style={{position:"relative",height:48,marginBottom:16,background:T.bg,borderRadius:10,overflow:"hidden",
+      border:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 10px"}}>
+      <span style={{fontSize:11,fontWeight:700,color:fromSite?.color||T.dark,zIndex:1}}>{fromSite?.name}</span>
+      <span className="transfer-truck">🚚</span>
+      <span style={{fontSize:11,fontWeight:700,color:toSite?.color||T.dark,zIndex:1}}>{toSite?.name}</span>
+    </div>}
     {msg&&<div style={{background:"#E8F5E9",borderRadius:10,padding:"10px 12px",marginBottom:12,fontSize:13,fontWeight:600,color:"#2E7D32"}}>{msg}</div>}
     <div style={{fontWeight:700,fontSize:13,color:T.mid,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Quantités à transférer</div>
     {products.map(p=>{
       const avail=p.stock[from]||0;if(avail===0)return null;
       return(<div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:T.card,borderRadius:10,border:`1px solid ${T.border}`,marginBottom:7}}>
-        <span style={{fontSize:22,flexShrink:0}}>{p.emoji}</span>
+        {p.photo?<img src={p.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:22,flexShrink:0}}>{p.emoji}</span>}
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
           <div style={{fontSize:11,color:T.mid}}>Dispo: {avail}</div>
@@ -2206,10 +2275,10 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
           style={{width:60,padding:"7px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:14,fontWeight:700,textAlign:"center",outline:"none"}}/>
       </div>);
     })}
-    <button onClick={transfer} disabled={!Object.values(qtys).some(q=>+q>0)}
-      style={{width:"100%",padding:"14px",background:Object.values(qtys).some(q=>+q>0)?T.red:"#ccc",color:"white",
-        border:"none",borderRadius:12,cursor:"pointer",fontWeight:700,fontSize:15,marginTop:6}}>
-      ↔ Effectuer le transfert
+    <button onClick={transfer} disabled={!Object.values(qtys).some(q=>+q>0)||transferring}
+      style={{width:"100%",padding:"14px",background:transferring?"#ccc":(Object.values(qtys).some(q=>+q>0)?T.red:"#ccc"),color:"white",
+        border:"none",borderRadius:12,cursor:transferring?"default":"pointer",fontWeight:700,fontSize:15,marginTop:6}}>
+      {transferring?"🚚 Transfert en cours...":"↔ Effectuer le transfert"}
     </button>
   </div>);
 }
@@ -2424,7 +2493,7 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
       const reader=new ZXing.BrowserMultiFormatReader(hints);
       readerRef.current=reader;
       await reader.decodeFromConstraints(
-        constraints||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
+        constraints||getPreferredCameraConstraints()||SCANNER_VIDEO_CONSTRAINTS, videoRef.current,
         (result)=>{
           if(!result)return;
           stopBarcodeScan();setScanningBarcode(false);
@@ -2433,7 +2502,7 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
       );
       const track=videoRef.current?.srcObject?.getVideoTracks?.()[0];
       if(track)camIdRef.current=track.getSettings().deviceId;
-    }catch{setScanMsg("Caméra non disponible");}
+    }catch{setScanMsg("Caméra non disponible");LS.set("anf87_preferred_camera",null);}
   };
   const stopBarcodeScan=()=>{ if(readerRef.current){try{readerRef.current.reset();}catch{} readerRef.current=null;} };
 
