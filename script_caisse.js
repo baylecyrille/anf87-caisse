@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale"];
+  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -50,6 +50,7 @@ function doGet(e) {
       case "setReserveCount":  result = setReserveCount(e); break;
       case "saveConfig":       result = saveConfig(e); break;
       case "updateSale":       result = updateSale(e); break;
+      case "deleteSale":       result = deleteSale(e); break;
       case "savePortion":     result = savePortion(e); break;
       case "deletePortion":   result = deletePortion(e); break;
       case "uploadPortionPhotoChunk": result = uploadPortionPhotoChunk(e); break;
@@ -59,6 +60,7 @@ function doGet(e) {
       case "saveAccompaniment":   result = saveAccompaniment(e); break;
       case "deleteAccompaniment": result = deleteAccompaniment(e); break;
       case "saveProductOrder":    result = saveProductOrder(e); break;
+      case "saveCameraPref":      result = saveCameraPref(e); break;
       case "addToReserve":        result = addToReserve(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
@@ -126,8 +128,8 @@ function initSheets() {
   // Utilisateurs
   var users = getOrCreate(ss,"Utilisateurs");
   if(users.getLastRow()<=1){
-    users.getRange(1,1,1,5).setValues([["ID","Nom","PIN","Role","OrdreProduits"]]);
-    users.getRange(1,1,1,5).setFontWeight("bold");
+    users.getRange(1,1,1,6).setValues([["ID","Nom","PIN","Role","OrdreProduits","CameraPref"]]);
+    users.getRange(1,1,1,6).setFontWeight("bold");
     users.getRange(2,1,1,4).setValues([["u1","Admin","1234","admin"]]);
   }
   // Contenants ouverts (fûts/bouteilles/cubis entamés, un par site+produit)
@@ -483,8 +485,8 @@ function getCategoriesData(ss){
 }
 function getUsersData(ss){
   var sh=ss.getSheetByName("Utilisateurs"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0])
-    .map(r=>({id:r[0],name:r[1],pin:r[2].toString(),role:r[3],productOrder:(r[4]||"").toString()}));
+  return sh.getRange(2,1,sh.getLastRow()-1,6).getValues().filter(r=>r[0])
+    .map(r=>({id:r[0],name:r[1],pin:r[2].toString(),role:r[3],productOrder:(r[4]||"").toString(),cameraPref:(r[5]||"").toString()}));
 }
 // Sauvegarde l'ordre personnalisé des produits sur l'écran caisse pour un utilisateur
 // donné (colonne E "OrdreProduits" de la feuille Utilisateurs) — ne touche à rien
@@ -495,6 +497,19 @@ function saveProductOrder(e){
   var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
   for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.userId.toString()){
     sh.getRange(i+2,5).setValue(p.order||"");
+    return{ok:true};
+  }}
+  return{ok:false,error:"Utilisateur introuvable"};
+}
+// Sauvegarde la caméra préférée pour le scan (colonne F "CameraPref") — en plus du
+// localStorage sur l'appareil, pour survivre à un vidage de cache et suivre la
+// personne si elle réutilise le même appareil après une réinstallation.
+function saveCameraPref(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), p=e.parameter;
+  if(!sh||sh.getLastRow()<=1||!p.userId)return{ok:false,error:"Utilisateur introuvable"};
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.userId.toString()){
+    sh.getRange(i+2,6).setValue(p.cameraId||"");
     return{ok:true};
   }}
   return{ok:false,error:"Utilisateur introuvable"};
@@ -816,8 +831,25 @@ function updateSale(e){
   for(var i=0;i<ids.length;i++){
     if(ids[i][0].toString()===p.id.toString()){
       sh.getRange(i+2,6).setValue(+p.total||0);   // F = Total
+      if(p.payment!==undefined)sh.getRange(i+2,7).setValue(p.payment); // G = Paiement (facultatif)
       sh.getRange(i+2,8).setValue(p.items||"");   // H = Articles
       sh.getRange(i+2,10).setValue(+p.nbItems||0);// J = NbArticles
+      return{ok:true};
+    }
+  }
+  return{ok:false,error:"Vente introuvable"};
+}
+// Supprime définitivement une vente. Le stock des articles qu'elle contenait doit
+// être restitué CÔTÉ CLIENT avant cet appel (via updateStock delta), car ce script
+// ne connaît pas le site à recréditer sans reparser les articles ici — le client a
+// déjà cette info sous la main.
+function deleteSale(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), id=e.parameter.id;
+  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Aucune vente enregistrée"};
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){
+    if(ids[i][0].toString()===id.toString()){
+      sh.deleteRow(i+2);
       return{ok:true};
     }
   }

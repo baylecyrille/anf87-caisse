@@ -2643,19 +2643,22 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts})
 
     {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} caisseUrl={caisseUrl} onSaveProducts={onSaveProducts}
       onClose={()=>setOpenSale(null)} onReorder={reorder}
-      onSaleUpdated={updated=>{ setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s)); setOpenSale(updated); }}/>}
+      onSaleUpdated={updated=>{ setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s)); setOpenSale(updated); }}
+      onSaleDeleted={id=>{ setSales(prev=>prev.filter(s=>s.id!==id)); setOpenSale(null); }}/>}
   </div>);
 }
 
 // ═══ DÉTAIL D'UNE VENTE (avec photos des produits, et reprise en panier) ═══
-function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,onReorder,onSaleUpdated}){
+function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,onReorder,onSaleUpdated,onSaleDeleted}){
   const [editMode,setEditMode]=useState(false);
   const [saving,setSaving]=useState(false);
   let items=[]; try{items=JSON.parse(sale.items||"[]");}catch{}
   const lines=items.map(it=>({...it,prod:products.find(p=>p.id.toString()===it.id.toString())}));
   const [editedQtys,setEditedQtys]=useState(()=>Object.fromEntries(lines.map((l,i)=>[i,l.qty])));
   let payType=null,payDetail=null; try{const pj=JSON.parse(sale.payment||"{}");payType=pj.type;payDetail=pj;}catch{}
+  const [editedPayment,setEditedPayment]=useState(payType||"cash");
   const payLabel={cash:"💵 Espèces",cb:"💳 Carte Bleue",check:"📝 Chèque",split:"🔢 Note divisée",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes"}[payType]||"—";
+  const paySimpleOptions=[["cash","💵 Espèces"],["cb","💳 Carte Bleue"],["check","📝 Chèque"],["matchOffert","⚽ Offert match"]];
 
   // Prix d'une ligne au tarif ACTUEL du catalogue : pour un produit au volume, qty
   // représente des cl (pas un nombre d'unités) — même logique que "Recommencer cette
@@ -2673,7 +2676,9 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
     if(saving)return;setSaving(true);
     // Nouveau détail (on retire les lignes ramenées à 0) + nouveau total au tarif actuel.
     const newItems=lines.map((l,i)=>({id:l.id,qty:+editedQtys[i]||0})).filter(it=>it.qty>0);
-    const newTotal=+editedTotal.toFixed(2);
+    // Si le nouveau mode de paiement est "Offert match", le total devient 0€ — comme
+    // pour n'importe quelle vente de ce type (le stock, lui, reste bien décompté).
+    const newTotal=editedPayment==="matchOffert"?0:+editedTotal.toFixed(2);
     const nbItems=newItems.reduce((s,it)=>s+it.qty,0);
 
     // Écart de stock par produit : ce qui a changé entre l'ancien et le nouveau
@@ -2684,7 +2689,8 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
     const deltaEntries=Object.entries(deltaByProduct).filter(([_,d])=>d!==0);
 
     if(caisseUrl){
-      const r=await apiWrite(caisseUrl,{action:"updateSale",id:sale.id,total:newTotal,items:JSON.stringify(newItems),nbItems});
+      const newPayment=JSON.stringify(editedPayment==="matchOffert"?{type:"matchOffert"}:{type:editedPayment});
+      const r=await apiWrite(caisseUrl,{action:"updateSale",id:sale.id,total:newTotal,items:JSON.stringify(newItems),nbItems,payment:newPayment});
       if(!r.ok){window.alert("⚠️ Échec de l'enregistrement : "+(r.error||"connexion")+". Rien n'a été modifié.");setSaving(false);return;}
       for(const[pid,delta]of deltaEntries){
         await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:sale.siteId,qty:delta,mode:"delta"});
@@ -2700,7 +2706,36 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
       onSaveProducts(upd);
     }
     setSaving(false);setEditMode(false);
-    onSaleUpdated&&onSaleUpdated({id:sale.id,total:newTotal,items:JSON.stringify(newItems)});
+    onSaleUpdated&&onSaleUpdated({id:sale.id,total:newTotal,items:JSON.stringify(newItems),payment:JSON.stringify(editedPayment==="matchOffert"?{type:"matchOffert"}:{type:editedPayment})});
+  };
+
+  // Suppression complète de la vente : tous les articles qu'elle contenait sont
+  // remis en stock (site d'origine) avant de supprimer la ligne — sinon le stock
+  // resterait décompté pour une vente qui n'existe plus.
+  const deleteSale=async()=>{
+    if(saving)return;
+    if(!window.confirm(`Supprimer définitivement cette vente du ${sale.date} ${sale.time} (${fmt(+sale.total)}) ?\n\nLe stock des articles qu'elle contenait sera remis en stock sur ${sites.find(s=>s.id===sale.siteId)?.name||sale.siteId}.`))return;
+    setSaving(true);
+    if(caisseUrl){
+      for(const it of items){
+        if(!it.id||!it.qty)continue;
+        await apiWrite(caisseUrl,{action:"updateStock",id:it.id,site:sale.siteId,qty:+it.qty,mode:"delta"});
+      }
+      const r=await apiWrite(caisseUrl,{action:"deleteSale",id:sale.id});
+      if(!r.ok){window.alert("⚠️ Échec de la suppression : "+(r.error||"connexion"));setSaving(false);return;}
+    }
+    if(onSaveProducts){
+      const deltaByProduct={};
+      items.forEach(it=>{ if(it.id&&it.qty)deltaByProduct[it.id]=(deltaByProduct[it.id]||0)+(+it.qty); });
+      const upd=products.map(p=>{
+        const d=deltaByProduct[p.id];
+        if(!d)return p;
+        return{...p,stock:{...p.stock,[sale.siteId]:(p.stock[sale.siteId]||0)+d}};
+      });
+      onSaveProducts(upd);
+    }
+    setSaving(false);
+    onSaleDeleted&&onSaleDeleted(sale.id);
   };
 
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:230,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}
@@ -2717,6 +2752,18 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
       {sale.member&&<div style={{fontSize:11,color:T.mid,marginBottom:10}}>🍺 Boissons offertes à : {sale.member}</div>}
       {editMode&&<div style={{background:"#FFF3E0",borderRadius:8,padding:"8px 10px",marginTop:8,marginBottom:4,fontSize:11,color:"#E65100"}}>
         ✏️ Modification de cette vente — la date et l'heure d'origine sont conservées. Le total est recalculé au tarif actuel du catalogue.
+      </div>}
+      {editMode&&<div style={{marginTop:10}}>
+        <label style={{fontSize:11,fontWeight:700,color:T.mid,textTransform:"uppercase",display:"block",marginBottom:6}}>Mode de paiement</label>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>
+          {paySimpleOptions.map(([v,l])=>(
+            <button key={v} onClick={()=>setEditedPayment(v)} disabled={saving}
+              style={{padding:"9px 6px",borderRadius:8,border:`1.5px solid ${editedPayment===v?T.blue:T.border}`,
+                background:editedPayment===v?"#EEF0FF":T.card,color:editedPayment===v?T.blue:T.dark,cursor:saving?"default":"pointer",fontWeight:600,fontSize:12}}>
+              {l}
+            </button>
+          ))}
+        </div>
       </div>}
 
       <div style={{marginTop:12,marginBottom:12}}>
@@ -2760,7 +2807,10 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
           🔄 Recommencer cette commande (nouveau panier)
         </button>
         <div style={{fontSize:10,color:T.mid,textAlign:"center",marginBottom:10}}>Remet les mêmes produits dans le panier (aux prix actuels) — n'enregistre rien tant que vous n'encaissez pas.</div>
-        <button onClick={onClose} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Fermer</button>
+        <button onClick={deleteSale} disabled={saving} style={{width:"100%",padding:"11px",background:saving?"#eee":"#FFF0F0",border:"1px solid #FFCDD2",borderRadius:10,cursor:saving?"default":"pointer",fontWeight:700,fontSize:13,color:T.red,marginBottom:8}}>
+          {saving?"⏳...":"🗑 Supprimer cette vente (remet le stock)"}
+        </button>
+        <button onClick={onClose} disabled={saving} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:saving?"default":"pointer",fontWeight:600}}>Fermer</button>
       </>}
     </div>
   </div>);
