@@ -3050,17 +3050,22 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
   };
   // Enregistrés sur Google Sheets (feuille "Config") — partagés automatiquement par
   // tous les appareils du club, contrairement aux URLs ci-dessus qui restent locales.
+  const [sumupMsg,setSumupMsg]=useState(""); // message dédié, séparé des autres pour éviter toute confusion
   const saveSumup=async()=>{
     if(savingConfig||!caisseUrl)return;
-    setSavingConfig(true);
+    setSavingConfig(true);setSumupMsg("");
     const skT=sk.trim(),saidT=said.trim();
-    await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_key",value:skT});
-    await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_appid",value:saidT});
+    const r1=await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_key",value:skT});
+    const r2=await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_appid",value:saidT});
+    setSavingConfig(false);
+    if(!r1?.ok||!r2?.ok){
+      setSumupMsg("❌ Échec de l'enregistrement ("+(r1?.error||r2?.error||"connexion")+") — réessayez.");
+      return;
+    }
     setConfig(prev=>({...prev,sumup_key:skT,sumup_appid:saidT}));
     LS.set("anf87_sumup_key",skT);LS.set("anf87_sumup_appid",saidT); // repli local, cohérence
-    setSavingConfig(false);
-    setMsg("✅ Réglages SumUp enregistrés (partagés sur tous vos appareils)");
-    setTimeout(()=>setMsg(""),3000);
+    setSumupMsg("✅ Enregistré sur Google Sheets — visible sur tous vos appareils à leur prochaine synchro.");
+    setTimeout(()=>setSumupMsg(""),6000);
   };
   const initSheets=async()=>{
     if(initBusy)return;setInitBusy(true);
@@ -3102,6 +3107,8 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
         {savingConfig?"⏳ Enregistrement...":"💾 Enregistrer (partagé sur tous les appareils)"}
       </button>
       {!caisseUrl&&<div style={{fontSize:11,color:"#2E7D32",marginTop:6}}>Configurez d'abord l'URL Script Caisse ci-dessus pour pouvoir enregistrer ce réglage sur Google Sheets.</div>}
+      {sumupMsg&&<div style={{marginTop:10,padding:"10px 12px",borderRadius:8,fontSize:12,fontWeight:700,textAlign:"center",
+        background:sumupMsg.startsWith("✅")?"#C8E6C9":"#FFCDD2",color:sumupMsg.startsWith("✅")?"#1B5E20":"#B71C1C"}}>{sumupMsg}</div>}
     </div>
   </div>);
 }
