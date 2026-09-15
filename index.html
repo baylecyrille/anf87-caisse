@@ -1515,6 +1515,11 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
     // Si tout le montant a pu être offert et qu'il ne reste rien d'autre à payer,
     // on finalise la vente automatiquement.
     if(nonDrinkTotal+leftoverDrinkCost<=0.001){setTimeout(()=>onFinalize({type:"free_drinks",member:name.trim()}),1200);}
+    // Sinon (panier supérieur au solde) : le montant offert a bien été déduit du
+    // panier, il reste un solde à payer — on repasse automatiquement à l'écran
+    // d'encaissement pour ce reste, sans attendre que la personne pense à fermer
+    // cette fenêtre elle-même.
+    else{setTimeout(()=>onClose(),1800);}
   };
 
   const ov={position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:300,display:"flex",alignItems:"flex-end",justifyContent:"center"};
@@ -1555,14 +1560,14 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
             :licenceBlocked?
               <div>
                 <div style={{fontWeight:800,fontSize:15,color:"#E65100",marginBottom:2}}>{memberInfo.nom}</div>
-                {memberInfo.numLicence&&<div style={{fontSize:11,color:"#E65100",opacity:.8,marginBottom:6}}>N° de licence : {memberInfo.numLicence}</div>}
+                {memberInfo.numLicence&&<div style={{fontSize:11,color:"#E65100",opacity:.8,marginBottom:6}}>{memberInfo.numLicence}</div>}
                 <div style={{color:"#E65100",fontWeight:700,fontSize:13,lineHeight:1.4}}>
                   🔒 Merci de régler la licence pour débloquer {totalDrinkValue>0?fmt(totalDrinkValue)+" offert(s)":"la consommation offerte"}.
                 </div>
               </div>
             :<div>
               <div style={{fontWeight:800,fontSize:15,color:"#2E7D32",marginBottom:2}}>{memberInfo.nom}</div>
-              {memberInfo.numLicence&&<div style={{fontSize:11,color:"#2E7D32",opacity:.8,marginBottom:6}}>N° de licence : {memberInfo.numLicence}</div>}
+              {memberInfo.numLicence&&<div style={{fontSize:11,color:"#2E7D32",opacity:.8,marginBottom:6}}>{memberInfo.numLicence}</div>}
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
                 {[["Consommé",fmt(memberInfo.compteur),"#CC0000"],["Restant",fmt(memberInfo.solde),"#2E7D32"],["Maximum",fmt(memberInfo.maximum),"#1565C0"]].map(([l,v,c])=>(
                   <div key={l} style={{textAlign:"center",background:"white",borderRadius:8,padding:"8px 4px"}}>
@@ -1603,7 +1608,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
         <div style={{textAlign:"center",padding:"10px 0"}}>
           <div style={{fontSize:52,marginBottom:12}}>✅</div>
           <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:4}}>{fmt(appliedSummary?.value||0)} offert(s) à {name}</div>
-          {appliedSummary?.numLicence&&<div style={{fontSize:12,color:T.mid,marginBottom:2}}>N° de licence : {appliedSummary.numLicence}</div>}
+          {appliedSummary?.numLicence&&<div style={{fontSize:12,color:T.mid,marginBottom:2}}>{appliedSummary.numLicence}</div>}
           <div style={{fontSize:13,color:T.mid,marginBottom:8}}>Compteur ANF 87 mis à jour</div>
           {paidAfter<=0.001
             ?<div style={{background:"#E8F5E9",borderRadius:12,padding:12,marginBottom:16,fontSize:14,color:"#2E7D32",fontWeight:700}}>✅ Total à 0€ — finalisation automatique...</div>
