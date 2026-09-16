@@ -3015,12 +3015,98 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
   );
 }
 
+// ═══ DÉTAIL VALEUR STOCK / MARGE POTENTIELLE (bandeau Admin → Produits) ═══
+function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,flattenProd,onSave,onClose}){
+  const [siteFilter,setSiteFilter]=useState("all"); // "all" ou un id de site
+  const [busyId,setBusyId]=useState(null);
+
+  const stockFor=p=>siteFilter==="all"?Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0):(p.stock[siteFilter]||0);
+  const valueFor=p=>mode==="value"?unitCost(p)*stockFor(p):(unitSell(p)-unitCost(p))*stockFor(p);
+  const relevant=products.filter(p=>stockFor(p)>0||p.costPrice>0).sort((a,b)=>valueFor(b)-valueFor(a));
+  const total=relevant.reduce((s,p)=>s+valueFor(p),0);
+
+  const updateCostPrice=async(p,newCost)=>{
+    setBusyId(p.id);
+    const upd=products.map(x=>x.id===p.id?{...x,costPrice:newCost}:x);
+    onSave(upd);
+    if(caisseUrl){
+      await apiWrite(caisseUrl,{action:"saveProduct",id:p.id,...flattenProd({...p,costPrice:newCost},sites),photo:"__KEEP__"});
+    }
+    setBusyId(null);
+  };
+  const updateStockQty=async(p,newQty)=>{
+    setBusyId(p.id);
+    const upd=products.map(x=>x.id===p.id?{...x,stock:{...x.stock,[siteFilter]:Math.max(0,newQty)}}:x);
+    onSave(upd);
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:p.id,site:siteFilter,qty:Math.max(0,newQty),mode:"set"});
+    setBusyId(null);
+  };
+
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}
+    onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div style={{background:T.card,borderRadius:18,padding:18,width:"100%",maxWidth:460,maxHeight:"88vh",display:"flex",flexDirection:"column"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <div style={{fontWeight:800,fontSize:16,color:T.dark}}>{mode==="value"?"💰 Détail valeur du stock":"📈 Détail marge potentielle"}</div>
+        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>
+      </div>
+      <div style={{fontSize:11,color:T.mid,marginBottom:10}}>Prix d'achat et quantité modifiables directement ici.</div>
+
+      <div style={{display:"flex",gap:6,overflowX:"auto",marginBottom:10,paddingBottom:2}}>
+        <button onClick={()=>setSiteFilter("all")} style={{flexShrink:0,padding:"6px 14px",borderRadius:18,border:"none",
+          background:siteFilter==="all"?T.dark:T.bg,color:siteFilter==="all"?"white":T.dark,fontSize:12,fontWeight:600,cursor:"pointer"}}>
+          Tous sites
+        </button>
+        {sites.map(s=>(
+          <button key={s.id} onClick={()=>setSiteFilter(s.id)} style={{flexShrink:0,padding:"6px 14px",borderRadius:18,border:"none",
+            background:siteFilter===s.id?s.color:T.bg,color:siteFilter===s.id?"white":T.dark,fontSize:12,fontWeight:600,cursor:"pointer"}}>
+            {s.name}
+          </button>
+        ))}
+      </div>
+      {siteFilter==="all"&&<div style={{fontSize:10,color:T.mid,marginBottom:8,fontStyle:"italic"}}>La quantité "Tous sites" est une somme en lecture seule — choisissez un site pour la corriger.</div>}
+
+      <div style={{overflowY:"auto",flex:1,marginBottom:10}}>
+        {relevant.map(p=>(
+          <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
+            {p.photo?<img src={p.photo} style={{width:32,height:32,borderRadius:7,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:22,flexShrink:0}}>{p.emoji}</span>}
+            <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+              <span style={{fontSize:9,color:T.mid}}>Achat</span>
+              <input type="number" step="0.01" defaultValue={p.costPrice||0} disabled={busyId===p.id}
+                onBlur={e=>{const v=+e.target.value||0;if(v!==p.costPrice)updateCostPrice(p,v);}}
+                onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
+                style={{width:56,padding:"4px 5px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:12,textAlign:"center"}}/>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+              <span style={{fontSize:9,color:T.mid}}>Qté{p.sellByVolume?" ("+(p.unit||"cl")+")":""}</span>
+              {siteFilter==="all"
+                ?<div style={{width:52,padding:"4px 0",fontSize:12,fontWeight:700,textAlign:"center",color:T.mid}}>{stockFor(p)}</div>
+                :<input type="number" defaultValue={stockFor(p)} disabled={busyId===p.id}
+                  onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v)&&v!==stockFor(p))updateStockQty(p,v);}}
+                  onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
+                  style={{width:52,padding:"4px 5px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:12,textAlign:"center"}}/>}
+            </div>
+            <div style={{width:64,textAlign:"right",fontSize:12,fontWeight:800,color:mode==="value"?T.dark:T.green,flexShrink:0}}>{fmt(valueFor(p))}</div>
+          </div>
+        ))}
+        {relevant.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Aucun produit avec du stock ou un prix d'achat renseigné.</div>}
+      </div>
+
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:mode==="value"?T.dark:T.green,color:"white",borderRadius:10,padding:"10px 14px"}}>
+        <span style={{fontSize:13,fontWeight:700}}>Total{siteFilter!=="all"?" — "+sites.find(s=>s.id===siteFilter)?.name:""}</span>
+        <span style={{fontSize:18,fontWeight:900}}>{fmt(total)}</span>
+      </div>
+    </div>
+  </div>);
+}
+
 function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions,accompaniments,setAccompaniments}){
   const [edit,setEdit]=useState(null);
   const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
   const [portionsFor,setPortionsFor]=useState(null); // produit dont on gère les portions
   const [accompFor,setAccompFor]=useState(null); // produit dont on gère les accompagnements
   const [saving,setSaving]=useState(false); // anti double-clic (ajout/modif/suppression produit)
+  const [valueDetail,setValueDetail]=useState(null); // "value"|"margin"|null — détail du bandeau stock/marge
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
   const handlePhoto=(e,setter)=>{const f=e.target.files[0];if(!f)return;
@@ -3077,15 +3163,17 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
 
   return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
     <div style={{display:"flex",gap:8,marginBottom:12}}>
-      <div style={{flex:1,background:T.dark,borderRadius:12,padding:"12px 14px",color:"white"}}>
+      <button onClick={()=>setValueDetail("value")} style={{flex:1,background:T.dark,borderRadius:12,padding:"12px 14px",color:"white",border:"none",cursor:"pointer",textAlign:"left"}}>
         <div style={{fontSize:11,opacity:.7}}>💰 Valeur du stock (achat)</div>
         <div style={{fontSize:18,fontWeight:900}}>{fmt(totalStockValue)}</div>
-      </div>
-      <div style={{flex:1,background:T.green,borderRadius:12,padding:"12px 14px",color:"white"}}>
+      </button>
+      <button onClick={()=>setValueDetail("margin")} style={{flex:1,background:T.green,borderRadius:12,padding:"12px 14px",color:"white",border:"none",cursor:"pointer",textAlign:"left"}}>
         <div style={{fontSize:11,opacity:.85}}>📈 Marge potentielle</div>
         <div style={{fontSize:18,fontWeight:900}}>{fmt(totalPotentialMargin)}</div>
-      </div>
+      </button>
     </div>
+    {valueDetail&&<StockValueDetailModal mode={valueDetail} products={products} sites={sites} caisseUrl={caisseUrl}
+      unitCost={unitCost} unitSell={unitSell} flattenProd={flattenProd} onSave={onSave} onClose={()=>setValueDetail(null)}/>}
     <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} handlePhoto={handlePhoto} busy={saving}/>
     {products.map(p=>{
       const margeUnit=(p.price||0)-(p.costPrice||0);
