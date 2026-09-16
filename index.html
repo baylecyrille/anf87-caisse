@@ -2474,9 +2474,22 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
   const [from,setFrom]=useState(sites[0]?.id||"s1");
   const [to,setTo]=useState(sites[1]?.id||"s2");
   const [qtys,setQtys]=useState({});
+  const [contCounts,setContCounts]=useState({}); // {productId: {labelContenant: nombre}}
   const [msg,setMsg]=useState("");
   const [transferring,setTransferring]=useState(false); // affiche l'animation le temps du transfert
   const fromSite=sites.find(s=>s.id===from), toSite=sites.find(s=>s.id===to);
+
+  // Transfert par contenant (ex: 2 Fûts 20L) : recalcule automatiquement le total en
+  // cl/g à partir du nombre de contenants de chaque taille, et l'applique au champ
+  // quantité — pas besoin de faire le calcul soi-même.
+  const setContainerCount=(p,label,val)=>{
+    const newCount=Math.max(0,+val||0);
+    const productCounts={...(contCounts[p.id]||{}),[label]:newCount};
+    const allPresets=parseContainers(p.containers);
+    const total=allPresets.reduce((s,c)=>s+((+productCounts[c.label]||0)*c.size),0);
+    setContCounts(prev=>({...prev,[p.id]:productCounts}));
+    setQtys(q=>({...q,[p.id]:Math.min(p.stock[from]||0,total)}));
+  };
 
   const transfer=async()=>{
     const items=Object.entries(qtys).filter(([_,q])=>+q>0).map(([id,q])=>({id,qty:+q}));
@@ -2491,7 +2504,7 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
     setTimeout(()=>{
       setTransferring(false);
       setMsg(`✅ Transfert effectué: ${items.length} produit(s) de ${fromSite?.name} vers ${toSite?.name}`);
-      setQtys({});setTimeout(()=>setMsg(""),4000);
+      setQtys({});setContCounts({});setTimeout(()=>setMsg(""),4000);
     },1300);
   };
 
@@ -2520,15 +2533,30 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
     <div style={{fontWeight:700,fontSize:13,color:T.mid,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Quantités à transférer</div>
     {products.map(p=>{
       const avail=p.stock[from]||0;if(avail===0)return null;
-      return(<div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:T.card,borderRadius:10,border:`1px solid ${T.border}`,marginBottom:7}}>
-        {p.photo?<img src={p.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:22,flexShrink:0}}>{p.emoji}</span>}
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
-          <div style={{fontSize:11,color:T.mid}}>Dispo: {avail}</div>
+      const presets=p.sellByVolume?parseContainers(p.containers):[];
+      return(<div key={p.id} style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,marginBottom:7,overflow:"hidden"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px"}}>
+          {p.photo?<img src={p.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:22,flexShrink:0}}>{p.emoji}</span>}
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
+            <div style={{fontSize:11,color:T.mid}}>Dispo: {avail}{p.sellByVolume?p.unit||"cl":""}</div>
+          </div>
+          <input value={qtys[p.id]||""} onChange={e=>{setQtys(q=>({...q,[p.id]:Math.min(avail,Math.max(0,+e.target.value||0))}));setContCounts(c=>({...c,[p.id]:{}}));}}
+            type="number" min="0" max={avail} placeholder="0"
+            style={{width:60,padding:"7px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:14,fontWeight:700,textAlign:"center",outline:"none"}}/>
         </div>
-        <input value={qtys[p.id]||""} onChange={e=>setQtys(q=>({...q,[p.id]:Math.min(avail,Math.max(0,+e.target.value||0))}))}
-          type="number" min="0" max={avail} placeholder="0"
-          style={{width:60,padding:"7px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:14,fontWeight:700,textAlign:"center",outline:"none"}}/>
+        {/* Transfert par contenant (ex: 2 Fûts 20L) — calcule automatiquement
+            l'équivalent en cl/g dans le champ quantité ci-dessus. */}
+        {presets.length>0&&<div style={{padding:"0 14px 10px",display:"flex",flexWrap:"wrap",gap:8}}>
+          {presets.map((c,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:5,background:T.bg,borderRadius:7,padding:"4px 8px"}}>
+              <span style={{fontSize:11,color:T.mid}}>{c.label}</span>
+              <input type="number" min="0" value={contCounts[p.id]?.[c.label]||""} placeholder="0"
+                onChange={e=>setContainerCount(p,c.label,e.target.value)}
+                style={{width:38,padding:"2px 4px",border:`1px solid ${T.border}`,borderRadius:5,fontSize:12,textAlign:"center"}}/>
+            </div>
+          ))}
+        </div>}
       </div>);
     })}
     <button onClick={transfer} disabled={!Object.values(qtys).some(q=>+q>0)||transferring}
