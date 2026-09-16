@@ -2146,7 +2146,7 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
 }
 
 // ═══ PANNEAU CONTENANT INLINE (sous le produit, dans l'écran Stock) ═══
-function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,reserve,setReserve,products,onSave}){
+function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,reserve,setReserve,products,onSave,onClose}){
   const [busy,setBusy]=useState(false);
   const [editingRemaining,setEditingRemaining]=useState(false);
   const cont=containers.find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString());
@@ -2194,8 +2194,15 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
     setBusy(false);
   };
 
-  return(<div style={{padding:"10px 14px",background:"#FAFAFA"}}>
-    <div style={{fontSize:10,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>🧴 Contenant — {prod.name}</div>
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+    onClick={e=>e.target===e.currentTarget&&onClose&&onClose()}>
+    <div style={{background:"white",borderRadius:16,padding:"14px 16px",width:"100%",maxWidth:380,maxHeight:"85vh",overflowY:"auto"}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+      {prod.photo?<img src={prod.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover"}}/>:<span style={{fontSize:26}}>{prod.emoji}</span>}
+      <div style={{flex:1,marginLeft:10,fontSize:14,fontWeight:800,color:T.dark}}>{prod.name}</div>
+      {onClose&&<button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>}
+    </div>
+    <div style={{fontSize:10,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>🧴 Contenant</div>
 
     {/* Nombre de contenants en réserve, par taille — valeur réelle et modifiable
         directement, jamais une estimation calculée à partir du stock en cl. */}
@@ -2242,11 +2249,13 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
         {busy?"⏳...":"🏁 Terminer ce contenant"}
       </button>
     </div>}
+    </div>
   </div>);
 }
 
 function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve}){
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:v<=10?"#EAB308":T.green;
+  const [containerModalFor,setContainerModalFor]=useState(null); // produit dont la popup contenant est ouverte
   const updateQty=async(prod,site,newQty)=>{
     const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[site]:Math.max(0,newQty)}});
     onSave(upd);if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:prod.id,site,qty:Math.max(0,newQty),mode:"set"});
@@ -2267,10 +2276,17 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
         <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
           {products.filter(p=>p.cat===cat).flatMap((prod,idx,arr)=>{
             const needsContainerPanel=prod.sellByVolume&&parseContainers(prod.containers).length>0;
+            const cont=needsContainerPanel?containers.find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString()):null;
+            const gaugePct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
+            const gaugeColor=prod.color||T.orange;
             const stk=prod.stock[siteId]||0;
-            return [<div key={prod.id} style={{display:"flex",alignItems:"center",padding:"11px 14px",borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",gap:10}}>
-              {prod.photo?<img src={prod.photo} style={{width:28,height:28,borderRadius:6,objectFit:"cover",flexShrink:0}}/>
-                :<span style={{fontSize:22,flexShrink:0}}>{prod.emoji}</span>}
+            return [<div key={prod.id} style={{display:"flex",alignItems:"center",padding:"11px 14px",borderBottom:idx<arr.length-1&&!needsContainerPanel?`1px solid ${T.border}`:"none",gap:10}}>
+              {needsContainerPanel
+                ?<button onClick={()=>setContainerModalFor(prod)} style={{padding:0,border:`2px solid ${gaugeColor}`,borderRadius:8,cursor:"pointer",background:"none",flexShrink:0}}>
+                  {prod.photo?<img src={prod.photo} style={{width:26,height:26,borderRadius:5,objectFit:"cover",display:"block"}}/>:<span style={{fontSize:20,display:"block",width:26,height:26,textAlign:"center",lineHeight:"26px"}}>{prod.emoji}</span>}
+                </button>
+                :(prod.photo?<img src={prod.photo} style={{width:28,height:28,borderRadius:6,objectFit:"cover",flexShrink:0}}/>
+                  :<span style={{fontSize:22,flexShrink:0}}>{prod.emoji}</span>)}
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{prod.name}</div>
                 <div style={{fontSize:11,color:T.mid}}>{fmt(prod.price)}{prod.sellByVolume?" • au "+prod.unit:""}</div>
@@ -2295,14 +2311,27 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
                 </div>
               </div>
             </div>,
-            needsContainerPanel&&<div key={prod.id+"_cp"} style={{borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none"}}>
-              <InlineContainerPanel prod={prod} siteId={siteId} caisseUrl={caisseUrl}
-                containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} products={products} onSave={onSave}/>
-            </div>];
+            // Résumé compact du contenant : une jauge avec le texte écrit à
+            // l'intérieur, cliquable pour ouvrir la popup de gestion complète —
+            // prend beaucoup moins de place que l'ancien bloc toujours déplié.
+            needsContainerPanel&&<button key={prod.id+"_cp"} onClick={()=>setContainerModalFor(prod)}
+              style={{display:"block",width:"100%",padding:"0 14px 10px",border:"none",background:"none",cursor:"pointer",
+                borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",paddingBottom:10}}>
+              <div style={{position:"relative",height:26,borderRadius:7,overflow:"hidden",background:T.bg,border:`1px solid ${T.border}`}}>
+                {cont&&<div style={{position:"absolute",inset:0,width:gaugePct+"%",background:gaugeColor,opacity:.55}}/>}
+                <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",gap:5,fontSize:11,fontWeight:700,color:T.dark}}>
+                  <span>🧴</span>
+                  <span>{cont?`${cont.label} — ${cont.remaining}/${cont.size}${prod.unit}`:"Aucun contenant ouvert — toucher pour gérer"}</span>
+                </div>
+              </div>
+            </button>];
           })}
         </div>
       </div>)}
     </div>
+    {containerModalFor&&<InlineContainerPanel prod={containerModalFor} siteId={siteId} caisseUrl={caisseUrl}
+      containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} products={products} onSave={onSave}
+      onClose={()=>setContainerModalFor(null)}/>}
   </div>);
 }
 
