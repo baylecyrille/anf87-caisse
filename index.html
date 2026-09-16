@@ -3051,17 +3051,19 @@ function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,
       </div>
       <div style={{fontSize:11,color:T.mid,marginBottom:10}}>Prix d'achat et quantité modifiables directement ici.</div>
 
-      <div style={{display:"flex",gap:6,overflowX:"auto",marginBottom:10,paddingBottom:2}}>
-        <button onClick={()=>setSiteFilter("all")} style={{flexShrink:0,padding:"6px 14px",borderRadius:18,border:"none",
-          background:siteFilter==="all"?T.dark:T.bg,color:siteFilter==="all"?"white":T.dark,fontSize:12,fontWeight:600,cursor:"pointer"}}>
-          Tous sites
-        </button>
-        {sites.map(s=>(
-          <button key={s.id} onClick={()=>setSiteFilter(s.id)} style={{flexShrink:0,padding:"6px 14px",borderRadius:18,border:"none",
-            background:siteFilter===s.id?s.color:T.bg,color:siteFilter===s.id?"white":T.dark,fontSize:12,fontWeight:600,cursor:"pointer"}}>
-            {s.name}
+      <div style={{background:T.bg,borderRadius:10,padding:"8px 8px 10px",marginBottom:10}}>
+        <div style={{display:"flex",gap:7,overflowX:"auto",paddingBottom:4}}>
+          <button onClick={()=>setSiteFilter("all")} style={{flexShrink:0,padding:"9px 16px",borderRadius:20,border:"none",
+            background:siteFilter==="all"?T.dark:"white",color:siteFilter==="all"?"white":T.dark,fontSize:13,fontWeight:700,cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,.1)"}}>
+            Tous sites
           </button>
-        ))}
+          {sites.map(s=>(
+            <button key={s.id} onClick={()=>setSiteFilter(s.id)} style={{flexShrink:0,padding:"9px 16px",borderRadius:20,border:"none",
+              background:siteFilter===s.id?s.color:"white",color:siteFilter===s.id?"white":T.dark,fontSize:13,fontWeight:700,cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,.1)"}}>
+              {s.name}
+            </button>
+          ))}
+        </div>
       </div>
       {siteFilter==="all"&&<div style={{fontSize:10,color:T.mid,marginBottom:8,fontStyle:"italic"}}>La quantité "Tous sites" est une somme en lecture seule — choisissez un site pour la corriger.</div>}
 
@@ -3184,7 +3186,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
         :<span style={{fontSize:24,flexShrink:0}}>{p.emoji}</span>}
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
-        <div style={{fontSize:11,color:T.mid}}>{p.cat} • {fmt(p.price)}{p.drink?" • 🍺":""}{p.sellByVolume?" • au "+p.unit:""}</div>
+        <div style={{fontSize:11,color:T.mid}}>{p.cat} • {fmt(p.price)}{p.drink?" • 🍺":""}{p.sellByVolume?" • au "+p.unit:""}{p.barcode?" • 🏷 "+p.barcode:""}</div>
         {p.costPrice>0&&<div style={{fontSize:10,color:margeUnit>=0?"#2E7D32":T.red,fontWeight:600,marginTop:1}}>
           Achat {fmt(p.costPrice)} • Marge {fmt(margeUnit)}{margePct!=null?` (${margePct.toFixed(0)}%)`:""} • Stock: {fmt(unitCost(p)*stockTotal)}
         </div>}
