@@ -595,7 +595,7 @@ function App(){
       {modal==="scanner"&&<ScannerModal products={products} siteId={siteId} onFound={addToCart} onClose={()=>setModal(null)}/>}
       {modal==="boissons"&&<FreeDrinksModal cart={cart} setCart={setCart} boissonsUrl={boissonsUrl}
         onClose={()=>setModal("payment")} onFinalize={finalizeSale}/>}
-      {modal==="split"&&<SplitModal total={cartTotal} onClose={()=>setModal("payment")} onComplete={(payments)=>{finalizeSale({type:"split",parts:payments});}}/>}
+      {modal==="split"&&<SplitModal total={cartTotal} boissonsUrl={boissonsUrl} onClose={()=>setModal("payment")} onComplete={(payments)=>{finalizeSale({type:"split",parts:payments});}}/>}
       {modal==="cart"&&<CartModal cart={cart} cartTotal={cartTotal} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
         onClose={()=>setModal(null)} onEncaisser={()=>{setModal("payment");}}/>}
       {volumeProd&&<VolumeModal prod={volumeProd} onClose={()=>setVolumeProd(null)} onAdd={addVolumeToCart} portions={portions}/>}
@@ -1316,15 +1316,17 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
 }
 
 // ═══ SPLIT MODAL ═══
-function SplitModal({total,onClose,onComplete}){
+function SplitModal({total,boissonsUrl,onClose,onComplete}){
   const [mode,setMode]=useState("equal");
   const [persons,setPersons]=useState(2);
   const [amounts,setAmounts]=useState([]);
-  const [payments,setPayments]=useState([]); // [{idx,type,amount,given,change,checkNum}]
+  const [payments,setPayments]=useState([]); // [{idx,type,amount,given,change,checkNum,member}]
   const [activeIdx,setActiveIdx]=useState(null);
   const [step,setStep]=useState("select");
   const [given,setGiven]=useState("");const [checkN,setCheckN]=useState("");
   const [completing,setCompleting]=useState(false); // anti double-clic sur le dernier paiement
+  // Carte boissons ANF 87, pour la part de la personne en cours
+  const [bName,setBName]=useState("");const [bInfo,setBInfo]=useState(null);const [bLoading,setBLoading]=useState(false);
   const perPerson=+(total/persons).toFixed(2);
   const paidTotal=payments.reduce((s,p)=>s+p.amount,0);
   const remaining=Math.max(0,+(total-paidTotal).toFixed(2));
@@ -1334,7 +1336,7 @@ function SplitModal({total,onClose,onComplete}){
 
   const amountFor=idx=>mode==="equal"?perPerson:+(parseFloat(amounts[idx])||0).toFixed(2);
 
-  const openPay=idx=>{ if(amountFor(idx)<=0)return; setActiveIdx(idx);setStep("select");setGiven("");setCheckN(""); };
+  const openPay=idx=>{ if(amountFor(idx)<=0)return; setActiveIdx(idx);setStep("select");setGiven("");setCheckN("");setBName("");setBInfo(null); };
   const closePay=()=>{setActiveIdx(null);setStep("select");};
 
   const confirmPayment=(type,extra)=>{
@@ -1347,8 +1349,34 @@ function SplitModal({total,onClose,onComplete}){
     if(stillOwed<=0.001){setCompleting(true);onComplete(newPayments);}
   };
 
+  // Carte boissons ANF 87 pour la part de la personne active — recherche le membre
+  // et affiche son solde. Volontairement limité au cas où le solde couvre l'ENTIÈRE
+  // part de cette personne (pas de découpage en deux paiements pour une seule part,
+  // pour rester simple et fiable) ; sinon, un autre moyen de paiement est nécessaire.
+  const searchMember=async()=>{
+    if(!bName.trim()||!boissonsUrl){setBInfo({error:"Nom vide ou URL Boissons non configurée"});return;}
+    setBLoading(true);
+    try{
+      const r=await api(boissonsUrl,{action:"getmember",person:bName.trim()});
+      setBInfo(r.ok?r:{error:r.error||"Membre introuvable"});
+    }catch{ setBInfo({error:"Erreur de connexion"}); }
+    setBLoading(false);
+  };
+  const confirmBoissons=async()=>{
+    if(completing||!bInfo||bInfo.error)return;
+    const amt=amountFor(activeIdx);
+    if((bInfo.solde||0)<amt-0.001)return; // sécurité : bouton normalement déjà désactivé dans ce cas
+    setCompleting(true);
+    const reqId=Date.now()+"-"+Math.random().toString(36).slice(2);
+    try{
+      await fetch(boissonsUrl.trim()+"?action=scan&amount="+amt.toFixed(2)+"&person="+encodeURIComponent(bName.trim())+"&reqid="+reqId,{redirect:"follow"});
+    }catch{}
+    setCompleting(false);
+    confirmPayment("free_drinks",{member:bName.trim()});
+  };
+
   const activeAmt=activeIdx!=null?amountFor(activeIdx):0;
-  const typeLabel={cash:"💵 Espèces",cb:"💳 Carte",check:"📝 Chèque"};
+  const typeLabel={cash:"💵 Espèces",cb:"💳 Carte",check:"📝 Chèque",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes"};
 
   return(<div style={ov} onClick={e=>e.target===e.currentTarget&&activeIdx===null&&onClose()}>
     <div style={{background:T.card,borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,padding:"20px 18px 32px",maxHeight:"90vh",overflowY:"auto"}}>
@@ -1422,6 +1450,36 @@ function SplitModal({total,onClose,onComplete}){
           <button onClick={()=>confirmPayment("cb")} disabled={completing} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:completing?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:completing?"default":"pointer",textAlign:"left",opacity:completing?.6:1}}>
             <div style={{width:40,height:40,borderRadius:10,background:"#5856D6",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>💳</div>
             <div style={{fontWeight:700,fontSize:14,color:T.dark}}>{completing?"⏳ Validation...":"Carte Bleue"}</div>
+          </button>
+          <button onClick={()=>{setStep("boissons");setBName("");setBInfo(null);}} disabled={completing} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:completing?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:completing?"default":"pointer",marginBottom:9,textAlign:"left",opacity:completing?.6:1}}>
+            <div style={{width:40,height:40,borderRadius:10,background:T.orange,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>🍺</div>
+            <div style={{fontWeight:700,fontSize:14,color:T.dark}}>Carte boissons ANF 87</div>
+          </button>
+          <button onClick={()=>confirmPayment("matchOffert")} disabled={completing} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:completing?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:completing?"default":"pointer",textAlign:"left",opacity:completing?.6:1}}>
+            <div style={{width:40,height:40,borderRadius:10,background:"#FF9500",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>⚽</div>
+            <div style={{fontWeight:700,fontSize:14,color:T.dark}}>{completing?"⏳ Validation...":"Consos offertes match"}</div>
+          </button>
+        </>}
+        {step==="boissons"&&<>
+          <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Nom du membre</label>
+          <div style={{display:"flex",gap:8,marginBottom:12}}>
+            <input value={bName} onChange={e=>setBName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")searchMember();}} placeholder="Nom Prénom"
+              style={{flex:1,padding:"12px",fontSize:14,border:`1px solid ${T.border}`,borderRadius:10,outline:"none"}}/>
+            <button onClick={searchMember} disabled={bLoading||!bName.trim()} style={{padding:"0 16px",background:T.blue,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>🔍</button>
+          </div>
+          {bLoading&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:10}}>⏳ Recherche...</div>}
+          {bInfo&&(bInfo.error?
+            <div style={{background:"#FFF0F0",borderRadius:10,padding:12,color:"#C62828",fontWeight:600,fontSize:13,marginBottom:12}}>❌ {bInfo.error}</div>
+            :<div style={{background:bInfo.licence==="non"?"#FFF8E1":"#E8F5E9",borderRadius:10,padding:12,marginBottom:12,border:`1px solid ${bInfo.licence==="non"?"#FFE082":"#A5D6A7"}`}}>
+              <div style={{fontWeight:800,fontSize:14,color:bInfo.licence==="non"?"#E65100":"#2E7D32",marginBottom:4}}>{bInfo.nom}</div>
+              <div style={{fontSize:13,color:T.dark}}>Solde disponible : <b>{fmt(bInfo.solde)}</b></div>
+              {bInfo.licence==="non"&&<div style={{fontSize:12,color:"#E65100",fontWeight:600,marginTop:4}}>🔒 Licence non réglée — rien ne peut être offert</div>}
+              {bInfo.licence!=="non"&&bInfo.solde<activeAmt-0.001&&
+                <div style={{fontSize:12,color:T.orange,fontWeight:600,marginTop:4}}>⚠ Solde insuffisant pour couvrir la totalité de cette part ({fmt(activeAmt)}) — utilisez un autre moyen de paiement pour cette personne.</div>}
+            </div>)}
+          <button onClick={confirmBoissons} disabled={completing||!bInfo||bInfo.error||bInfo.licence==="non"||bInfo.solde<activeAmt-0.001}
+            style={{width:"100%",padding:14,background:(completing||!bInfo||bInfo.error||bInfo.licence==="non"||bInfo.solde<activeAmt-0.001)?"#ccc":T.orange,color:"white",border:"none",borderRadius:12,fontWeight:700,fontSize:15,cursor:"pointer"}}>
+            {completing?"⏳ Validation...":"✓ Offrir "+fmt(activeAmt)}
           </button>
         </>}
         {step==="cash"&&<>
