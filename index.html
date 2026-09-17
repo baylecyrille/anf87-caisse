@@ -4251,6 +4251,8 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
   const [sk,setSk]=useState(sumupKey||"");const [said,setSaid]=useState(sumupAppId||"");
   const [initBusy,setInitBusy]=useState(false); // anti double-clic sur l'initialisation
   const [savingConfig,setSavingConfig]=useState(false); // anti double-clic sur la sauvegarde SumUp
+  const [editingUrls,setEditingUrls]=useState(false); // verrouillé par défaut, évite les modifs accidentelles
+  const [editingSumup,setEditingSumup]=useState(false);
   // Une URL Apps Script valide ressemble à https://script.google.com/macros/s/XXXX/exec
   // (souvent copiée-collée avec un espace ou un retour à la ligne en trop, ce qui casse
   // TOUS les appels réseau sans message clair -> on nettoie et on vérifie avant d'enregistrer).
@@ -4260,6 +4262,7 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
     const cuT=cu.trim(), buT=bu.trim();
     LS.set("anf87_caisse_url",cuT);LS.set("anf87_url",buT);
     setCu(cuT);setBu(buT);
+    setEditingUrls(false);
     setMsg("✅ URLs enregistrées, rechargement…");
     setTimeout(()=>window.location.reload(),900);
   };
@@ -4279,6 +4282,7 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
     }
     setConfig(prev=>({...prev,sumup_key:skT,sumup_appid:saidT}));
     LS.set("anf87_sumup_key",skT);LS.set("anf87_sumup_appid",saidT); // repli local, cohérence
+    setEditingSumup(false);
     setSumupMsg("✅ Enregistré sur Google Sheets — visible sur tous vos appareils à leur prochaine synchro.");
     setTimeout(()=>setSumupMsg(""),6000);
   };
@@ -4290,18 +4294,24 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
     setInitBusy(false);
     setTimeout(()=>setMsg(""),8000);
   };
-  const inp=ok=>({width:"100%",padding:"11px 12px",border:`1px solid ${ok?T.border:T.red}`,borderRadius:8,fontSize:12,outline:"none",marginBottom:4,wordBreak:"break-all"});
+  const inp=(ok,locked)=>({width:"100%",padding:"11px 12px",border:`1px solid ${ok?T.border:T.red}`,borderRadius:8,fontSize:12,outline:"none",marginBottom:4,wordBreak:"break-all",background:locked?"#F2F2F2":"white",color:locked?T.mid:T.dark});
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:16}}>⚙️ Configuration</div>
     {currentUser&&<MyProfile currentUser={currentUser} setCU={setCU} caisseUrl={caisseUrl}/>}
     <div style={{background:T.card,borderRadius:12,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
-      <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:4}}>URL Script Caisse (Google Sheets produits/ventes)</div>
-      <input style={inp(cuOk)} value={cu} onChange={e=>setCu(e.target.value)} onBlur={()=>setCu(c=>c.trim())} placeholder="https://script.google.com/macros/s/.../exec"/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <div style={{fontWeight:700,fontSize:14,color:T.dark}}>URL Script Caisse (Google Sheets produits/ventes)</div>
+        {!editingUrls&&<button onClick={()=>setEditingUrls(true)} style={{background:"none",border:"none",color:T.blue,fontWeight:700,fontSize:12,cursor:"pointer",padding:0}}>✏️ Modifier</button>}
+      </div>
+      <input style={inp(cuOk,!editingUrls)} value={cu} onChange={e=>setCu(e.target.value)} onBlur={()=>setCu(c=>c.trim())} placeholder="https://script.google.com/macros/s/.../exec" disabled={!editingUrls}/>
       {!cuOk&&<div style={{fontSize:11,color:T.red,marginBottom:6}}>⚠ Doit commencer par https://script.google.com/macros/s/ et finir par /exec (pas d'espace)</div>}
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:4,marginTop:8}}>URL Script Boissons Offertes</div>
-      <input style={inp(buOk)} value={bu} onChange={e=>setBu(e.target.value)} onBlur={()=>setBu(b=>b.trim())} placeholder="https://script.google.com/macros/s/.../exec"/>
+      <input style={inp(buOk,!editingUrls)} value={bu} onChange={e=>setBu(e.target.value)} onBlur={()=>setBu(b=>b.trim())} placeholder="https://script.google.com/macros/s/.../exec" disabled={!editingUrls}/>
       {!buOk&&<div style={{fontSize:11,color:T.red,marginBottom:6}}>⚠ Doit commencer par https://script.google.com/macros/s/ et finir par /exec (pas d'espace)</div>}
-      <button onClick={save} style={{width:"100%",padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,marginTop:4}}>Enregistrer</button>
+      {editingUrls&&<div style={{display:"flex",gap:8,marginTop:4}}>
+        <button onClick={()=>{setCu(caisseUrl);setBu(boissonsUrl);setEditingUrls(false);}} style={{flex:1,padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
+        <button onClick={save} style={{flex:2,padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>Enregistrer</button>
+      </div>}
       {msg&&<div style={{marginTop:8,fontSize:13,fontWeight:600,textAlign:"center",color:msg.startsWith("✅")?T.green:msg.startsWith("⏳")?T.orange:T.red}}>{msg}</div>}
     </div>
     <div style={{background:T.card,borderRadius:12,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
@@ -4310,17 +4320,23 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
       <button onClick={onSync} style={{width:"100%",padding:"12px",background:T.dark,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>↻ Synchroniser depuis Google Sheets</button>
     </div>
     <div style={{background:"#E8F5E9",borderRadius:12,padding:14,border:"1px solid #A5D6A7",marginBottom:14}}>
-      <div style={{fontWeight:700,fontSize:14,color:"#2E7D32",marginBottom:6}}>💳 SumUp TPE</div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+        <div style={{fontWeight:700,fontSize:14,color:"#2E7D32"}}>💳 SumUp TPE</div>
+        {!editingSumup&&<button onClick={()=>setEditingSumup(true)} style={{background:"none",border:"none",color:"#2E7D32",fontWeight:700,fontSize:12,cursor:"pointer",padding:0,textDecoration:"underline"}}>✏️ Modifier</button>}
+      </div>
       <div style={{fontSize:12,color:"#2E7D32",lineHeight:1.6,marginBottom:10}}>Le bouton "Carte Bleue" envoie directement la commande au TPE via <code>sumupmerchant://pay</code>. L'app SumUp doit être installée sur l'appareil et le TPE associé.</div>
       <label style={{fontSize:12,fontWeight:600,color:"#2E7D32",display:"block",marginBottom:4}}>Clé Affiliate SumUp (obligatoire — sans elle, l'appli SumUp ignore la demande)</label>
-      <input value={sk} onChange={e=>setSk(e.target.value)} placeholder="Générée sur developer.sumup.com"
-        style={{width:"100%",padding:"10px 12px",border:"1px solid #A5D6A7",borderRadius:8,fontSize:13,marginBottom:9,outline:"none"}}/>
+      <input value={sk} onChange={e=>setSk(e.target.value)} placeholder="Générée sur developer.sumup.com" disabled={!editingSumup}
+        style={{width:"100%",padding:"10px 12px",border:"1px solid #A5D6A7",borderRadius:8,fontSize:13,marginBottom:9,outline:"none",background:editingSumup?"white":"#F2F2F2",color:editingSumup?"#1B5E20":"#66806E"}}/>
       <label style={{fontSize:12,fontWeight:600,color:"#2E7D32",display:"block",marginBottom:4}}>App ID SumUp (optionnel, selon la config de votre clé)</label>
-      <input value={said} onChange={e=>setSaid(e.target.value)} placeholder="ex: com.anf87.caisse"
-        style={{width:"100%",padding:"10px 12px",border:"1px solid #A5D6A7",borderRadius:8,fontSize:13,marginBottom:9,outline:"none"}}/>
-      <button onClick={saveSumup} disabled={savingConfig||!caisseUrl} style={{width:"100%",padding:"11px",background:savingConfig?"#ccc":"#2E7D32",color:"white",border:"none",borderRadius:9,cursor:(savingConfig||!caisseUrl)?"default":"pointer",fontWeight:700,fontSize:13}}>
-        {savingConfig?"⏳ Enregistrement...":"💾 Enregistrer (partagé sur tous les appareils)"}
-      </button>
+      <input value={said} onChange={e=>setSaid(e.target.value)} placeholder="ex: com.anf87.caisse" disabled={!editingSumup}
+        style={{width:"100%",padding:"10px 12px",border:"1px solid #A5D6A7",borderRadius:8,fontSize:13,marginBottom:9,outline:"none",background:editingSumup?"white":"#F2F2F2",color:editingSumup?"#1B5E20":"#66806E"}}/>
+      {editingSumup&&<div style={{display:"flex",gap:8}}>
+        <button onClick={()=>{setSk(sumupKey||"");setSaid(sumupAppId||"");setEditingSumup(false);}} disabled={savingConfig} style={{flex:1,padding:"11px",background:"white",border:"1px solid #A5D6A7",borderRadius:9,cursor:"pointer",fontWeight:600,fontSize:13,color:"#2E7D32"}}>Annuler</button>
+        <button onClick={saveSumup} disabled={savingConfig||!caisseUrl} style={{flex:2,padding:"11px",background:savingConfig?"#ccc":"#2E7D32",color:"white",border:"none",borderRadius:9,cursor:(savingConfig||!caisseUrl)?"default":"pointer",fontWeight:700,fontSize:13}}>
+          {savingConfig?"⏳ Enregistrement...":"💾 Enregistrer (partagé sur tous les appareils)"}
+        </button>
+      </div>}
       {!caisseUrl&&<div style={{fontSize:11,color:"#2E7D32",marginTop:6}}>Configurez d'abord l'URL Script Caisse ci-dessus pour pouvoir enregistrer ce réglage sur Google Sheets.</div>}
       {sumupMsg&&<div style={{marginTop:10,padding:"10px 12px",borderRadius:8,fontSize:12,fontWeight:700,textAlign:"center",
         background:sumupMsg.startsWith("✅")?"#C8E6C9":"#FFCDD2",color:sumupMsg.startsWith("✅")?"#1B5E20":"#B71C1C"}}>{sumupMsg}</div>}
