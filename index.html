@@ -786,7 +786,16 @@ async function api(url,params){
 // Pour les écritures (save/delete/update/transfer) : si Google Sheets refuse ou que la
 // connexion coupe, on prévient clairement au lieu de laisser la modif disparaître en
 // silence au prochain rafraîchissement automatique.
+// Vrai si l'utilisateur connecté est un compte de test (SS.get, accessible partout
+// sans avoir à faire passer une prop dans tout l'arbre de composants).
+function isTestMode(){ return SS.get("anf87_user")?.role==="test"; }
 async function apiWrite(url,params){
+  if(isTestMode()){
+    // Mode test : on ne contacte JAMAIS le serveur pour une écriture — l'appli se
+    // comporte normalement côté interface (état local mis à jour), mais rien n'est
+    // réellement enregistré sur Google Sheets.
+    return {ok:true};
+  }
   const r=await api(url,params);
   // Garde-fou : une réponse "ok:true" mais qui ressemble à une LECTURE (un tableau
   // "products") pour une action d'ÉCRITURE signale que la requête n'a probablement
@@ -837,7 +846,7 @@ function App(){
   const sumupKey=config.sumup_key!==undefined?config.sumup_key:(LS.get("anf87_sumup_key")||"");
   const sumupAppId=config.sumup_appid!==undefined?config.sumup_appid:(LS.get("anf87_sumup_appid")||"");
   const site=sites.find(s=>s.id===siteId)||sites[0]||{id:"s1",name:"Buvette",color:T.red};
-  const isAdmin=!users.length||currentUser?.role==="admin";
+  const isAdmin=!users.length||currentUser?.role==="admin"||currentUser?.role==="test";
 
   useEffect(()=>{ if(caisseUrl)syncAll(); },[caisseUrl]);
 
@@ -1015,6 +1024,10 @@ function App(){
           {users.length>0&&<button onClick={()=>{setCU(null);SS.set("anf87_user",null);}} style={{background:"rgba(255,255,255,0.1)",border:"none",borderRadius:8,color:"rgba(255,255,255,0.6)",padding:"7px 10px",fontSize:13,cursor:"pointer"}}>⎋</button>}
         </div>
       </div>
+
+      {isTestMode()&&<div style={{background:"#FF9500",color:"white",textAlign:"center",padding:"6px 10px",fontSize:12,fontWeight:700,flexShrink:0}}>
+        🧪 Mode test — rien n'est enregistré sur Google Sheets
+      </div>}
 
       {/* ── CORPS ── */}
       <div style={{flex:1,overflow:"hidden"}}>
@@ -1826,10 +1839,12 @@ function SplitModal({total,boissonsUrl,onClose,onComplete}){
     const amt=amountFor(activeIdx);
     if((bInfo.solde||0)<amt-0.001)return; // sécurité : bouton normalement déjà désactivé dans ce cas
     setCompleting(true);
-    const reqId=Date.now()+"-"+Math.random().toString(36).slice(2);
-    try{
-      await fetch(boissonsUrl.trim()+"?action=scan&amount="+amt.toFixed(2)+"&person="+encodeURIComponent(bName.trim())+"&reqid="+reqId,{redirect:"follow"});
-    }catch{}
+    if(!isTestMode()){
+      const reqId=Date.now()+"-"+Math.random().toString(36).slice(2);
+      try{
+        await fetch(boissonsUrl.trim()+"?action=scan&amount="+amt.toFixed(2)+"&person="+encodeURIComponent(bName.trim())+"&reqid="+reqId,{redirect:"follow"});
+      }catch{}
+    }
     setCompleting(false);
     confirmPayment("free_drinks",{member:bName.trim()});
   };
@@ -2105,7 +2120,8 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
     // (c'était la cause du double décompte : "ça déduit 2 au lieu de 1").
     const reqId=Date.now()+"-"+Math.random().toString(36).slice(2);
     const scanUrl=boissonsUrl.trim()+"?action=scan&amount="+actuallyFreeValue.toFixed(2)+"&person="+encodeURIComponent(name.trim())+"&reqid="+reqId;
-    let scanOk=false,lastErr=null;
+    let scanOk=isTestMode(); // mode test : on ne contacte jamais le serveur, on simule un succès
+    let lastErr=null;
     for(let attempt=0;attempt<3&&!scanOk;attempt++){
       try{ await fetch(scanUrl,{redirect:"follow"}); scanOk=true; }
       catch(e){ lastErr=e; if(attempt<2)await new Promise(r=>setTimeout(r,1000)); }
@@ -2474,7 +2490,9 @@ function CardsAdmin({boissonsUrl}){
     const original=edit.id?members.find(m=>m.id.toString()===edit.id.toString()):null;
     const photoChanged=!original||edit.photo!==(original.photo||"");
     let photoParam,extra={};
-    if(photoChanged){
+    if(isTestMode()){
+      photoParam=photoChanged?edit.photo:"__KEEP__"; // mode test : on garde juste l'aperçu local, rien n'est envoyé
+    }else if(photoChanged){
       const up=await uploadPhotoGeneric(boissonsUrl,"uploadmemberphotochunk",id,edit.photo);
       if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
       photoParam=up.photoParam;extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
@@ -2483,7 +2501,7 @@ function CardsAdmin({boissonsUrl}){
     }
     // Maximum/Solde restent calculés par la feuille et ne sont jamais envoyés —
     // seul Entraînements (donnée d'entrée de la formule) est modifiable et transmis.
-    const r=await api(boissonsUrl,{action:"savemember",id,nom:edit.nom.trim(),compteur:edit.compteur,
+    const r=isTestMode()?{ok:true}:await api(boissonsUrl,{action:"savemember",id,nom:edit.nom.trim(),compteur:edit.compteur,
       licence:edit.licence,numLicence:edit.numLicence,entrainements:edit.entrainements,photo:photoParam,...extra});
     if(r.ok){
       // Maximum/Solde : on garde la dernière valeur connue (calculée par la feuille)
@@ -2504,7 +2522,7 @@ function CardsAdmin({boissonsUrl}){
   const del=async id=>{
     if(!window.confirm("Supprimer cette carte membre ?")||busy)return;
     setBusy(true);
-    const r=await api(boissonsUrl,{action:"deletemember",id});
+    const r=isTestMode()?{ok:true}:await api(boissonsUrl,{action:"deletemember",id});
     if(r.ok)setMembers(prev=>prev.filter(m=>m.id.toString()!==id.toString()));
     else window.alert("⚠️ Échec de la suppression : "+(r.error||"connexion"));
     setBusy(false);
@@ -4173,7 +4191,7 @@ function UsersAdmin({users,onSave,caisseUrl}){
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role});setBusy(false);setEditU(null);};
   const del=async(id)=>{if(users.length<=1){alert("Impossible de supprimer le dernier utilisateur");return;}
     if(!window.confirm("Supprimer ?")||busy)return;setBusy(true);onSave(users.filter(u=>u.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteUser",id});setBusy(false);};
-  const roleLabel={admin:"🔑 Admin",cashier:"💳 Caissier"};
+  const roleLabel={admin:"🔑 Admin",cashier:"💳 Caissier",test:"🧪 Test"};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:"#E3F2FD",borderRadius:12,padding:12,marginBottom:14,fontSize:13,color:"#1565C0"}}>ℹ️ <strong>Admin</strong> : accès complet. <strong>Caissier</strong> : accès caisse uniquement. Si aucun utilisateur, connexion libre.</div>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
@@ -4181,7 +4199,7 @@ function UsersAdmin({users,onSave,caisseUrl}){
       <input style={inp} placeholder="Nom" value={newU.name} onChange={e=>setNewU({...newU,name:e.target.value})}/>
       <input style={inp} type="password" placeholder="PIN (chiffres)" value={newU.pin} onChange={e=>setNewU({...newU,pin:e.target.value})} maxLength={6}/>
       <select value={newU.role} onChange={e=>setNewU({...newU,role:e.target.value})} style={{...inp}}>
-        <option value="admin">Admin (accès complet)</option><option value="cashier">Caissier (caisse uniquement)</option>
+        <option value="admin">Admin (accès complet)</option><option value="cashier">Caissier (caisse uniquement)</option><option value="test">Test (accès complet, rien n'est enregistré)</option>
       </select>
       <button onClick={add} disabled={busy} style={{width:"100%",padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Ajouter"}</button>
     </div>
@@ -4199,7 +4217,7 @@ function UsersAdmin({users,onSave,caisseUrl}){
         <input style={inp} value={editU.name} onChange={e=>setEditU({...editU,name:e.target.value})} placeholder="Nom"/>
         <input style={inp} type="password" value={editU.pin} onChange={e=>setEditU({...editU,pin:e.target.value})} placeholder="PIN"/>
         <select value={editU.role} onChange={e=>setEditU({...editU,role:e.target.value})} style={{...inp}}>
-          <option value="admin">Admin</option><option value="cashier">Caissier</option>
+          <option value="admin">Admin</option><option value="cashier">Caissier</option><option value="test">Test</option>
         </select>
         <div style={{display:"flex",gap:8}}>
           <button onClick={()=>setEditU(null)} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
