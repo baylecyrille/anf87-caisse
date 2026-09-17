@@ -1,10 +1,12 @@
-const VER='caisse-v4'; // version incrémentée à nouveau : purge tout cache résiduel
+const VER='caisse-v5'; // version incrémentée : purge le cache qui servait encore l'ancien index.html sans QRCode/jsPDF
 // qui garderait encore une ancienne synchronisation Google Sheets figée.
 const CDN=[
   'https://unpkg.com/react@18.2.0/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js',
   'https://unpkg.com/@babel/standalone@7.23.5/babel.min.js',
-  'https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js'
+  'https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js',
+  'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js',
+  'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js'
 ];
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(VER).then(c=>c.addAll(['./','./index.html','./manifest.json',...CDN])));});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==VER).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
