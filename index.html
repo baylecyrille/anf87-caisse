@@ -4217,6 +4217,7 @@ function MyProfile({currentUser,setCU,caisseUrl}){
   const [pin,setPin]=useState("");
   const [msg,setMsg]=useState("");
   const [busy,setBusy]=useState(false);
+  const [editing,setEditing]=useState(false); // verrouillé par défaut, comme les URLs et SumUp
 
   const save=async()=>{
     if(!name.trim())return;
@@ -4225,23 +4226,30 @@ function MyProfile({currentUser,setCU,caisseUrl}){
     const r=await apiWrite(caisseUrl,{action:"saveUser",id:currentUser.id,name:updated.name,pin:updated.pin,role:currentUser.role});
     if(r.ok){
       setCU(updated);SS.set("anf87_user",updated);
-      setMsg("✅ Profil mis à jour");setPin("");
+      setMsg("✅ Profil mis à jour");setPin("");setEditing(false);
     }
     setBusy(false);
     setTimeout(()=>setMsg(""),2500);
   };
+  const cancel=()=>{setName(currentUser.name);setPin("");setEditing(false);};
 
   return(<div style={{background:T.card,borderRadius:12,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
-    <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>👤 Mon profil</div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+      <div style={{fontWeight:700,fontSize:14,color:T.dark}}>👤 Mon profil</div>
+      {!editing&&<button onClick={()=>setEditing(true)} style={{background:"none",border:"none",color:T.blue,fontWeight:700,fontSize:12,cursor:"pointer",padding:0}}>✏️ Modifier</button>}
+    </div>
     <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Nom affiché</label>
-    <input value={name} onChange={e=>setName(e.target.value)}
-      style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:9}}/>
+    <input value={name} onChange={e=>setName(e.target.value)} disabled={!editing}
+      style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:9,background:editing?"white":"#F2F2F2",color:editing?T.dark:T.mid}}/>
     <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Nouveau code PIN (laisser vide pour ne pas changer)</label>
-    <input value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,""))} type="password" inputMode="numeric" maxLength={6} placeholder="••••"
-      style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:9}}/>
-    <button onClick={save} disabled={busy||!name.trim()} style={{width:"100%",padding:"10px",background:T.red,color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:700,fontSize:13}}>
-      {busy?"⏳...":"💾 Enregistrer mon profil"}
-    </button>
+    <input value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,""))} type="password" inputMode="numeric" maxLength={6} placeholder="••••" disabled={!editing}
+      style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:9,background:editing?"white":"#F2F2F2",color:editing?T.dark:T.mid}}/>
+    {editing&&<div style={{display:"flex",gap:8}}>
+      <button onClick={cancel} disabled={busy} style={{flex:1,padding:"10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,cursor:"pointer",fontWeight:600,fontSize:13}}>Annuler</button>
+      <button onClick={save} disabled={busy||!name.trim()} style={{flex:2,padding:"10px",background:T.red,color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:700,fontSize:13}}>
+        {busy?"⏳...":"💾 Enregistrer mon profil"}
+      </button>
+    </div>}
     {msg&&<div style={{marginTop:8,fontSize:12,fontWeight:600,textAlign:"center",color:T.green}}>{msg}</div>}
   </div>);
 }
