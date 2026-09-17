@@ -676,6 +676,18 @@ const containerAvailable=(reserve,stock,siteId,productId,label,size)=>{
   return precise!=null?precise:0;
 };
 
+// Nombre d'unités d'un produit "consigne" actuellement chez les clients (payées mais
+// pas encore rendues), sur un site donné.
+const depositsFor=(deposits,siteId,productId)=>{
+  const entry=(deposits||[]).find(d=>d.site===siteId&&d.productId.toString()===productId.toString());
+  return entry?entry.count:0;
+};
+// Vrai si CE produit est un produit "consigne" — c'est-à-dire qu'un AUTRE produit
+// (typiquement "Retour consigne") a son champ returnFor qui pointe vers lui. Permet
+// d'afficher le compteur "X dehors" uniquement sur les produits concernés.
+const isDepositProduct=(products,productId)=>
+  (products||[]).some(p=>p.returnFor&&p.returnFor.toString()===productId.toString());
+
 // Ouvre/ferme un contenant — utilisé à la fois depuis l'écran caisse (POS) et
 // l'écran Stock > Contenants, pour ne pas dupliquer la logique réseau.
 async function openContainerApi(caisseUrl,siteId,prod,choice,setContainers){
@@ -828,6 +840,7 @@ function App(){
   const [combos,setCombos]=useState(LS.get("anf87_combos")||[]); // menus (plusieurs produits différents en une vente)
   const [accompaniments,setAccompaniments]=useState(LS.get("anf87_accompaniments")||[]); // gobelet/sucre/touillette... auto-décomptés
   const [reserve,setReserve]=useState(LS.get("anf87_reserve")||[]); // réserve précise de contenants par type (via Entrée rapide)
+  const [deposits,setDeposits]=useState(LS.get("anf87_deposits")||[]); // consignes actuellement chez les clients, par produit et par site
   const [siteId,setSiteId]=useState(LS.get("anf87_site")||"s1");
   const [tab,setTab]=useState("pos");
   const [cart,setCart]=useState([]);
@@ -875,6 +888,7 @@ function App(){
       setCombos(r.combos||[]);LS.set("anf87_combos",r.combos||[]);
       setAccompaniments(r.accompaniments||[]);LS.set("anf87_accompaniments",r.accompaniments||[]);
       setReserve(r.reserve||[]);LS.set("anf87_reserve",r.reserve||[]);
+      setDeposits(r.deposits||[]);LS.set("anf87_deposits",r.deposits||[]);
       setConfig(r.config||{});LS.set("anf87_config",r.config||{});
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);LS.set("anf87_lastsync",t);
@@ -972,6 +986,21 @@ function App(){
           .forEach(a=>stockEntries.push({id:a.assocId,qty:a.qty*item.qty}));
       }
     });
+    // Consignes : la vente d'un produit "consigne" (référencé par le champ returnFor
+    // d'un autre produit) AUGMENTE le nombre de consignes chez les clients ; la vente
+    // du "retour de consigne" correspondant (returnFor renseigné) le DIMINUE d'autant.
+    const depositDeltas={}; // productId du produit CONSIGNE (jamais celui du retour) -> delta
+    cart.forEach(item=>{
+      if(item.comboItems||item.noStock)return; // combos/lignes virtuelles non concernés
+      const pid=item.pid||item.id;
+      const prod=products.find(p=>p.id.toString()===pid.toString());
+      if(!prod)return;
+      if(prod.returnFor){
+        depositDeltas[prod.returnFor]=(depositDeltas[prod.returnFor]||0)-item.qty;
+      }else if(isDepositProduct(products,pid)){
+        depositDeltas[pid]=(depositDeltas[pid]||0)+item.qty;
+      }
+    });
     // On ADDITIONNE toutes les entrées d'un même produit — il peut apparaître sur
     // plusieurs lignes (plusieurs services au verre, une ligne scindée par la carte
     // boissons, ou inclus dans plusieurs combos différents à la fois).
@@ -981,6 +1010,20 @@ function App(){
       return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-qtyTotal)}};
     });
     setProducts(upd);LS.set("anf87_products",upd);
+    // Reflet local immédiat des consignes chez les clients, avant même la synchro.
+    if(Object.keys(depositDeltas).length){
+      setDeposits(prev=>{
+        let next=prev.slice();
+        Object.entries(depositDeltas).forEach(([depId,delta])=>{
+          if(delta===0)return;
+          const idx=next.findIndex(d=>d.site===siteId&&d.productId.toString()===depId.toString());
+          if(idx>=0)next[idx]={...next[idx],count:Math.max(0,next[idx].count+delta)};
+          else next.push({site:siteId,productId:depId,count:Math.max(0,delta)});
+        });
+        LS.set("anf87_deposits",next);
+        return next;
+      });
+    }
     if(caisseUrl){
       const member=cart.some(i=>i.free)?(LS.get("anf87_last_member")||""):"";
       const saleResult=await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
@@ -989,6 +1032,10 @@ function App(){
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
       if(saleResult?.stockWarning){
         window.alert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
+      }
+      for(const[depId,delta]of Object.entries(depositDeltas)){
+        if(delta===0)continue;
+        await apiWrite(caisseUrl,{action:"adjustDeposit",site:siteId,id:depId,delta});
       }
       syncAll(); // reflète immédiatement le stock réel (utile à plusieurs caisses)
     }
@@ -1037,12 +1084,12 @@ function App(){
           cartTotal={cartTotal} cartCount={cartCount} currentUser={currentUser}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}/>}
-        {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
+        {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd}/>}
         {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
-          accompaniments={accompaniments} setAccompaniments={setAccompaniments}/>}
+          accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})} currentUser={currentUser} setCU={setCU}
           sumupKey={sumupKey} sumupAppId={sumupAppId} setConfig={setConfig}/>}
@@ -2336,7 +2383,7 @@ function ScannerModal({products,siteId,onFound,onClose}){
 }
 
 // ═══ STOCK SCREEN ═══
-function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve}){
+function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve,deposits,setDeposits}){
   const [view,setView]=useState("list"); // list | entry | transfer | containers
   const [sel,setSel]=useState(siteId);
 
@@ -2350,7 +2397,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
         </button>
       ))}
     </div>
-    {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
+    {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits}/>}
     {view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
     {view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
     {view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} reserve={reserve} setReserve={setReserve}/>}
@@ -2961,9 +3008,23 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
   </div>);
 }
 
-function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve}){
+function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve,deposits,setDeposits}){
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:v<=10?"#EAB308":T.green;
   const [containerModalFor,setContainerModalFor]=useState(null); // produit dont la popup contenant est ouverte
+  const [editingDeposit,setEditingDeposit]=useState(null); // id du produit "consigne" dont le compteur est en édition
+  const adjustDepositCount=async(prod,newCount)=>{
+    const oldCount=depositsFor(deposits,siteId,prod.id);
+    const delta=newCount-oldCount;
+    if(delta===0){setEditingDeposit(null);return;}
+    setDeposits(prev=>{
+      const idx=prev.findIndex(d=>d.site===siteId&&d.productId.toString()===prod.id.toString());
+      const next=idx>=0?prev.map((d,i)=>i===idx?{...d,count:Math.max(0,newCount)}:d):[...prev,{site:siteId,productId:prod.id,count:Math.max(0,newCount)}];
+      LS.set("anf87_deposits",next);
+      return next;
+    });
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"adjustDeposit",site:siteId,id:prod.id,delta});
+    setEditingDeposit(null);
+  };
   const updateQty=async(prod,site,newQty)=>{
     const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[site]:Math.max(0,newQty)}});
     onSave(upd);if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:prod.id,site,qty:Math.max(0,newQty),mode:"set"});
@@ -2998,6 +3059,14 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{prod.name}</div>
                 <div style={{fontSize:11,color:T.mid}}>{fmt(prod.price)}{prod.sellByVolume?" • au "+prod.unit:""}</div>
+                {isDepositProduct(products,prod.id)&&(editingDeposit===prod.id
+                  ?<input type="number" min="0" autoFocus defaultValue={depositsFor(deposits,siteId,prod.id)}
+                      onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v))adjustDepositCount(prod,v);else setEditingDeposit(null);}}
+                      onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape")setEditingDeposit(null);}}
+                      style={{width:50,padding:"1px 4px",fontSize:11,border:`1px solid ${T.orange}`,borderRadius:5,textAlign:"center"}}/>
+                  :<button onClick={()=>setEditingDeposit(prod.id)} style={{background:"none",border:"none",padding:0,cursor:"pointer",fontSize:11,color:T.orange,fontWeight:600}}>
+                    🔄 {depositsFor(deposits,siteId,prod.id)} dehors ✏️
+                  </button>)}
               </div>
               <div style={{display:"flex",gap:3,marginRight:6}}>
                 {sites.map(s=><div key={s.id} title={s.name} style={{width:24,height:24,borderRadius:5,
@@ -3618,7 +3687,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
 }
 
 // ═══ ADMIN ═══
-function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,accompaniments,setAccompaniments}){
+function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,accompaniments,setAccompaniments,deposits}){
   const [tab,setTab]=useState("products");
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{display:"flex",background:T.card,borderBottom:`1px solid ${T.border}`,overflowX:"auto",flexShrink:0}}>
@@ -3630,7 +3699,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
       ))}
     </div>
     <div style={{flex:1,overflow:"hidden"}}>
-      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments}/>}
+      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits}/>}
       {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} caisseUrl={caisseUrl}/>}
       {tab==="cartes"&&<CardsAdmin boissonsUrl={boissonsUrl}/>}
       {tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
@@ -3640,7 +3709,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
   </div>);
 }
 
-function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePortions,onManageAccompaniments,busy}){
+function ProdForm({data,setData,onSubmit,label,categories,products,handlePhoto,onManagePortions,onManageAccompaniments,busy}){
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const videoRef=useRef(null);const readerRef=useRef(null);const camIdRef=useRef(null);
   const [scanningBarcode,setScanningBarcode]=useState(false);
@@ -3710,6 +3779,14 @@ function ProdForm({data,setData,onSubmit,label,categories,handlePhoto,onManagePo
       <select value={data.cat} onChange={e=>setData({...data,cat:e.target.value})} style={{...inp}}>
         {categories.map(c=><option key={c.id}>{c.name}</option>)}
       </select>
+      <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>🔄 Ce produit est un retour de consigne pour :</label>
+      <select value={data.returnFor||""} onChange={e=>setData({...data,returnFor:e.target.value})} style={{...inp}}>
+        <option value="">— Aucun (produit normal) —</option>
+        {(products||[]).filter(p=>p.id!==data.id).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+      {data.returnFor&&<div style={{fontSize:11,color:T.orange,marginBottom:9,fontStyle:"italic"}}>
+        Vendre ce produit diminuera le compteur "consignes dehors" du produit sélectionné, au lieu de décompter son propre stock.
+      </div>}
       {/* Photo */}
       <div style={{marginBottom:7}}>
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Photo produit (remplace l'emoji sur l'écran caisse)</label>
@@ -3846,7 +3923,7 @@ function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,
   </div>);
 }
 
-function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions,accompaniments,setAccompaniments}){
+function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions,accompaniments,setAccompaniments,deposits}){
   const [edit,setEdit]=useState(null);
   const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
   const [portionsFor,setPortionsFor]=useState(null); // produit dont on gère les portions
@@ -3895,7 +3972,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   const delProd=async(id)=>{if(!window.confirm("Supprimer ?")||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});setSaving(false);};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
-    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
+    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
   // Le prix d'achat/vente d'un produit au volume est saisi PAR PORTION (ex: 0,90€
   // l'achat d'un verre de 25cl), mais son stock est compté en cl (ex: 3000cl pour un
@@ -3920,7 +3997,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     </div>
     {valueDetail&&<StockValueDetailModal mode={valueDetail} products={products} sites={sites} caisseUrl={caisseUrl}
       unitCost={unitCost} unitSell={unitSell} flattenProd={flattenProd} onSave={onSave} onClose={()=>setValueDetail(null)}/>}
-    <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} handlePhoto={handlePhoto} busy={saving}/>
+    <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} products={products} handlePhoto={handlePhoto} busy={saving}/>
     {products.map(p=>{
       const margeUnit=(p.price||0)-(p.costPrice||0);
       const margePct=p.costPrice>0?(margeUnit/p.costPrice*100):null;
@@ -3930,7 +4007,9 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
         :<span style={{fontSize:24,flexShrink:0}}>{p.emoji}</span>}
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
-        <div style={{fontSize:11,color:T.mid}}>{p.cat} • {fmt(p.price)}{p.drink?" • 🍺":""}{p.sellByVolume?" • au "+p.unit:""}{p.barcode?" • 🏷 "+p.barcode:""}</div>
+        <div style={{fontSize:11,color:T.mid}}>{p.cat} • {fmt(p.price)}{p.drink?" • 🍺":""}{p.sellByVolume?" • au "+p.unit:""}{p.barcode?" • 🏷 "+p.barcode:""}
+          {isDepositProduct(products,p.id)?" • 🔄 "+(deposits||[]).filter(d=>d.productId.toString()===p.id.toString()).reduce((s,d)=>s+d.count,0)+" dehors (tous sites)":""}
+        </div>
         {p.costPrice>0&&<div style={{fontSize:10,color:margeUnit>=0?"#2E7D32":T.red,fontWeight:600,marginTop:1}}>
           Achat {fmt(p.costPrice)} • Marge {fmt(margeUnit)}{margePct!=null?` (${margePct.toFixed(0)}%)`:""} • Stock: {fmt(unitCost(p)*stockTotal)}
         </div>}
@@ -3941,7 +4020,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>✏️ Modifier {edit.name}</div>
-        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)} onManageAccompaniments={p=>setAccompFor(p)} busy={saving}/>
+        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} products={products} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)} onManageAccompaniments={p=>setAccompFor(p)} busy={saving}/>
         <button onClick={()=>setEdit(null)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:6}}>Annuler</button>
       </div>
     </div>}

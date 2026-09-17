@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale"];
+  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -62,6 +62,7 @@ function doGet(e) {
       case "saveProductOrder":    result = saveProductOrder(e); break;
       case "saveCameraPref":      result = saveCameraPref(e); break;
       case "addToReserve":        result = addToReserve(e); break;
+      case "adjustDeposit":       result = adjustDeposit(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -154,6 +155,14 @@ function initSheets() {
     cfg.getRange(1,1,1,2).setFontWeight("bold");
     cfg.setFrozenRows(1);
   }
+  // Consignes actuellement chez les clients (payées, pas encore rendues) — par
+  // produit "consigne" et par site.
+  var dep = getOrCreate(ss,"ConsignesDehors");
+  if(dep.getLastRow()<=1){
+    dep.getRange(1,1,1,3).setValues([["SiteID","ProduitID","Nombre"]]);
+    dep.getRange(1,1,1,3).setFontWeight("bold");
+    dep.setFrozenRows(1);
+  }
   // Portions de vente (paliers) : demis/pichets/tailles de gobelet... avec leur
   // propre photo, liées à un produit "liquide" (celui vendu au volume).
   var port = getOrCreate(ss,"Portions");
@@ -196,7 +205,7 @@ function getAllData(){
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
     categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss),
     portions:getPortionsData(ss), combos:getCombosData(ss), accompaniments:getAccompanimentsData(ss),
-    reserve:getReserveData(ss), config:getConfig(ss), ts:Date.now()};
+    reserve:getReserveData(ss), deposits:getDepositsData(ss), config:getConfig(ss), ts:Date.now()};
 }
 
 // Réglages globaux du club (clé/valeur) — ex: clé Affiliate SumUp, App ID SumUp.
@@ -230,6 +239,35 @@ function getReserveData(ss){
   var sh=ss.getSheetByName("ReserveContenants"); if(!sh||sh.getLastRow()<=1)return [];
   return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0]&&r[1])
     .map(r=>({site:r[0],productId:r[1],label:r[2],size:+r[3]||0,count:+r[4]||0}));
+}
+// Combien d'unités d'un produit "consigne" sont actuellement chez les clients (payées
+// mais pas encore rendues) — incrémenté à la vente d'une consigne, décrémenté à la
+// vente d'un "retour de consigne" (produit lié via son champ ReturnFor).
+function getDepositsData(ss){
+  var sh=ss.getSheetByName("ConsignesDehors"); if(!sh||sh.getLastRow()<=1)return [];
+  return sh.getRange(2,1,sh.getLastRow()-1,3).getValues().filter(r=>r[0]&&r[1])
+    .map(r=>({site:r[0],productId:r[1],count:+r[2]||0}));
+}
+function adjustDeposit(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"ConsignesDehors"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,3).setValues([["SiteID","ProduitID","Nombre"]]);
+    sh.getRange(1,1,1,3).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var site=p.site, id=p.id, delta=+p.delta||0;
+  if(!site||!id||delta===0)return{ok:false,error:"Paramètres manquants"};
+  if(sh.getLastRow()>1){
+    var data=sh.getRange(2,1,sh.getLastRow()-1,3).getValues();
+    for(var i=0;i<data.length;i++){
+      if(data[i][0].toString()===site.toString()&&data[i][1].toString()===id.toString()){
+        var newCount=Math.max(0,(+data[i][2]||0)+delta);
+        sh.getRange(i+2,3).setValue(newCount);
+        return{ok:true,count:newCount};
+      }
+    }
+  }
+  sh.appendRow([site,id,Math.max(0,delta)]);
+  return{ok:true,count:Math.max(0,delta)};
 }
 // Enregistre l'ajout de N contenants d'un type précis (utilisé depuis Entrée rapide),
 // pour savoir EXACTEMENT combien de fûts/bouteilles/cubis de CHAQUE taille sont en
@@ -448,11 +486,12 @@ function siteColumn(ss, siteId){
 function getProductsData(ss){
   var sh=ss.getSheetByName("Produits"); if(!sh||sh.getLastRow()<=1)return [];
   var sites=getSitesData(ss); // pour associer chaque site à SA colonne de stock, dans l'ordre
-  // Colonne Y (25) réservée à "Contenants", Z (26) à "Couleur" — volontairement loin
-  // des colonnes de stock des sites au-delà du 4e (qui démarrent à R=18 et peuvent
-  // grandir), pour ne jamais entrer en collision avec elles.
-  var CONTAINERS_COL=25, COLOR_COL=26;
-  var maxCol=Math.max(COLOR_COL, sites.length>4 ? 18+(sites.length-4)-1 : 17);
+  // Colonne Y (25) réservée à "Contenants", Z (26) à "Couleur", AA (27) à "ReturnFor"
+  // (retour de consigne) — volontairement loin des colonnes de stock des sites
+  // au-delà du 4e (qui démarrent à R=18 et peuvent grandir), pour ne jamais entrer
+  // en collision avec elles.
+  var CONTAINERS_COL=25, COLOR_COL=26, RETURNFOR_COL=27;
+  var maxCol=Math.max(RETURNFOR_COL, sites.length>4 ? 18+(sites.length-4)-1 : 17);
   return sh.getRange(2,1,sh.getLastRow()-1,maxCol).getValues()
     .filter(r=>r[0]).map(r=>{
       var stock={};
@@ -469,7 +508,8 @@ function getProductsData(ss){
         costPrice:+r[15]||0,
         presets:(r[16]||"").toString(),
         containers:(r[CONTAINERS_COL-1]||"").toString(),
-        color:(r[COLOR_COL-1]||"").toString()
+        color:(r[COLOR_COL-1]||"").toString(),
+        returnFor:(r[RETURNFOR_COL-1]||"").toString()
       };
     });
 }
@@ -643,6 +683,7 @@ function saveProduct(e){
   var presets=(p.presets||"").toString();
   var containers=(p.containers||"").toString();
   var color=(p.color||"").toString();
+  var returnFor=(p.returnFor||"").toString();
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
@@ -661,6 +702,7 @@ function saveProduct(e){
       sh.getRange(i+2,17).setValue(presets);   // Q = Paliers de vente au volume
       sh.getRange(i+2,25).setValue(containers);// Y = Tailles de contenant (jauge fûts/bouteilles/cubis)
       sh.getRange(i+2,26).setValue(color);     // Z = Couleur de la jauge (comme les sites)
+      sh.getRange(i+2,27).setValue(returnFor); // AA = Retour de consigne pour (ID du produit "consigne")
       return{ok:true,action:"updated"};
     }}
   }
@@ -670,8 +712,8 @@ function saveProduct(e){
   var meta=[p.id,p.name,+p.price,p.cat,p.emoji,createPhoto,p.barcode||"",
     p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
   // Stock initialisé à 0 sur tous les sites (les 4 colonnes historiques L:O, plus une
-  // colonne par site au-delà du 4e, jusqu'aux colonnes Y=25/Z=26 réservées à
-  // Contenants/Couleur — donc jusqu'à 11 sites au total sans collision).
+  // colonne par site au-delà du 4e, jusqu'aux colonnes Y=25/Z=26/AA=27 réservées à
+  // Contenants/Couleur/ReturnFor — donc jusqu'à 11 sites au total sans collision).
   var nbSites=getSitesData(ss).length;
   var row=meta.slice();               // colonnes 1-11 (A:K)
   row.push(0,0,0,0);                  // colonnes 12-15 (L:O) — toujours réservées aux 4 premiers sites
@@ -679,9 +721,10 @@ function saveProduct(e){
   row.push(presets);                  // colonne 17 (Q)
   var extra=nbSites>4?nbSites-4:0;
   for(var s=0;s<extra;s++)row.push(0);// colonnes 18+ (R, S...) pour le 5e site et au-delà
-  while(row.length<24)row.push("");   // comble jusqu'à la colonne 24 si besoin
+  while(row.length<26)row.push("");   // comble jusqu'à la colonne 26 si besoin
   row[24]=containers;                 // colonne 25 (Y)
   row[25]=color;                      // colonne 26 (Z)
+  row[26]=returnFor;                  // colonne 27 (AA)
   sh.appendRow(row);
   sh.getRange(sh.getLastRow(),7).setNumberFormat("@"); // Codebarres en texte, même raison que ci-dessus
   return{ok:true,action:"created"};
