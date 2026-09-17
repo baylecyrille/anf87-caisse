@@ -81,7 +81,7 @@ function getMembers(e){
         // feuille (à partir du nombre d'entraînements) — on les lit pour affichage
         // uniquement, jamais réécrites depuis l'appli (voir saveMember).
         maximum:+data[i][COL_MAXIMUM]||0, solde:+data[i][COL_SOLDE]||0,
-        entrainements:+data[i][6]||0,
+        entrainements:(data[i][6]!==undefined&&data[i][6]!==null?data[i][6]:"").toString(),
         numLicence:(data[i][COL_NUMLICENCE]||"").toString(), photo:(data[i][COL_PHOTO]||"").toString()
       });
     }
@@ -113,7 +113,7 @@ function saveMember(e){
       for(var c2=0;c2<total;c2++)cache.remove("memberphoto_"+p.id+"_"+c2);
     }
     var data=sheet.getDataRange().getValues();
-    var compteur=+p.compteur||0, entrainements=+p.entrainements||0;
+    var compteur=+p.compteur||0, entrainements=(p.entrainements!==undefined?p.entrainements:"").toString();
     for(var i=1;i<data.length;i++){
       if(data[i][COL_ID]&&data[i][COL_ID].toString()===p.id.toString()){
         var row=i+1;
@@ -220,17 +220,17 @@ function handleRequest(e){
       return HtmlService.createHtmlOutput(buildPage(nom,membreId,scriptUrl,hr,buildBloque(nom,membreId),buildFermerScript()));
     }
     if(action==="menu"){
-      var body=buildStats(compteur,solde,maximum,pct)+"<div class='divider'></div>"
-        +"<div class='qty-sect'><div class='qty-title'>Montant à ajouter (€)</div>"
-        +"<div class='qty-row'><button class='q-btn' onclick='cQ(-0.5)'>−</button>"
-        +"<div><div class='q-num' id='qv'>1.00</div><div class='q-lbl'>€</div></div>"
-        +"<button class='q-btn' onclick='cQ(0.5)'>+</button></div>"
-        +"<button class='q-add' onclick='ajouter()'>✅ Ajouter</button></div>"
+      // Écran de CONSULTATION uniquement quand la carte QR est scannée en dehors de
+      // l'appli (avec l'appareil photo du téléphone par ex.) — plus de possibilité
+      // d'ajouter/déduire un montant depuis cette page. Cette action ne sert plus
+      // qu'à afficher le solde. L'action "scan" ci-dessous reste elle intacte : c'est
+      // l'appli ANF87 Caisse qui l'utilise en interne (carte boissons offertes),
+      // ça n'a rien à voir avec un scan externe.
+      var body=buildStats(compteur,solde,maximum,pct)
+        +"<div class='divider'></div>"
+        +"<div style='text-align:center;color:#666;font-size:14px;padding:6px 10px 2px;'>Consultation uniquement — l'ajout de consommation se fait depuis la caisse ANF 87.</div>"
         +"<button class='btn-f' onclick='fermer()'>✕ Fermer</button>"
-        +"<script>var SM="+solde+",BU='"+baseUrl+"',qty=1;"
-        +"function cQ(d){qty=Math.max(0.5,Math.min(SM,qty+d));document.getElementById('qv').textContent=qty.toFixed(2);}"
-        +"function ajouter(){window.location.href=BU+'&action=scan&amount='+qty+'&reqid='+Date.now();}"
-        +"function fermer(){window.close();setTimeout(function(){document.body.innerHTML='<div style=\"background:#cc0000;min-height:100vh;display:flex;align-items:center;justify-content:center;\"><p style=\"color:white;font-size:24px;font-family:sans-serif;text-align:center;\">Vous pouvez<br>fermer cette page</p></div>';},200);}<\/script>";
+        +"<script>function fermer(){window.close();setTimeout(function(){document.body.innerHTML='<div style=\"background:#cc0000;min-height:100vh;display:flex;align-items:center;justify-content:center;\"><p style=\"color:white;font-size:24px;font-family:sans-serif;text-align:center;\">Vous pouvez<br>fermer cette page</p></div>';},200);}<\/script>";
       return HtmlService.createHtmlOutput(buildPage(nom,membreId,"","",body,""));
     }
     if(compteur>=maximum){

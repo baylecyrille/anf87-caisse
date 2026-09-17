@@ -33,9 +33,11 @@ input,select,button,textarea{font-family:inherit}
   .nav-btn{padding:5px 10px!important;gap:0!important}
   .nav-bar{padding:5px 0 8px!important}
 }
-/* Animation du transfert de stock entre sites (voir StockTransfer) */
+/* Animation du transfert de stock entre sites (voir StockTransfer). L'émoji 🚚 est
+   dessiné orienté vers la GAUCHE par défaut — sans le retourner, l'animer vers la
+   droite (sens du transfert) donne l'impression qu'il recule. */
 @keyframes driveAcross{0%{left:0}100%{left:calc(100% - 34px)}}
-.transfer-truck{position:absolute;top:50%;transform:translateY(-50%);font-size:26px;animation:driveAcross 1.3s ease-in-out forwards;}
+.transfer-truck{position:absolute;top:50%;transform:translateY(-50%) scaleX(-1);font-size:26px;animation:driveAcross 1.3s ease-in-out forwards;}
 </style>
 </head>
 <body><div id="root"></div>
@@ -1878,7 +1880,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
     {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
     {view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
     {view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
-    {view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
+    {view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} reserve={reserve} setReserve={setReserve}/>}
   </div>);
 }
 
@@ -2031,7 +2033,7 @@ function CardsAdmin({boissonsUrl}){
       // ne sera connu qu'à la prochaine actualisation (la formule tourne côté serveur).
       const newEntry={id,nom:edit.nom.trim(),compteur:+edit.compteur||0,licence:edit.licence,
         maximum:original?.maximum||0,solde:original?original.maximum-(+edit.compteur||0):0,
-        entrainements:+edit.entrainements||0,numLicence:edit.numLicence||"",
+        entrainements:edit.entrainements||"",numLicence:edit.numLicence||"",
         photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setMembers(prev=>[...prev.filter(m=>m.id.toString()!==id.toString()),newEntry]);
       setEdit(null);
@@ -2144,7 +2146,7 @@ function CardsAdmin({boissonsUrl}){
           </div>
           <div style={{flex:1}}>
             <label style={{fontSize:11,color:T.mid,display:"block",marginBottom:3}}>🏃 Entraînements</label>
-            <input type="number" step="1" value={edit.entrainements} onChange={e=>setEdit({...edit,entrainements:e.target.value})}
+            <input type="text" placeholder="ex: 12 ou don" value={edit.entrainements} onChange={e=>setEdit({...edit,entrainements:e.target.value})}
               style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13}}/>
           </div>
         </div>
@@ -2668,7 +2670,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
   </div>);
 }
 
-function StockTransfer({products,sites,caisseUrl,onSave}){
+function StockTransfer({products,sites,caisseUrl,onSave,reserve,setReserve}){
   const [from,setFrom]=useState(sites[0]?.id||"s1");
   const [to,setTo]=useState(sites[1]?.id||"s2");
   const [qtys,setQtys]=useState({});
@@ -2696,7 +2698,33 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
     const upd=products.map(p=>{const q=+qtys[p.id]||0;if(!q)return p;
       return{...p,stock:{...p.stock,[from]:Math.max(0,(p.stock[from]||0)-q),[to]:(p.stock[to]||0)+q}};});
     onSave(upd);
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"transferStock",from,to,items:JSON.stringify(items)});
+    if(caisseUrl){
+      await apiWrite(caisseUrl,{action:"transferStock",from,to,items:JSON.stringify(items)});
+      // Transfère aussi le nombre de contenants en réserve (pas seulement la
+      // quantité en cl/g) : sans ça, "Ouvrir un fût" restait faussé sur les deux
+      // sites après un transfert par contenant.
+      for(const[pid,counts]of Object.entries(contCounts)){
+        const prod=products.find(p=>p.id.toString()===pid.toString());
+        if(!prod)continue;
+        const allPresets=parseContainers(prod.containers);
+        for(const c of allPresets){
+          const n=+counts[c.label]||0;
+          if(n<=0)continue;
+          await apiWrite(caisseUrl,{action:"addToReserve",site:from,id:pid,label:c.label,size:c.size,count:-n});
+          await apiWrite(caisseUrl,{action:"addToReserve",site:to,id:pid,label:c.label,size:c.size,count:n});
+          setReserve&&setReserve(prev=>{
+            let next=prev.slice();
+            const applyDelta=(site,delta)=>{
+              const idx=next.findIndex(r=>r.site===site&&r.productId.toString()===pid.toString()&&r.label===c.label&&r.size===c.size);
+              if(idx>=0)next[idx]={...next[idx],count:Math.max(0,next[idx].count+delta)};
+              else next.push({site,productId:pid,label:c.label,size:c.size,count:Math.max(0,delta)});
+            };
+            applyDelta(from,-n);applyDelta(to,n);
+            return next;
+          });
+        }
+      }
+    }
     // On laisse le temps à l'animation (camion qui traverse) de se terminer visuellement
     // avant d'afficher la confirmation, plutôt que de la couper en plein milieu.
     setTimeout(()=>{
@@ -2706,62 +2734,72 @@ function StockTransfer({products,sites,caisseUrl,onSave}){
     },1300);
   };
 
-  return(<div style={{flex:1,overflowY:"auto",padding:"14px"}}>
-    <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:14}}>↔ Transfert multi-produits</div>
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
-      {[["De (source)",from,setFrom,fromSite],["Vers (dest.)",to,setTo,toSite]].map(([label,val,setter,s],i)=>(
-        <div key={i}>
-          <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:5}}>{label}</label>
-          <select value={val} onChange={e=>setter(e.target.value)}
-            style={{width:"100%",padding:"10px",border:`1px solid ${s?.color||T.border}`,borderRadius:10,fontSize:13,outline:"none",
-              background:s?.color||T.card,color:s?.color?"white":T.dark,fontWeight:s?.color?700:400}}>
-            {sites.map(st=><option key={st.id} value={st.id} style={{background:"white",color:T.dark}}>{st.name}</option>)}
-          </select>
-        </div>
-      ))}
-    </div>
-    {/* Animation : camion traversant de la source vers la destination pendant l'envoi */}
-    {transferring&&<div style={{position:"relative",height:48,marginBottom:16,background:T.bg,borderRadius:10,overflow:"hidden",
-      border:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 10px"}}>
-      <span style={{fontSize:11,fontWeight:700,color:fromSite?.color||T.dark,zIndex:1}}>{fromSite?.name}</span>
-      <span className="transfer-truck">🚚</span>
-      <span style={{fontSize:11,fontWeight:700,color:toSite?.color||T.dark,zIndex:1}}>{toSite?.name}</span>
-    </div>}
-    {msg&&<div style={{background:"#E8F5E9",borderRadius:10,padding:"10px 12px",marginBottom:12,fontSize:13,fontWeight:600,color:"#2E7D32"}}>{msg}</div>}
-    <div style={{fontWeight:700,fontSize:13,color:T.mid,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Quantités à transférer</div>
-    {products.map(p=>{
-      const avail=p.stock[from]||0;if(avail===0)return null;
-      const presets=p.sellByVolume?parseContainers(p.containers):[];
-      return(<div key={p.id} style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,marginBottom:7,overflow:"hidden"}}>
-        <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px"}}>
-          {p.photo?<img src={p.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:22,flexShrink:0}}>{p.emoji}</span>}
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
-            <div style={{fontSize:11,color:T.mid}}>Dispo: {avail}{p.sellByVolume?p.unit||"cl":""}</div>
+  return(<div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+    {/* En-tête FIXE : sites, bouton et animation restent toujours visibles, même en
+        ayant fait défiler la liste des produits en dessous — avant ce correctif,
+        l'animation (en haut) et le bouton (en bas de liste) n'étaient jamais visibles
+        en même temps. */}
+    <div style={{flexShrink:0,padding:"14px 14px 10px",borderBottom:`1px solid ${T.border}`,background:T.bg}}>
+      <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:12}}>↔ Transfert multi-produits</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+        {[["De (source)",from,setFrom,fromSite],["Vers (dest.)",to,setTo,toSite]].map(([label,val,setter,s],i)=>(
+          <div key={i}>
+            <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:5}}>{label}</label>
+            <select value={val} onChange={e=>setter(e.target.value)}
+              style={{width:"100%",padding:"10px",border:`1px solid ${s?.color||T.border}`,borderRadius:10,fontSize:13,outline:"none",
+                background:s?.color||T.card,color:s?.color?"white":T.dark,fontWeight:s?.color?700:400}}>
+              {sites.map(st=><option key={st.id} value={st.id} style={{background:"white",color:T.dark}}>{st.name}</option>)}
+            </select>
           </div>
-          <input value={qtys[p.id]||""} onChange={e=>{setQtys(q=>({...q,[p.id]:Math.min(avail,Math.max(0,+e.target.value||0))}));setContCounts(c=>({...c,[p.id]:{}}));}}
-            type="number" min="0" max={avail} placeholder="0"
-            style={{width:60,padding:"7px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:14,fontWeight:700,textAlign:"center",outline:"none"}}/>
-        </div>
-        {/* Transfert par contenant (ex: 2 Fûts 20L) — calcule automatiquement
-            l'équivalent en cl/g dans le champ quantité ci-dessus. */}
-        {presets.length>0&&<div style={{padding:"0 14px 10px",display:"flex",flexWrap:"wrap",gap:8}}>
-          {presets.map((c,i)=>(
-            <div key={i} style={{display:"flex",alignItems:"center",gap:5,background:T.bg,borderRadius:7,padding:"4px 8px"}}>
-              <span style={{fontSize:11,color:T.mid}}>{c.label}</span>
-              <input type="number" min="0" value={contCounts[p.id]?.[c.label]||""} placeholder="0"
-                onChange={e=>setContainerCount(p,c.label,e.target.value)}
-                style={{width:38,padding:"2px 4px",border:`1px solid ${T.border}`,borderRadius:5,fontSize:12,textAlign:"center"}}/>
+        ))}
+      </div>
+      {msg&&<div style={{background:"#E8F5E9",borderRadius:10,padding:"10px 12px",marginBottom:10,fontSize:13,fontWeight:600,color:"#2E7D32"}}>{msg}</div>}
+      {/* Bouton avec l'animation directement à l'intérieur — toujours au même endroit
+          que le clic, plus besoin de chercher où regarde le camion. */}
+      <button onClick={transfer} disabled={!Object.values(qtys).some(q=>+q>0)||transferring}
+        style={{position:"relative",width:"100%",padding:"14px",overflow:"hidden",
+          background:transferring?T.dark:(Object.values(qtys).some(q=>+q>0)?T.red:"#ccc"),color:"white",
+          border:"none",borderRadius:12,cursor:transferring?"default":"pointer",fontWeight:700,fontSize:15}}>
+        {transferring?<>
+          <span style={{opacity:.7,fontSize:11}}>{fromSite?.name} → {toSite?.name}</span>
+          <span className="transfer-truck">🚚</span>
+        </>:"↔ Effectuer le transfert"}
+      </button>
+    </div>
+
+    <div style={{flex:1,overflowY:"auto",padding:14}}>
+      <div style={{fontWeight:700,fontSize:13,color:T.mid,textTransform:"uppercase",letterSpacing:0.5,marginBottom:8}}>Quantités à transférer</div>
+      {products.map(p=>{
+        const avail=p.stock[from]||0;if(avail===0)return null;
+        const presets=p.sellByVolume?parseContainers(p.containers):[];
+        return(<div key={p.id} style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,marginBottom:7,overflow:"hidden"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px"}}>
+            {p.photo?<img src={p.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:22,flexShrink:0}}>{p.emoji}</span>}
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
+              <div style={{fontSize:11,color:T.mid}}>Dispo: {avail}{p.sellByVolume?p.unit||"cl":""}</div>
             </div>
-          ))}
-        </div>}
-      </div>);
-    })}
-    <button onClick={transfer} disabled={!Object.values(qtys).some(q=>+q>0)||transferring}
-      style={{width:"100%",padding:"14px",background:transferring?"#ccc":(Object.values(qtys).some(q=>+q>0)?T.red:"#ccc"),color:"white",
-        border:"none",borderRadius:12,cursor:transferring?"default":"pointer",fontWeight:700,fontSize:15,marginTop:6}}>
-      {transferring?"🚚 Transfert en cours...":"↔ Effectuer le transfert"}
-    </button>
+            <input value={qtys[p.id]||""} onChange={e=>{setQtys(q=>({...q,[p.id]:Math.min(avail,Math.max(0,+e.target.value||0))}));setContCounts(c=>({...c,[p.id]:{}}));}}
+              type="number" min="0" max={avail} placeholder="0"
+              style={{width:60,padding:"7px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:14,fontWeight:700,textAlign:"center",outline:"none"}}/>
+          </div>
+          {/* Transfert par contenant (ex: 2 Fûts 20L) — calcule automatiquement
+              l'équivalent en cl/g dans le champ quantité ci-dessus, ET affiche le
+              nombre actuellement en réserve sur le site source. */}
+          {presets.length>0&&<div style={{padding:"0 14px 10px",display:"flex",flexWrap:"wrap",gap:8}}>
+            {presets.map((c,i)=>{
+              const avail_n=containerAvailable(reserve,0,from,p.id,c.label,c.size);
+              return(<div key={i} style={{display:"flex",alignItems:"center",gap:5,background:T.bg,borderRadius:7,padding:"4px 8px"}}>
+                <span style={{fontSize:11,color:T.mid}}>{c.label} <b style={{color:T.dark}}>({avail_n} dispo)</b></span>
+                <input type="number" min="0" max={avail_n} value={contCounts[p.id]?.[c.label]||""} placeholder="0"
+                  onChange={e=>setContainerCount(p,c.label,Math.min(avail_n,+e.target.value||0))}
+                  style={{width:38,padding:"2px 4px",border:`1px solid ${T.border}`,borderRadius:5,fontSize:12,textAlign:"center"}}/>
+              </div>);
+            })}
+          </div>}
+        </div>);
+      })}
+    </div>
   </div>);
 }
 
