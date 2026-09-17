@@ -13,8 +13,8 @@
 <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
 <script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
-<script src="https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js"></script>
-<script src="https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body,#root{height:100%;overflow:hidden}
@@ -111,6 +111,9 @@ const CARD_QR_BOX={x:708/1186,y:233/745,w:(1113-708)/1186,h:(622-233)/745};
 // Le QR code pointe vers exactement le même lien que les cartes physiques déjà
 // utilisées (?person=Nom), donc compatible telle quelle avec le scan existant.
 async function generateMemberCardCanvas(member,boissonsUrl){
+  if(typeof QRCode==="undefined"){
+    throw new Error("La bibliothèque de génération de QR code n'a pas pu se charger (vérifiez la connexion internet, puis rechargez complètement la page).");
+  }
   const bg=await new Promise((resolve,reject)=>{
     const img=new Image();
     img.onload=()=>resolve(img);
@@ -1997,6 +2000,7 @@ function CardsAdmin({boissonsUrl}){
     if(!members||!members.length||printingAll)return;
     setPrintingAll(true);
     try{
+      if(!window.jspdf)throw new Error("La bibliothèque PDF n'a pas pu se charger (vérifiez la connexion internet, puis rechargez complètement la page).");
       const {jsPDF}=window.jspdf;
       const doc=new jsPDF({unit:"mm",format:"a4"});
       const cardW=85.6,cardH=54,marginX=(210-cardW)/2,gapY=10;
@@ -2143,6 +2147,7 @@ function MemberCardPreview({member,boissonsUrl,onClose}){
   };
   const downloadPDF=()=>{
     if(!canvasRef.current)return;
+    if(!window.jspdf){window.alert("⚠️ La bibliothèque PDF n'a pas pu se charger (vérifiez la connexion internet, puis rechargez complètement la page).");return;}
     const {jsPDF}=window.jspdf;
     const doc=new jsPDF({unit:"mm",format:[85.6,54]});
     doc.addImage(canvasRef.current.toDataURL("image/jpeg",0.9),"JPEG",0,0,85.6,54);
