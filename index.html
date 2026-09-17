@@ -986,19 +986,33 @@ function App(){
           .forEach(a=>stockEntries.push({id:a.assocId,qty:a.qty*item.qty}));
       }
     });
-    // Consignes : la vente d'un produit "consigne" (référencé par le champ returnFor
-    // d'un autre produit) AUGMENTE le nombre de consignes chez les clients ; la vente
-    // du "retour de consigne" correspondant (returnFor renseigné) le DIMINUE d'autant.
-    const depositDeltas={}; // productId du produit CONSIGNE (jamais celui du retour) -> delta
+    // Consignes : vendre "Consigne X" décompte son propre stock (normal, comme tout
+    // produit) ET augmente le stock de "Retour Consigne X" (returnFor renseigné sur
+    // ce dernier) — ça sert de compteur "combien sont chez les clients" directement
+    // visible dans le stock. Vendre "Retour Consigne X" fait l'inverse : décompte
+    // son propre stock ET augmente celui de "Consigne X" (elle redevient disponible).
+    // On alimente EN PLUS le compteur séparé "ConsignesDehors" (mêmes deltas, mais
+    // sur le produit "Consigne X" lui-même) — les deux mécanismes coexistent.
+    const crossStockDeltas={}; // productId -> quantité à AJOUTER à son stock, en plus du décompte normal
+    const depositDeltas={}; // productId du produit CONSIGNE (jamais celui du retour) -> delta du compteur séparé
     cart.forEach(item=>{
       if(item.comboItems||item.noStock)return; // combos/lignes virtuelles non concernés
       const pid=item.pid||item.id;
       const prod=products.find(p=>p.id.toString()===pid.toString());
       if(!prod)return;
       if(prod.returnFor){
+        // "Retour Consigne X" vendu -> "Consigne X" redevient disponible (stock),
+        // et son compteur "dehors" diminue d'autant.
+        crossStockDeltas[prod.returnFor]=(crossStockDeltas[prod.returnFor]||0)+item.qty;
         depositDeltas[prod.returnFor]=(depositDeltas[prod.returnFor]||0)-item.qty;
-      }else if(isDepositProduct(products,pid)){
-        depositDeltas[pid]=(depositDeltas[pid]||0)+item.qty;
+      }else{
+        const retourProd=products.find(p=>p.returnFor&&p.returnFor.toString()===pid.toString());
+        if(retourProd){
+          // "Consigne X" vendu -> le stock de "Retour Consigne X" augmente (elle est
+          // maintenant chez le client), et son compteur "dehors" augmente aussi.
+          crossStockDeltas[retourProd.id]=(crossStockDeltas[retourProd.id]||0)+item.qty;
+          depositDeltas[pid]=(depositDeltas[pid]||0)+item.qty;
+        }
       }
     });
     // On ADDITIONNE toutes les entrées d'un même produit — il peut apparaître sur
@@ -1006,8 +1020,9 @@ function App(){
     // boissons, ou inclus dans plusieurs combos différents à la fois).
     const upd=products.map(p=>{
       const qtyTotal=stockEntries.filter(e=>e.id.toString()===p.id.toString()).reduce((s,e)=>s+e.qty,0);
-      if(qtyTotal<=0)return p;
-      return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-qtyTotal)}};
+      const crossDelta=crossStockDeltas[p.id]||0;
+      if(qtyTotal<=0&&crossDelta===0)return p;
+      return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-qtyTotal+crossDelta)}};
     });
     setProducts(upd);LS.set("anf87_products",upd);
     // Reflet local immédiat des consignes chez les clients, avant même la synchro.
@@ -1036,6 +1051,13 @@ function App(){
       for(const[depId,delta]of Object.entries(depositDeltas)){
         if(delta===0)continue;
         await apiWrite(caisseUrl,{action:"adjustDeposit",site:siteId,id:depId,delta});
+      }
+      // Les décomptes normaux passent par "items" ci-dessus, mais les AJOUTS croisés
+      // (Retour Consigne -> Consigne, et Consigne -> Retour Consigne) doivent être
+      // envoyés séparément : "saveSale" ne sait décompter que ce qui est dans "items".
+      for(const[pid,delta]of Object.entries(crossStockDeltas)){
+        if(delta===0)continue;
+        await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:siteId,qty:delta,mode:"delta"});
       }
       syncAll(); // reflète immédiatement le stock réel (utile à plusieurs caisses)
     }
