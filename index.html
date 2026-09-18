@@ -926,6 +926,22 @@ function App(){
       return[...prev,{id:p.id,pid:p.id,name:p.name,price:p.price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
   };
   const addVolumeToCart=(prod,qty,unit,price)=>{
+    // Vérifie que le contenant ouvert (ou le stock, si aucun contenant configuré)
+    // contient assez de volume pour cette portion — en tenant compte de ce qui est
+    // déjà dans le panier pour ce même produit (ex: 3 demis déjà ajoutés + celui-ci).
+    // Sans ce contrôle, on pouvait vendre plus que ce qu'il reste physiquement dans
+    // le fût/cubi ouvert.
+    const cont=containers.find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString());
+    const available=cont?cont.remaining:(prod.stock[siteId]||0);
+    const alreadyInCart=cart.filter(i=>i.pid&&i.pid.toString()===prod.id.toString()).reduce((s,i)=>s+(i.vol||0)*i.qty,0);
+    if(alreadyInCart+qty>available){
+      const maxTotal=Math.floor(available/qty);
+      const maxMore=Math.max(0,Math.floor((available-alreadyInCart)/qty));
+      window.alert(`⚠️ Volume insuffisant dans le contenant ouvert : il reste ${available}${unit}.\n\nCette portion fait ${qty}${unit} — le contenant ne permet que ${maxTotal} au maximum au total`
+        +(alreadyInCart>0?` (vous en avez déjà ${Math.floor(alreadyInCart/qty)} dans le panier — ${maxMore} de plus possible).`:"."));
+      setVolumeProd(null);
+      return;
+    }
     // vol = quantité réellement servie (en cl/g/etc.) à décompter du stock du fût/cubi/paquet.
     // qty reste le nombre de "portions identiques" (pour les boutons +/- et le calcul du prix).
     // pid = l'ID RÉEL du produit (contrairement à id, qui est un identifiant unique de
@@ -1423,6 +1439,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           const needsContainer=p.sellByVolume&&parseContainers(p.containers).length>0;
           const containerOpen=!needsContainer||containers.some(c=>c.site===siteId&&c.productId.toString()===p.id.toString());
           const sellable=stk>0&&containerOpen;
+          // Volume réellement disponible pour CE produit (contenant ouvert, sinon
+          // stock) moins ce qui est déjà dans le panier — pour ne pas laisser
+          // ajouter une portion qui dépasserait ce qu'il reste physiquement.
+          const contForVol=containers.find(c=>c.site===siteId&&c.productId.toString()===p.id.toString());
+          const availableVol=contForVol?contForVol.remaining:stk;
+          const alreadyInCartVol=cart.filter(i=>i.pid&&i.pid.toString()===p.id.toString()).reduce((s,i)=>s+(i.vol||0)*i.qty,0);
           // Produit vendu au volume avec des portions configurées (ex: Demi/Pichet 1L/
           // Pichet 1,5L) : un bouton par portion, ajouté directement au panier sans
           // passer par la fenêtre de choix de quantité. Chaque portion a sa propre
@@ -1430,27 +1452,29 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           if(myPortions.length>0){
             return myPortions.map((portion,pi)=>{
               const photo=portion.photo||p.photo;
+              const portionFits=(alreadyInCartVol+portion.size)<=availableVol;
+              const portionSellable=sellable&&portionFits;
               return(
               <div key={p.id+"-portion-"+portion.id} data-pid={p.id} onPointerDown={()=>startDrag(p.id)}
                 style={{position:"relative",touchAction:reorderMode?"none":"auto",
                   opacity:dragId===p.id.toString()?0.35:1,
                   outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
                   outlineOffset:2,borderRadius:14}}>
-              <button onClick={()=>{if(reorderMode)return;sellable&&addVolumeToCart(p,portion.size,p.unit,portion.price);}} disabled={!sellable&&!reorderMode}
+              <button onClick={()=>{if(reorderMode)return;portionSellable&&addVolumeToCart(p,portion.size,p.unit,portion.price);}} disabled={!portionSellable&&!reorderMode}
                 style={photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
-                    cursor:reorderMode?"grab":sellable?"pointer":"not-allowed",opacity:!sellable&&!reorderMode?.45:1,
-                    border:`2px solid ${isDrink&&sellable?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
-                  :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&sellable?"#FF9F0A":T.border}`,
-                    borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":sellable?"pointer":"not-allowed",opacity:!sellable&&!reorderMode?.4:1,
+                    cursor:reorderMode?"grab":portionSellable?"pointer":"not-allowed",opacity:!portionSellable&&!reorderMode?.45:1,
+                    border:`2px solid ${isDrink&&portionSellable?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
+                  :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&portionSellable?"#FF9F0A":T.border}`,
+                    borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":portionSellable?"pointer":"not-allowed",opacity:!portionSellable&&!reorderMode?.4:1,
                     textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
                 onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
                 onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
                 {photo?<>
                   <img src={photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
                   <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0) 38%,rgba(0,0,0,0.8) 100%)"}}/>
-                  {isDrink&&sellable&&<div style={{position:"absolute",top:6,left:6,background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
+                  {isDrink&&portionSellable&&<div style={{position:"absolute",top:6,left:6,background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
                   <div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>
-                    {!containerOpen?"🔒 Fermé":stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
+                    {!containerOpen?"🔒 Fermé":stk<=0?"RUPTURE":!portionFits?"Vol. insuffisant":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
                   </div>
                   <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
                     <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{portion.name} — {portion.size}{p.unit}</div>
@@ -1458,12 +1482,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
                   </div>
                 </>:<>
                   <div style={{fontSize:30,marginBottom:6}}>{p.emoji}</div>
-                  {isDrink&&sellable&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
+                  {isDrink&&portionSellable&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
                   <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:1,lineHeight:1.2}}>{portion.name}</div>
                   <div style={{fontSize:11,color:T.mid,marginBottom:3}}>{portion.size}{p.unit}</div>
                   <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(portion.price)}</div>
-                  <div style={{fontSize:10,fontWeight:600,color:!containerOpen?T.orange:stockC(stk),marginTop:3}}>
-                    {!containerOpen?"🔒 Contenant fermé":stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
+                  <div style={{fontSize:10,fontWeight:600,color:!containerOpen?T.orange:!portionFits?T.orange:stockC(stk),marginTop:3}}>
+                    {!containerOpen?"🔒 Contenant fermé":stk<=0?"RUPTURE":!portionFits?"⚠ Vol. insuffisant":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
                   </div>
                 </>}
               </button>
