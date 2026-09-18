@@ -919,8 +919,17 @@ function App(){
   const saveUsers=async arr=>{setUsers(arr);LS.set("anf87_users",arr);};
 
   const addToCart=p=>{
-    if((p.stock[siteId]||0)<=0)return;
+    const stock=p.stock[siteId]||0;
+    if(stock<=0)return;
     if(p.sellByVolume){setVolumeProd(p);return;}
+    // Empêche de dépasser le stock réel en cliquant plusieurs fois sur la tuile —
+    // avant ce correctif, seul un stock à 0 bloquait, donc avec 10 en stock on
+    // pouvait quand même en mettre 11 dans le panier en cliquant une fois de trop.
+    const alreadyInCart=cart.filter(i=>(i.pid||i.id)===p.id&&!i.comboItems).reduce((s,i)=>s+i.qty,0);
+    if(alreadyInCart>=stock){
+      window.alert(`⚠️ Stock insuffisant : il ne reste que ${stock} en stock, déjà ${alreadyInCart} dans le panier.`);
+      return;
+    }
     setCart(prev=>{const ex=prev.find(i=>i.id===p.id);
       if(ex)return prev.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i);
       return[...prev,{id:p.id,pid:p.id,name:p.name,price:p.price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
@@ -995,6 +1004,17 @@ function App(){
       const alreadyInCart=cart.filter(i=>i.pid&&i.pid.toString()===pid.toString()).reduce((s,i)=>s+(i.vol||0)*i.qty,0);
       if(alreadyInCart+item.vol>available){
         window.alert(`⚠️ Volume insuffisant dans le contenant ouvert : il reste ${available}${item.unit||""}, déjà ${alreadyInCart}${item.unit||""} dans le panier pour ce produit — impossible d'en ajouter davantage.`);
+        return;
+      }
+    }else if(!item.comboItems){
+      // Produit à l'unité (pas au volume, pas un combo) : même logique que pour le
+      // volume — empêche de dépasser le stock réel via le "+" du panier.
+      const pid=item.pid||item.id;
+      const prod=products.find(p=>p.id.toString()===pid.toString());
+      const stock=prod?.stock[siteId]||0;
+      const alreadyInCart=cart.filter(i=>(i.pid||i.id)===pid&&!i.comboItems).reduce((s,i)=>s+i.qty,0);
+      if(alreadyInCart>=stock){
+        window.alert(`⚠️ Stock insuffisant : il ne reste que ${stock} en stock, déjà ${alreadyInCart} dans le panier.`);
         return;
       }
     }
@@ -1450,6 +1470,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         {(()=>{
         const buildProductTile=(p)=>{
           const stk=p.stock[siteId]||0;
+          // Ce qui est déjà dans le panier pour ce produit — pour ne pas laisser la
+          // tuile cliquable au-delà du stock réel (avant ce correctif, seul un stock
+          // brut à 0 grisait la tuile : avec 10 en stock on pouvait quand même en
+          // ajouter 11 en cliquant une fois de trop).
+          const inCartQty=cart.filter(i=>(i.pid||i.id)===p.id&&!i.comboItems&&!i.vol).reduce((s,i)=>s+i.qty,0);
+          const stkLeft=Math.max(0,stk-inCartQty);
           const isDrink=p.drink;
           const myPortions=p.sellByVolume?portions.filter(po=>po.productId.toString()===p.id.toString()):[];
           // Si des tailles de contenant sont configurées pour ce produit, il faut
@@ -1521,21 +1547,21 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               opacity:dragId===p.id.toString()?0.35:1,
               outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
               outlineOffset:2,borderRadius:14}}>
-          <button onClick={()=>{if(!reorderMode)addToCart(p);}} disabled={stk<=0&&!reorderMode}
+          <button onClick={()=>{if(!reorderMode)addToCart(p);}} disabled={stkLeft<=0&&!reorderMode}
             style={p.photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
-                cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.45:1,
-                border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
-              :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stk>0?"#FF9F0A":T.border}`,
-                borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":stk>0?"pointer":"not-allowed",opacity:stk<=0&&!reorderMode?.4:1,
+                cursor:reorderMode?"grab":stkLeft>0?"pointer":"not-allowed",opacity:stkLeft<=0&&!reorderMode?.45:1,
+                border:`2px solid ${isDrink&&stkLeft>0?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
+              :{width:"100%",background:isDrink?"#FFF8E1":T.card,border:`2px solid ${isDrink&&stkLeft>0?"#FF9F0A":T.border}`,
+                borderRadius:14,padding:"14px 8px",cursor:reorderMode?"grab":stkLeft>0?"pointer":"not-allowed",opacity:stkLeft<=0&&!reorderMode?.4:1,
                 textAlign:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}
             onMouseDown={e=>!reorderMode&&(e.currentTarget.style.transform="scale(0.94)")}
             onMouseUp={e=>e.currentTarget.style.transform="scale(1)"}>
             {p.photo?<>
               <img src={p.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
               <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0) 38%,rgba(0,0,0,0.8) 100%)"}}/>
-              {p.drink&&stk>0&&<div style={{position:"absolute",top:6,left:6,background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
+              {p.drink&&stkLeft>0&&<div style={{position:"absolute",top:6,left:6,background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
               <div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>
-                {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}`:stk<99?`${stk}`:"✓"}
+                {stkLeft<=0?(stk<=0?"RUPTURE":"Panier max"):stkLeft<=5?`⚠ ${stkLeft}`:stkLeft<99?`${stkLeft}`:"✓"}
               </div>
               <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
                 <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
@@ -1546,12 +1572,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               </div>
             </>:<>
               <div style={{fontSize:36,marginBottom:6}}>{p.emoji}</div>
-              {p.drink&&stk>0&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
+              {p.drink&&stkLeft>0&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
               <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:3,lineHeight:1.2}}>{p.name}</div>
               <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(p.price)}</div>
               {p.sellByVolume&&<div style={{fontSize:10,color:T.mid,marginTop:2}}>au {p.unit}</div>}
-              <div style={{fontSize:10,fontWeight:600,color:stockC(stk),marginTop:3}}>
-                {stk<=0?"RUPTURE":stk<=5?`⚠ ${stk}`:stk<99?`${stk} dispo`:"✓"}
+              <div style={{fontSize:10,fontWeight:600,color:stockC(stkLeft),marginTop:3}}>
+                {stkLeft<=0?(stk<=0?"RUPTURE":"Déjà tout au panier"):stkLeft<=5?`⚠ ${stkLeft}`:stkLeft<99?`${stkLeft} dispo`:"✓"}
               </div>
             </>}
           </button>
