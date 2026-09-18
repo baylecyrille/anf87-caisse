@@ -462,6 +462,47 @@ const SS={get:k=>{try{return JSON.parse(sessionStorage.getItem(k))}catch{return 
   set:(k,v)=>{try{sessionStorage.setItem(k,JSON.stringify(v))}catch{}},
   remove:k=>{try{sessionStorage.removeItem(k)}catch{}}};
 
+// ═══ FENÊTRES D'ALERTE/CONFIRMATION PERSONNALISÉES ═══
+// Remplace window.alert()/window.confirm() : ces derniers affichent toujours un
+// préfixe imposé par le navigateur ("nomdusite indique...") qu'il est impossible de
+// retirer par du code — seule une vraie fenêtre "maison" (React, comme le reste de
+// l'appli) permet de s'en affranchir. _modalListener est réglé par <ModalHost/>
+// (monté une fois, au niveau racine) ; sans lui (cas très rare, avant le premier
+// rendu), on se rabat sur les fenêtres natives pour ne jamais rester bloqué.
+let _modalListener=null;
+function customAlert(message){
+  return new Promise(resolve=>{
+    if(_modalListener)_modalListener({type:"alert",message,resolve});
+    else{window.alert(message);resolve();}
+  });
+}
+function customConfirm(message){
+  return new Promise(resolve=>{
+    if(_modalListener)_modalListener({type:"confirm",message,resolve});
+    else resolve(window.confirm(message));
+  });
+}
+function ModalHost(){
+  const [modal,setModal]=useState(null);
+  useEffect(()=>{ _modalListener=m=>setModal(m); return()=>{_modalListener=null;}; },[]);
+  if(!modal)return null;
+  const close=result=>{ modal.resolve(result); setModal(null); };
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}
+    onClick={e=>{if(e.target===e.currentTarget&&modal.type==="alert")close();}}>
+    <div style={{background:"white",borderRadius:16,padding:20,maxWidth:380,width:"100%",boxShadow:"0 10px 40px rgba(0,0,0,.35)"}}>
+      <div style={{fontSize:14,color:T.dark,lineHeight:1.5,whiteSpace:"pre-wrap",marginBottom:18}}>{modal.message}</div>
+      {modal.type==="confirm"?(
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>close(false)} style={{flex:1,padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={()=>close(true)} style={{flex:1,padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>Confirmer</button>
+        </div>
+      ):(
+        <button onClick={()=>close()} style={{width:"100%",padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>OK</button>
+      )}
+    </div>
+  </div>);
+}
+
 // ═══ DEFAULTS ═══
 const DSITES=[{id:"s1",name:"Buvette Nord",village:"Village 1",color:"#CC0000"},{id:"s2",name:"Buvette Est",village:"Village 2",color:"#1565C0"},{id:"s3",name:"Buvette Sud",village:"Village 3",color:"#2E7D32"},{id:"s4",name:"Buvette Ouest",village:"Village 4",color:"#E65100"}];
 const DCATS=[{id:"c1",name:"Boissons"},{id:"c2",name:"Bières"},{id:"c3",name:"Snacks"},{id:"c4",name:"Sandwichs"},{id:"c5",name:"Divers"}];
@@ -823,7 +864,7 @@ async function apiWrite(url,params){
     r.error="réponse inattendue du serveur (la requête n'a peut-être pas été traitée comme une écriture)";
   }
   if(!r.ok){
-    window.alert("⚠️ Échec de l'enregistrement sur Google Sheets :\n"+(r.error||"erreur inconnue")+
+    await customAlert("⚠️ Échec de l'enregistrement sur Google Sheets :\n"+(r.error||"erreur inconnue")+
       "\n\nVérifiez votre connexion puis réessayez. Tant que ce n'est pas enregistré côté serveur, "+
       "l'actualisation automatique peut annuler ce changement à l'écran.");
   }
@@ -918,7 +959,7 @@ function App(){
   const saveCats=async arr=>{setCats(arr);LS.set("anf87_cats",arr);};
   const saveUsers=async arr=>{setUsers(arr);LS.set("anf87_users",arr);};
 
-  const addToCart=p=>{
+  const addToCart=async p=>{
     const stock=p.stock[siteId]||0;
     if(stock<=0)return;
     if(p.sellByVolume){setVolumeProd(p);return;}
@@ -927,14 +968,14 @@ function App(){
     // pouvait quand même en mettre 11 dans le panier en cliquant une fois de trop.
     const alreadyInCart=cart.filter(i=>(i.pid||i.id)===p.id&&!i.comboItems).reduce((s,i)=>s+i.qty,0);
     if(alreadyInCart>=stock){
-      window.alert(`⚠️ Stock insuffisant : il ne reste que ${stock} en stock, déjà ${alreadyInCart} dans le panier.`);
+      await customAlert(`⚠️ Stock insuffisant : il ne reste que ${stock} en stock, déjà ${alreadyInCart} dans le panier.`);
       return;
     }
     setCart(prev=>{const ex=prev.find(i=>i.id===p.id);
       if(ex)return prev.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i);
       return[...prev,{id:p.id,pid:p.id,name:p.name,price:p.price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
   };
-  const addVolumeToCart=(prod,qty,unit,price)=>{
+  const addVolumeToCart=async(prod,qty,unit,price)=>{
     // Vérifie que le contenant ouvert (ou le stock, si aucun contenant configuré)
     // contient assez de volume pour cette portion — en tenant compte de ce qui est
     // déjà dans le panier pour ce même produit (ex: 3 demis déjà ajoutés + celui-ci).
@@ -946,7 +987,7 @@ function App(){
     if(alreadyInCart+qty>available){
       const maxTotal=Math.floor(available/qty);
       const maxMore=Math.max(0,Math.floor((available-alreadyInCart)/qty));
-      window.alert(`⚠️ Volume insuffisant dans le contenant ouvert : il reste ${available}${unit}.\n\nCette portion fait ${qty}${unit} — le contenant ne permet que ${maxTotal} au maximum au total`
+      await customAlert(`⚠️ Volume insuffisant dans le contenant ouvert : il reste ${available}${unit}.\n\nCette portion fait ${qty}${unit} — le contenant ne permet que ${maxTotal} au maximum au total`
         +(alreadyInCart>0?` (vous en avez déjà ${Math.floor(alreadyInCart/qty)} dans le panier — ${maxMore} de plus possible).`:"."));
       setVolumeProd(null);
       return;
@@ -965,15 +1006,15 @@ function App(){
   // (ex: Croque + Frites). comboItems garde la liste des produits inclus (avec leur
   // quantité chacun) pour que le stock de CHAQUE produit soit décompté à la vente,
   // même si le combo lui-même n'existe pas dans le tableau Produits.
-  const addComboToCart=combo=>{
+  const addComboToCart=async combo=>{
     const items=combo.items.map(ci=>{
       const prod=products.find(p=>p.id.toString()===ci.productId.toString());
       return{pid:ci.productId,qty:ci.qty,prod};
     });
     const missing=items.find(it=>!it.prod);
-    if(missing){window.alert("⚠️ Ce menu contient un produit qui n'existe plus, il ne peut pas être ajouté.");return;}
+    if(missing){await customAlert("⚠️ Ce menu contient un produit qui n'existe plus, il ne peut pas être ajouté.");return;}
     const insuffisant=items.find(it=>(it.prod.stock[siteId]||0)<it.qty);
-    if(insuffisant){window.alert("⚠️ Stock insuffisant pour ce menu (\""+insuffisant.prod.name+"\").");return;}
+    if(insuffisant){await customAlert("⚠️ Stock insuffisant pour ce menu (\""+insuffisant.prod.name+"\").");return;}
     // Un menu contenant au moins une boisson est éligible à la carte boissons
     // offertes (comme un produit boisson classique) — la valeur totale du menu
     // devient alors offrable.
@@ -989,7 +1030,7 @@ function App(){
   const removeFromCart=id=>setCart(prev=>{const ex=prev.find(i=>i.id===id);
     if(!ex||ex.qty<=1)return prev.filter(i=>i.id!==id);
     return prev.map(i=>i.id===id?{...i,qty:i.qty-1}:i);});
-  const addQtyToCart=id=>{
+  const addQtyToCart=async id=>{
     const item=cart.find(i=>i.id===id);
     if(!item)return;
     if(item.vol){
@@ -1003,7 +1044,7 @@ function App(){
       const available=cont?cont.remaining:(prod?.stock[siteId]||0);
       const alreadyInCart=cart.filter(i=>i.pid&&i.pid.toString()===pid.toString()).reduce((s,i)=>s+(i.vol||0)*i.qty,0);
       if(alreadyInCart+item.vol>available){
-        window.alert(`⚠️ Volume insuffisant dans le contenant ouvert : il reste ${available}${item.unit||""}, déjà ${alreadyInCart}${item.unit||""} dans le panier pour ce produit — impossible d'en ajouter davantage.`);
+        await customAlert(`⚠️ Volume insuffisant dans le contenant ouvert : il reste ${available}${item.unit||""}, déjà ${alreadyInCart}${item.unit||""} dans le panier pour ce produit — impossible d'en ajouter davantage.`);
         return;
       }
     }else if(!item.comboItems){
@@ -1014,7 +1055,7 @@ function App(){
       const stock=prod?.stock[siteId]||0;
       const alreadyInCart=cart.filter(i=>(i.pid||i.id)===pid&&!i.comboItems).reduce((s,i)=>s+i.qty,0);
       if(alreadyInCart>=stock){
-        window.alert(`⚠️ Stock insuffisant : il ne reste que ${stock} en stock, déjà ${alreadyInCart} dans le panier.`);
+        await customAlert(`⚠️ Stock insuffisant : il ne reste que ${stock} en stock, déjà ${alreadyInCart} dans le panier.`);
         return;
       }
     }
@@ -1113,7 +1154,7 @@ function App(){
         items:JSON.stringify(stockEntries),
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
       if(saleResult?.stockWarning){
-        window.alert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
+        await customAlert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
       }
       for(const[depId,delta]of Object.entries(depositDeltas)){
         if(delta===0)continue;
@@ -1165,6 +1206,7 @@ function App(){
         🧪 Mode test — rien n'est enregistré sur Google Sheets
       </div>}
 
+      <ModalHost/>
       {loggingOut&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:999,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14}}>
         <div style={{fontSize:40}}>⏳</div>
         <div style={{color:"white",fontWeight:700,fontSize:15}}>Synchronisation avant déconnexion...</div>
@@ -1828,10 +1870,10 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
   // le premier clic. onDone déclenche ensuite finalizeSale (async) qui referme cette
   // fenêtre une fois terminé — pas besoin de réarmer submitting après coup.
   const submit=payment=>{ if(submitting)return; setSubmitting(true); onDone(payment); };
-  const handleSumUp=()=>{
+  const handleSumUp=async()=>{
     if(submitting)return; setSubmitting(true);
     if(!sumupKey){
-      window.alert("⚠️ Aucune clé SumUp (Affiliate Key) configurée. Allez dans ⚙️ Configuration pour la renseigner — sans elle, l'appli SumUp reçoit la demande de paiement mais l'ignore silencieusement (c'est exactement ce qui se passait avant ce correctif).");
+      await customAlert("⚠️ Aucune clé SumUp (Affiliate Key) configurée. Allez dans ⚙️ Configuration pour la renseigner — sans elle, l'appli SumUp reçoit la demande de paiement mais l'ignore silencieusement (c'est exactement ce qui se passait avant ce correctif).");
       setSubmitting(false);return;
     }
     // Format exact documenté par SumUp (developer.sumup.com/terminal-payments/payment-switch/android) :
@@ -1843,7 +1885,7 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
     let url=`sumupmerchant://pay/1.0?affiliate-key=${encodeURIComponent(sumupKey)}&total=${a}&currency=EUR&title=${desc}&foreign-tx-id=${txId}`;
     if(sumupAppId)url+=`&app-id=${encodeURIComponent(sumupAppId)}`;
     window.location.href=url;
-    setTimeout(()=>{if(window.confirm("✅ Paiement CB confirmé par le TPE SumUp ?"))onDone({type:"cb"});else setSubmitting(false);},2000);
+    setTimeout(async()=>{if(await customConfirm("✅ Paiement CB confirmé par le TPE SumUp ?"))onDone({type:"cb"});else setSubmitting(false);},2000);
   };
   const doCashPayment=g=>{if(submitting)return;if(isNaN(g)||g<paidTotal)return;setSubmitting(true);onDone({type:"cash",given:g,change:+(g-paidTotal).toFixed(2)});};
   const handleCash=()=>{doCashPayment(parseFloat(given.replace(",",".")));};
@@ -2287,7 +2329,7 @@ function FreeDrinksModal({cart,setCart,boissonsUrl,onClose,onFinalize}){
       // serveur (la réponse ne revient pas jusqu'au navigateur, mais l'écriture, elle,
       // a bien eu lieu) — le reqid ci-dessus protège contre un double décompte dans ce
       // cas, donc on formule ça comme une incertitude plutôt qu'un échec certain.
-      window.alert("⚠️ La confirmation du serveur n'a pas pu être reçue ("+(lastErr?.message||"connexion")+
+      await customAlert("⚠️ La confirmation du serveur n'a pas pu être reçue ("+(lastErr?.message||"connexion")+
         "). Les boissons ont bien été retirées du total ici, et la mise à jour a très probablement quand même été enregistrée sur Google Sheets (vérifiez le solde du membre si vous avez un doute).");
     }
     setAppliedSummary({value:actuallyFreeValue,numLicence:info.numLicence||""});
@@ -2649,7 +2691,7 @@ function CardsAdmin({boissonsUrl}){
       photoParam=photoChanged?edit.photo:"__KEEP__"; // mode test : on garde juste l'aperçu local, rien n'est envoyé
     }else if(photoChanged){
       const up=await uploadPhotoGeneric(boissonsUrl,"uploadmemberphotochunk",id,edit.photo);
-      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
+      if(!up.ok){await customAlert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
       photoParam=up.photoParam;extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
     }else{
       photoParam="__KEEP__";
@@ -2669,17 +2711,17 @@ function CardsAdmin({boissonsUrl}){
       setMembers(prev=>[...prev.filter(m=>m.id.toString()!==id.toString()),newEntry]);
       setEdit(null);
     }else{
-      window.alert("⚠️ Échec de l'enregistrement : "+(r.error||"connexion"));
+      await customAlert("⚠️ Échec de l'enregistrement : "+(r.error||"connexion"));
     }
     setBusy(false);
   };
 
   const del=async id=>{
-    if(!window.confirm("Supprimer cette carte membre ?")||busy)return;
+    if(!(await customConfirm("Supprimer cette carte membre ?"))||busy)return;
     setBusy(true);
     const r=isTestMode()?{ok:true}:await api(boissonsUrl,{action:"deletemember",id});
     if(r.ok)setMembers(prev=>prev.filter(m=>m.id.toString()!==id.toString()));
-    else window.alert("⚠️ Échec de la suppression : "+(r.error||"connexion"));
+    else await customAlert("⚠️ Échec de la suppression : "+(r.error||"connexion"));
     setBusy(false);
   };
 
@@ -2706,7 +2748,7 @@ function CardsAdmin({boissonsUrl}){
       doc.save("cartes-boissons-anf87.pdf");
       setPrintSelection(null);
     }catch(err){
-      window.alert("⚠️ Échec de la génération du PDF : "+(err.message||err));
+      await customAlert("⚠️ Échec de la génération du PDF : "+(err.message||err));
     }
     setPrintingAll(false);
   };
@@ -2866,9 +2908,9 @@ function MemberCardPreview({member,boissonsUrl,onClose}){
     a.href=canvasRef.current.toDataURL("image/png");
     a.click();
   };
-  const downloadPDF=()=>{
+  const downloadPDF=async()=>{
     if(!canvasRef.current)return;
-    if(!window.jspdf){window.alert("⚠️ La bibliothèque PDF n'a pas pu se charger (vérifiez la connexion internet, puis rechargez complètement la page).");return;}
+    if(!window.jspdf){await customAlert("⚠️ La bibliothèque PDF n'a pas pu se charger (vérifiez la connexion internet, puis rechargez complètement la page).");return;}
     const {jsPDF}=window.jspdf;
     // Page A4 Portrait, avec la carte au format CB exact (85,60 x 53,98 mm), centrée.
     const doc=new jsPDF({unit:"mm",format:"a4",orientation:"portrait"});
@@ -2926,7 +2968,7 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
     let photoParam,extra={};
     if(photoChanged){
       const up=await uploadPhotoGeneric(caisseUrl,"uploadComboPhotoChunk",id,edit.photo);
-      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
+      if(!up.ok){await customAlert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
       photoParam=up.photoParam;extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
     }else{
       photoParam="__KEEP__";
@@ -2943,7 +2985,7 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
   };
 
   const del=async id=>{
-    if(!window.confirm("Supprimer ce menu ?"))return;
+    if(!(await customConfirm("Supprimer ce menu ?")))return;
     setCombos(prev=>prev.filter(c=>c.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteCombo",id});
   };
@@ -3023,7 +3065,7 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
     setBusy(false);
   };
   const doClose=async()=>{
-    if(!window.confirm(`Terminer ${cont.label} ? Il reste ${cont.remaining}${prod.unit}, cette quantité sera déduite du stock pour corriger l'écart.`))return;
+    if(!(await customConfirm(`Terminer ${cont.label} ? Il reste ${cont.remaining}${prod.unit}, cette quantité sera déduite du stock pour corriger l'écart.`)))return;
     setBusy(true);
     await closeContainerApi(caisseUrl,siteId,prod,setContainers);
     setBusy(false);
@@ -3528,7 +3570,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts})
   const monthLabel=new Date(viewMonth.y,viewMonth.m,1).toLocaleDateString("fr-FR",{month:"long",year:"numeric"});
   const dateKeyFor=d=>`${pad2(d)}/${pad2(viewMonth.m+1)}/${viewMonth.y}`;
 
-  const reorder=sale=>{
+  const reorder=async sale=>{
     let items=[]; try{items=JSON.parse(sale.items||"[]");}catch{}
     const newCart=items.map(it=>{
       const prod=products.find(p=>p.id.toString()===it.id.toString());
@@ -3547,7 +3589,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts})
       }
       return{id:prod.id,pid:prod.id,name:prod.name,price:prod.price,qty:it.qty,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,free:false,unit:"unité"};
     }).filter(Boolean);
-    if(newCart.length===0){window.alert("⚠️ Aucun des produits de cette commande n'existe encore dans le catalogue.");return;}
+    if(newCart.length===0){await customAlert("⚠️ Aucun des produits de cette commande n'existe encore dans le catalogue.");return;}
     setCart(newCart);setTab("pos");setOpenSale(null);
   };
 
@@ -3669,7 +3711,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
     if(caisseUrl){
       const newPayment=JSON.stringify(editedPayment==="matchOffert"?{type:"matchOffert"}:{type:editedPayment});
       const r=await apiWrite(caisseUrl,{action:"updateSale",id:sale.id,total:newTotal,items:JSON.stringify(newItems),nbItems,payment:newPayment});
-      if(!r.ok){window.alert("⚠️ Échec de l'enregistrement : "+(r.error||"connexion")+". Rien n'a été modifié.");setSaving(false);return;}
+      if(!r.ok){await customAlert("⚠️ Échec de l'enregistrement : "+(r.error||"connexion")+". Rien n'a été modifié.");setSaving(false);return;}
       for(const[pid,delta]of deltaEntries){
         await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:sale.siteId,qty:delta,mode:"delta"});
       }
@@ -3692,7 +3734,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
   // resterait décompté pour une vente qui n'existe plus.
   const deleteSale=async()=>{
     if(saving)return;
-    if(!window.confirm(`Supprimer définitivement cette vente du ${sale.date} ${sale.time} (${fmt(+sale.total)}) ?\n\nLe stock des articles qu'elle contenait sera remis en stock sur ${sites.find(s=>s.id===sale.siteId)?.name||sale.siteId}.`))return;
+    if(!(await customConfirm(`Supprimer définitivement cette vente du ${sale.date} ${sale.time} (${fmt(+sale.total)}) ?\n\nLe stock des articles qu'elle contenait sera remis en stock sur ${sites.find(s=>s.id===sale.siteId)?.name||sale.siteId}.`)))return;
     setSaving(true);
     if(caisseUrl){
       for(const it of items){
@@ -3700,7 +3742,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
         await apiWrite(caisseUrl,{action:"updateStock",id:it.id,site:sale.siteId,qty:+it.qty,mode:"delta"});
       }
       const r=await apiWrite(caisseUrl,{action:"deleteSale",id:sale.id});
-      if(!r.ok){window.alert("⚠️ Échec de la suppression : "+(r.error||"connexion"));setSaving(false);return;}
+      if(!r.ok){await customAlert("⚠️ Échec de la suppression : "+(r.error||"connexion"));setSaving(false);return;}
     }
     if(onSaveProducts){
       const deltaByProduct={};
@@ -4052,7 +4094,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     const arr=[...products,p];onSave(arr);
     if(caisseUrl){
       const up=await uploadPhotoIfNeeded(id,p.photo);
-      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLe produit a été enregistré sans photo pour l'instant, réessayez d'ajouter la photo ensuite.");}
+      if(!up.ok){await customAlert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLe produit a été enregistré sans photo pour l'instant, réessayez d'ajouter la photo ensuite.");}
       const extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
       await apiWrite(caisseUrl,{action:"saveProduct",id,...flattenProd(p,sites),photo:up.ok?up.photoParam:"",...extra});
     }
@@ -4068,7 +4110,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       let photoParam,extra={};
       if(photoChanged){
         const up=await uploadPhotoIfNeeded(edit.id,edit.photo);
-        if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLes autres modifications ont été enregistrées, réessayez d'ajouter la photo ensuite.");}
+        if(!up.ok){await customAlert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLes autres modifications ont été enregistrées, réessayez d'ajouter la photo ensuite.");}
         photoParam=up.ok?up.photoParam:(edit.photo?"__CHUNKED__":"");
         extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
       }else{
@@ -4077,7 +4119,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       await apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites),photo:photoParam,...extra});
     }
     setSaving(false);setEdit(null);};
-  const delProd=async(id)=>{if(!window.confirm("Supprimer ?")||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
+  const delProd=async(id)=>{if(!(await customConfirm("Supprimer ?"))||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});setSaving(false);};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
     drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
@@ -4225,7 +4267,7 @@ function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
     let photoParam,extra={};
     if(photoChanged){
       const up=await uploadPhotoGeneric(caisseUrl,"uploadPortionPhotoChunk",id,form.photo);
-      if(!up.ok){window.alert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
+      if(!up.ok){await customAlert("⚠️ Échec de l'envoi de la photo : "+up.error);setBusy(false);return;}
       photoParam=up.photoParam;extra=up.photoChunks?{photoChunks:up.photoChunks}:{};
     }else{
       photoParam="__KEEP__";
@@ -4241,7 +4283,7 @@ function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
   };
 
   const del=async id=>{
-    if(!window.confirm("Supprimer cette portion ?"))return;
+    if(!(await customConfirm("Supprimer cette portion ?")))return;
     setPortions(prev=>prev.filter(po=>po.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deletePortion",id});
   };
@@ -4296,7 +4338,7 @@ function CatsAdmin({categories,onSave,caisseUrl}){
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id,name:newName.trim()});setNewName("");setBusy(false);};
   const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=categories.map(c=>c.id===editId?{...c,name:editName}:c);
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id:editId,name:editName});setEditId(null);setBusy(false);};
-  const del=async(id)=>{if(!window.confirm("Supprimer cette catégorie ?")||busy)return;setBusy(true);
+  const del=async(id)=>{if(!(await customConfirm("Supprimer cette catégorie ?"))||busy)return;setBusy(true);
     onSave(categories.filter(c=>c.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteCategory",id});setBusy(false);};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
@@ -4330,7 +4372,7 @@ function SitesAdmin({sites,onSave,caisseUrl}){
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS});setNewS({name:"",village:"",color:"#CC0000"});setBusy(false);};
   const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=sites.map(s=>s.id===editS.id?editS:s);
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color});setBusy(false);setEditS(null);};
-  const del=async(id)=>{if(!window.confirm("Supprimer ?")||busy)return;setBusy(true);onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteSite",id});setBusy(false);};
+  const del=async(id)=>{if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteSite",id});setBusy(false);};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>+ Nouveau site</div>
@@ -4376,8 +4418,8 @@ function UsersAdmin({users,onSave,caisseUrl}){
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id,...newU});setNewU({name:"",pin:"",role:"cashier"});setBusy(false);};
   const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=users.map(u=>u.id===editU.id?editU:u);
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role});setBusy(false);setEditU(null);};
-  const del=async(id)=>{if(users.length<=1){alert("Impossible de supprimer le dernier utilisateur");return;}
-    if(!window.confirm("Supprimer ?")||busy)return;setBusy(true);onSave(users.filter(u=>u.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteUser",id});setBusy(false);};
+  const del=async(id)=>{if(users.length<=1){await customAlert("Impossible de supprimer le dernier utilisateur");return;}
+    if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);onSave(users.filter(u=>u.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteUser",id});setBusy(false);};
   const roleLabel={admin:"🔑 Admin",cashier:"💳 Caissier",test:"🧪 Test"};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:"#E3F2FD",borderRadius:12,padding:12,marginBottom:14,fontSize:13,color:"#1565C0"}}>ℹ️ <strong>Admin</strong> : accès complet. <strong>Caissier</strong> : accès caisse uniquement. Si aucun utilisateur, connexion libre.</div>
