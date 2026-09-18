@@ -729,6 +729,11 @@ const depositsFor=(deposits,siteId,productId)=>{
 // d'afficher le compteur "X dehors" uniquement sur les produits concernés.
 const isDepositProduct=(products,productId)=>
   (products||[]).some(p=>p.returnFor&&p.returnFor.toString()===productId.toString());
+// Prix réellement appliqué à un produit : le prix Happy Hour quand il est actif ET
+// que ce produit en a un renseigné (>0), sinon le prix normal. Ne s'applique qu'au
+// prix "de base" du produit — pas aux portions (Demi/Pichet...) qui ont leur propre
+// prix fixe indépendant.
+const effectivePrice=(p,happyHourActive)=>(happyHourActive&&p.happyPrice>0)?p.happyPrice:p.price;
 
 // Ouvre/ferme un contenant — utilisé à la fois depuis l'écran caisse (POS) et
 // l'écran Stock > Contenants, pour ne pas dupliquer la logique réseau.
@@ -901,6 +906,14 @@ function App(){
   const [config,setConfig]=useState(LS.get("anf87_config")||{});
   const sumupKey=config.sumup_key!==undefined?config.sumup_key:(LS.get("anf87_sumup_key")||"");
   const sumupAppId=config.sumup_appid!==undefined?config.sumup_appid:(LS.get("anf87_sumup_appid")||"");
+  // Happy Hour : partagé sur tous les sites/appareils (comme la clé SumUp), pour que
+  // tout le monde applique les mêmes tarifs réduits en même temps.
+  const happyHourActive=config.happy_hour_active==="true";
+  const toggleHappyHour=async()=>{
+    const next=!happyHourActive;
+    setConfig(prev=>({...prev,happy_hour_active:next?"true":"false"}));
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveConfig",key:"happy_hour_active",value:next?"true":"false"});
+  };
   const site=sites.find(s=>s.id===siteId)||sites[0]||{id:"s1",name:"Buvette",color:T.red};
   const isAdmin=!users.length||currentUser?.role==="admin"||currentUser?.role==="test";
 
@@ -972,8 +985,9 @@ function App(){
       return;
     }
     setCart(prev=>{const ex=prev.find(i=>i.id===p.id);
+      const price=effectivePrice(p,happyHourActive);
       if(ex)return prev.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i);
-      return[...prev,{id:p.id,pid:p.id,name:p.name,price:p.price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
+      return[...prev,{id:p.id,pid:p.id,name:p.name,price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
   };
   const addVolumeToCart=async(prod,qty,unit,price)=>{
     // Vérifie que le contenant ouvert (ou le stock, si aucun contenant configuré)
@@ -1220,7 +1234,8 @@ function App(){
           addVolumeToCart={addVolumeToCart} portions={portions} combos={combos} addComboToCart={addComboToCart}
           cartTotal={cartTotal} cartCount={cartCount} currentUser={currentUser}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
-          openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}/>}
+          openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
+          happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour}/>}
         {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager}/>}
         {tab==="admin"&&(isAdmin||isManager)&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
@@ -1254,7 +1269,7 @@ function App(){
       {modal==="split"&&<SplitModal total={cartTotal} boissonsUrl={boissonsUrl} onClose={()=>setModal("payment")} onComplete={(payments)=>{finalizeSale({type:"split",parts:payments});}}/>}
       {modal==="cart"&&<CartModal cart={cart} cartTotal={cartTotal} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
         onClose={()=>setModal(null)} onEncaisser={()=>{setModal("payment");}}/>}
-      {volumeProd&&<VolumeModal prod={volumeProd} onClose={()=>setVolumeProd(null)} onAdd={addVolumeToCart} portions={portions}/>}
+      {volumeProd&&<VolumeModal prod={volumeProd} onClose={()=>setVolumeProd(null)} onAdd={addVolumeToCart} portions={portions} happyHourActive={happyHourActive}/>}
     </div>
   );
 }
@@ -1403,7 +1418,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl,rese
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve}){
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve,happyHourActive,onToggleHappyHour}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
@@ -1497,6 +1512,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             {!showFree&&<span style={{position:"absolute",top:-4,right:-4,background:T.red,color:"white",borderRadius:"50%",
               width:16,height:16,fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{hiddenFreeCount}</span>}
           </button>}
+          <button onClick={onToggleHappyHour} title={happyHourActive?"Désactiver le Happy Hour":"Activer le Happy Hour"}
+            style={{flexShrink:0,padding:"7px 12px",display:"flex",alignItems:"center",gap:5,
+              background:happyHourActive?"#FF9500":T.bg,color:happyHourActive?"white":T.dark,border:`1px solid ${happyHourActive?"#FF9500":T.border}`,
+              borderRadius:20,fontSize:12,fontWeight:700,cursor:"pointer"}}>
+            🎉 {happyHourActive?"Happy Hour ON":"Happy Hour"}
+          </button>
         </div>
         <div style={{display:"flex",gap:7,overflowX:"auto",alignItems:"stretch"}}>
           <button onClick={openScanner} style={{display:"flex",alignItems:"center",gap:7,padding:"8px 16px",flexShrink:0,
@@ -1609,7 +1630,10 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
                 <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
-                  <div style={{fontSize:14,fontWeight:900,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)"}}>{fmt(p.price)}</div>
+                  <div style={{fontSize:14,fontWeight:900,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",display:"flex",alignItems:"center",gap:5}}>
+                    {happyHourActive&&p.happyPrice>0&&<span style={{fontSize:10,opacity:.65,textDecoration:"line-through"}}>{fmt(p.price)}</span>}
+                    <span style={happyHourActive&&p.happyPrice>0?{color:"#FFD54F"}:null}>{fmt(effectivePrice(p,happyHourActive))}</span>
+                  </div>
                   {p.sellByVolume&&<div style={{fontSize:9,color:"rgba(255,255,255,0.85)"}}>au {p.unit}</div>}
                 </div>
               </div>
@@ -1617,7 +1641,10 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               <div style={{fontSize:36,marginBottom:6}}>{p.emoji}</div>
               {p.drink&&stkLeft>0&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
               <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:3,lineHeight:1.2}}>{p.name}</div>
-              <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(p.price)}</div>
+              <div style={{fontSize:13,fontWeight:800,color:T.red,display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                {happyHourActive&&p.happyPrice>0&&<span style={{fontSize:10,color:T.mid,textDecoration:"line-through"}}>{fmt(p.price)}</span>}
+                <span>{fmt(effectivePrice(p,happyHourActive))}</span>
+              </div>
               {p.sellByVolume&&<div style={{fontSize:10,color:T.mid,marginTop:2}}>au {p.unit}</div>}
               <div style={{fontSize:10,fontWeight:600,color:stockC(stkLeft),marginTop:3}}>
                 {stkLeft<=0?(stk<=0?"RUPTURE":"Déjà tout au panier"):stkLeft<=5?`⚠ ${stkLeft}`:stkLeft<99?`${stkLeft} dispo`:"✓"}
@@ -1798,25 +1825,28 @@ function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose
 }
 
 // ═══ VOLUME MODAL ═══
-function VolumeModal({prod,onClose,onAdd,portions}){
+function VolumeModal({prod,onClose,onAdd,portions,happyHourActive}){
   // Portions configurées (table dédiée, avec prix FIXE chacune, pas forcément
   // proportionnel — un pichet coûte souvent moins cher que 4x le prix du verre).
+  // Elles gardent leur propre prix fixe, MÊME en Happy Hour (pas de prix Happy Hour
+  // par portion pour l'instant — seulement sur le prix de base du produit).
+  const basePrice=effectivePrice(prod,happyHourActive);
   const configured=(portions||[]).filter(po=>po.productId.toString()===prod.id.toString())
     .map(po=>({qty:po.size,price:po.price}));
-  const presets=configured.length?configured:[1,2,3].map(m=>({qty:prod.baseQty*m,price:+(prod.price*m).toFixed(2)}));
+  const presets=configured.length?configured:[1,2,3].map(m=>({qty:prod.baseQty*m,price:+(basePrice*m).toFixed(2)}));
   const [selectedIdx,setSelectedIdx]=useState(0);
   const [customQty,setCustomQty]=useState(null); // non-null dès qu'on ajuste manuellement (+/-)
   const selected=presets[selectedIdx]||presets[0];
   const qty=customQty!=null?customQty:(selected?.qty||prod.baseQty);
   // Hors palier configuré : calcul proportionnel au prix de base (prix / baseQty) du produit.
-  const price=customQty!=null?+(prod.price*customQty/prod.baseQty).toFixed(2):(selected?.price||0);
+  const price=customQty!=null?+(basePrice*customQty/prod.baseQty).toFixed(2):(selected?.price||0);
   const ov={position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",zIndex:250,display:"flex",alignItems:"center",justifyContent:"center",padding:16};
   const adjust=d=>{const base=customQty!=null?customQty:qty; setCustomQty(Math.max(1,base+d));};
   return(<div style={ov}>
     <div style={{background:T.card,borderRadius:20,padding:24,width:"100%",maxWidth:340,textAlign:"center"}}>
       <div style={{fontSize:48,marginBottom:8}}>{prod.emoji}</div>
       <div style={{fontWeight:700,fontSize:18,color:T.dark,marginBottom:4}}>{prod.name}</div>
-      <div style={{fontSize:13,color:T.mid,marginBottom:20}}>Vente au {prod.unit} — base {fmt(prod.price)} / {prod.baseQty}{prod.unit}</div>
+      <div style={{fontSize:13,color:T.mid,marginBottom:20}}>Vente au {prod.unit} — base {fmt(basePrice)} / {prod.baseQty}{prod.unit}{happyHourActive&&prod.happyPrice>0?" 🎉":""}</div>
       <div style={{display:"flex",gap:6,justifyContent:"center",marginBottom:14,flexWrap:"wrap"}}>
         {presets.map((p,i)=><button key={i} onClick={()=>{setSelectedIdx(i);setCustomQty(null);}}
           style={{padding:"8px 12px",background:customQty==null&&i===selectedIdx?T.red:T.bg,border:`1px solid ${customQty==null&&i===selectedIdx?T.red:T.border}`,
@@ -3994,6 +4024,8 @@ function ProdForm({data,setData,onSubmit,label,categories,products,handlePhoto,o
       <select value={data.cat} onChange={e=>setData({...data,cat:e.target.value})} style={{...inp}}>
         {categories.map(c=><option key={c.id}>{c.name}</option>)}
       </select>
+      <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>🎉 Prix Happy Hour (optionnel — 0 = pas de tarif spécial)</label>
+      <input type="number" step="0.01" min="0" value={data.happyPrice||""} onChange={e=>setData({...data,happyPrice:+e.target.value||0})} placeholder="ex: 1.50" style={{...inp}}/>
       <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>🔄 Ce produit est un retour de consigne pour :</label>
       <select value={data.returnFor||""} onChange={e=>setData({...data,returnFor:e.target.value})} style={{...inp}}>
         <option value="">— Aucun (produit normal) —</option>
@@ -4187,7 +4219,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   const delProd=async(id)=>{if(!(await customConfirm("Supprimer ?"))||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});setSaving(false);};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
-    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
+    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
   // Le prix d'achat/vente d'un produit au volume est saisi PAR PORTION (ex: 0,90€
   // l'achat d'un verre de 25cl), mais son stock est compté en cl (ex: 3000cl pour un
