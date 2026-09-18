@@ -1213,6 +1213,11 @@ function App(){
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
           {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:700}}>↻</button>}
+          <button onClick={toggleHappyHour} title={happyHourActive?"Désactiver le Happy Hour":"Activer le Happy Hour"}
+            style={{display:"flex",alignItems:"center",gap:5,background:happyHourActive?"#FF9500":"rgba(255,255,255,0.18)",
+              border:`1px solid ${happyHourActive?"#FF9500":"rgba(255,255,255,0.3)"}`,borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:"pointer",fontWeight:700}}>
+            🎉{happyHourActive?" ON":""}
+          </button>
           {users.length>0&&<button onClick={doLogout} disabled={loggingOut} title="Déconnexion / changer d'utilisateur" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:loggingOut?"default":"pointer",fontWeight:700}}>⎋</button>}
         </div>
       </div>
@@ -1512,12 +1517,6 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             {!showFree&&<span style={{position:"absolute",top:-4,right:-4,background:T.red,color:"white",borderRadius:"50%",
               width:16,height:16,fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{hiddenFreeCount}</span>}
           </button>}
-          <button onClick={onToggleHappyHour} title={happyHourActive?"Désactiver le Happy Hour":"Activer le Happy Hour"}
-            style={{flexShrink:0,padding:"7px 12px",display:"flex",alignItems:"center",gap:5,
-              background:happyHourActive?"#FF9500":T.bg,color:happyHourActive?"white":T.dark,border:`1px solid ${happyHourActive?"#FF9500":T.border}`,
-              borderRadius:20,fontSize:12,fontWeight:700,cursor:"pointer"}}>
-            🎉 {happyHourActive?"Happy Hour ON":"Happy Hour"}
-          </button>
         </div>
         <div style={{display:"flex",gap:7,overflowX:"auto",alignItems:"stretch"}}>
           <button onClick={openScanner} style={{display:"flex",alignItems:"center",gap:7,padding:"8px 16px",flexShrink:0,
@@ -1563,13 +1562,14 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               const photo=portion.photo||p.photo;
               const portionFits=(alreadyInCartVol+portion.size)<=availableVol;
               const portionSellable=sellable&&portionFits;
+              const portionPrice=(happyHourActive&&portion.happyPrice>0)?portion.happyPrice:portion.price;
               return(
               <div key={p.id+"-portion-"+portion.id} data-pid={p.id} onPointerDown={()=>startDrag(p.id)}
                 style={{position:"relative",touchAction:reorderMode?"none":"auto",
                   opacity:dragId===p.id.toString()?0.35:1,
                   outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
                   outlineOffset:2,borderRadius:14}}>
-              <button onClick={()=>{if(reorderMode)return;portionSellable&&addVolumeToCart(p,portion.size,p.unit,portion.price);}} disabled={!portionSellable&&!reorderMode}
+              <button onClick={()=>{if(reorderMode)return;portionSellable&&addVolumeToCart(p,portion.size,p.unit,portionPrice);}} disabled={!portionSellable&&!reorderMode}
                 style={photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
                     cursor:reorderMode?"grab":portionSellable?"pointer":"not-allowed",opacity:!portionSellable&&!reorderMode?.45:1,
                     border:`2px solid ${isDrink&&portionSellable?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
@@ -1587,14 +1587,20 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
                   </div>
                   <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
                     <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{portion.name} — {portion.size}{p.unit}</div>
-                    <div style={{fontSize:14,fontWeight:900,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)"}}>{fmt(portion.price)}</div>
+                    <div style={{fontSize:14,fontWeight:900,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",display:"flex",alignItems:"center",gap:5}}>
+                      {happyHourActive&&portion.happyPrice>0&&<span style={{fontSize:10,opacity:.65,textDecoration:"line-through"}}>{fmt(portion.price)}</span>}
+                      <span style={happyHourActive&&portion.happyPrice>0?{color:"#FFD54F"}:null}>{fmt(portionPrice)}</span>
+                    </div>
                   </div>
                 </>:<>
                   <div style={{fontSize:30,marginBottom:6}}>{p.emoji}</div>
                   {isDrink&&portionSellable&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
                   <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:1,lineHeight:1.2}}>{portion.name}</div>
                   <div style={{fontSize:11,color:T.mid,marginBottom:3}}>{portion.size}{p.unit}</div>
-                  <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(portion.price)}</div>
+                  <div style={{fontSize:13,fontWeight:800,color:T.red,display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                    {happyHourActive&&portion.happyPrice>0&&<span style={{fontSize:10,color:T.mid,textDecoration:"line-through"}}>{fmt(portion.price)}</span>}
+                    <span>{fmt(portionPrice)}</span>
+                  </div>
                   <div style={{fontSize:10,fontWeight:600,color:!containerOpen?T.orange:!portionFits?T.orange:stockC(stk),marginTop:3}}>
                     {!containerOpen?"🔒 Contenant fermé":stk<=0?"RUPTURE":!portionFits?"⚠ Vol. insuffisant":stk<=5?`⚠ ${stk}${p.unit}`:`${stk}${p.unit}`}
                   </div>
@@ -1828,11 +1834,10 @@ function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose
 function VolumeModal({prod,onClose,onAdd,portions,happyHourActive}){
   // Portions configurées (table dédiée, avec prix FIXE chacune, pas forcément
   // proportionnel — un pichet coûte souvent moins cher que 4x le prix du verre).
-  // Elles gardent leur propre prix fixe, MÊME en Happy Hour (pas de prix Happy Hour
-  // par portion pour l'instant — seulement sur le prix de base du produit).
+  // Chacune a aussi son propre prix Happy Hour optionnel.
   const basePrice=effectivePrice(prod,happyHourActive);
   const configured=(portions||[]).filter(po=>po.productId.toString()===prod.id.toString())
-    .map(po=>({qty:po.size,price:po.price}));
+    .map(po=>({qty:po.size,price:(happyHourActive&&po.happyPrice>0)?po.happyPrice:po.price,originalPrice:po.price,isHappy:happyHourActive&&po.happyPrice>0}));
   const presets=configured.length?configured:[1,2,3].map(m=>({qty:prod.baseQty*m,price:+(basePrice*m).toFixed(2)}));
   const [selectedIdx,setSelectedIdx]=useState(0);
   const [customQty,setCustomQty]=useState(null); // non-null dès qu'on ajuste manuellement (+/-)
@@ -1852,7 +1857,10 @@ function VolumeModal({prod,onClose,onAdd,portions,happyHourActive}){
           style={{padding:"8px 12px",background:customQty==null&&i===selectedIdx?T.red:T.bg,border:`1px solid ${customQty==null&&i===selectedIdx?T.red:T.border}`,
             borderRadius:10,cursor:"pointer",color:customQty==null&&i===selectedIdx?"white":T.dark,fontWeight:700,fontSize:13,textAlign:"center"}}>
           <div>{p.qty}{prod.unit}</div>
-          <div style={{fontSize:11,opacity:.85}}>{fmt(p.price)}</div>
+          <div style={{fontSize:11,opacity:.85,display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>
+            {p.isHappy&&<span style={{textDecoration:"line-through",opacity:.7}}>{fmt(p.originalPrice)}</span>}
+            <span>{fmt(p.price)}</span>{p.isHappy?" 🎉":""}
+          </div>
         </button>)}
       </div>
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginBottom:14}}>
@@ -4342,7 +4350,7 @@ function AccompanimentsManager({product,products,accompaniments,setAccompaniment
 
 function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
   const myPortions=portions.filter(po=>po.productId.toString()===product.id.toString());
-  const [form,setForm]=useState({name:"",size:"",price:"",photo:""});
+  const [form,setForm]=useState({name:"",size:"",price:"",photo:"",happyPrice:""});
   const [editingId,setEditingId]=useState(null);
   const [busy,setBusy]=useState(false);
 
@@ -4350,8 +4358,8 @@ function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
     resizePhotoFile(f).then(url=>setForm(prev=>({...prev,photo:url})));
   };
 
-  const startEdit=po=>{setEditingId(po.id);setForm({name:po.name,size:po.size,price:po.price,photo:po.photo||""});};
-  const resetForm=()=>{setEditingId(null);setForm({name:"",size:"",price:"",photo:""});};
+  const startEdit=po=>{setEditingId(po.id);setForm({name:po.name,size:po.size,price:po.price,photo:po.photo||"",happyPrice:po.happyPrice||""});};
+  const resetForm=()=>{setEditingId(null);setForm({name:"",size:"",price:"",photo:"",happyPrice:""});};
 
   const save=async()=>{
     if(!form.name||!form.size||!form.price)return;
@@ -4369,9 +4377,9 @@ function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
     }else{
       photoParam="__KEEP__";
     }
-    const r=await apiWrite(caisseUrl,{action:"savePortion",id,productId:product.id,name:form.name,size:+form.size,price:+form.price,photo:photoParam,...extra});
+    const r=await apiWrite(caisseUrl,{action:"savePortion",id,productId:product.id,name:form.name,size:+form.size,price:+form.price,happyPrice:+form.happyPrice||0,photo:photoParam,...extra});
     if(r.ok){
-      const newEntry={id,productId:product.id,name:form.name,size:+form.size,price:+form.price,
+      const newEntry={id,productId:product.id,name:form.name,size:+form.size,price:+form.price,happyPrice:+form.happyPrice||0,
         photo:photoChanged?(photoParam==="__CHUNKED__"?form.photo:photoParam):(original?.photo||"")};
       setPortions(prev=>[...prev.filter(po=>po.id!==id),newEntry]);
       resetForm();
@@ -4395,7 +4403,7 @@ function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
           {po.photo?<img src={po.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:22,flexShrink:0}}>{product.emoji}</span>}
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:13,fontWeight:700,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{po.name}</div>
-            <div style={{fontSize:11,color:T.mid}}>{po.size}{product.unit||"cl"} • {fmt(po.price)}</div>
+            <div style={{fontSize:11,color:T.mid}}>{po.size}{product.unit||"cl"} • {fmt(po.price)}{po.happyPrice>0?` • 🎉 ${fmt(po.happyPrice)}`:""}</div>
           </div>
           <button onClick={()=>startEdit(po)} style={{padding:"6px 9px",background:"white",border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:12}}>✏️</button>
           <button onClick={()=>del(po.id)} style={{padding:"6px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
@@ -4411,6 +4419,8 @@ function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
             style={{padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13}}/>
         </div>
         <input placeholder="Prix" type="number" step="0.50" value={form.price} onChange={e=>setForm({...form,price:e.target.value})}
+          style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:7}}/>
+        <input placeholder="Prix Happy Hour (optionnel)" type="number" step="0.50" min="0" value={form.happyPrice} onChange={e=>setForm({...form,happyPrice:e.target.value})}
           style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:7}}/>
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Photo de cette portion</label>
         {form.photo&&<img src={form.photo} style={{width:50,height:50,borderRadius:8,objectFit:"cover",marginBottom:6,display:"block"}}/>}
@@ -4651,10 +4661,17 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
       setMsg("✅ URLs enregistrées, retour à l'écran de connexion…");
       setTimeout(()=>window.location.reload(),900);
     }else{
-      // Une seule des deux est renseignée : on ne sauvegarde rien, il faut les deux
-      // ensemble pour que l'appli fonctionne complètement.
-      setMsg("ℹ️ Renseignez les DEUX URLs (Script Caisse et Script Boissons Offertes) pour pouvoir les enregistrer — rien n'a été modifié pour l'instant.");
-      setTimeout(()=>setMsg(""),6000);
+      // Une seule des deux est renseignée : on l'enregistre quand même (pour ne pas
+      // la perdre si l'appareil recharge l'appli avant qu'on ait pu taper la 2e —
+      // cas réel sur une tablette qui relance l'appli de façon intempestive), mais
+      // sans lancer la séquence complète (sync+init+déconnexion), qui n'a besoin
+      // de se déclencher qu'une fois les deux présentes ensemble.
+      LS.set("anf87_caisse_url",cuT);LS.set("anf87_url",buT);
+      setCu(cuT);setBu(buT);
+      setEditingUrls(false);
+      const manque=cuT?"Script Boissons Offertes":"Script Caisse";
+      setMsg(`☑️ ${cuT?"Script Caisse":"Script Boissons Offertes"} enregistrée. Renseignez aussi "${manque}" pour finaliser (synchro + initialisation).`);
+      setTimeout(()=>setMsg(""),8000);
     }
   };
   // Enregistrés sur Google Sheets (feuille "Config") — partagés automatiquement par

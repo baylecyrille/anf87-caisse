@@ -352,16 +352,16 @@ function deleteAccompaniment(e){
 
 function getPortionsData(ss){
   var sh=ss.getSheetByName("Portions"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,6).getValues().filter(r=>r[0]&&r[1])
-    .map(r=>({id:r[0],productId:r[1],name:r[2],size:+r[3]||0,price:+r[4]||0,photo:r[5]||""}));
+  return sh.getRange(2,1,sh.getLastRow()-1,7).getValues().filter(r=>r[0]&&r[1])
+    .map(r=>({id:r[0],productId:r[1],name:r[2],size:+r[3]||0,price:+r[4]||0,photo:r[5]||"",happyPrice:+r[6]||0}));
 }
 
 // Crée ou met à jour une portion de vente (demi, pichet, taille de gobelet...).
 function savePortion(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Portions"), p=e.parameter;
   if(sh.getLastRow()<=1){
-    sh.getRange(1,1,1,6).setValues([["ID","ProduitID","Nom","TailleCl","Prix","Photo"]]);
-    sh.getRange(1,1,1,6).setFontWeight("bold"); sh.setFrozenRows(1);
+    sh.getRange(1,1,1,7).setValues([["ID","ProduitID","Nom","TailleCl","Prix","Photo","PrixHappyHour"]]);
+    sh.getRange(1,1,1,7).setFontWeight("bold"); sh.setFrozenRows(1);
   }
   var photo=p.photo||"";
   if(photo==="__CHUNKED__"){
@@ -375,12 +375,12 @@ function savePortion(e){
     photo=parts.join("");
     for(var c2=0;c2<total;c2++)cache.remove("portionphoto_"+p.id+"_"+c2);
   }
-  var row=[p.id,p.productId,p.name||"",+p.size||0,+p.price||0,photo];
+  var row=[p.id,p.productId,p.name||"",+p.size||0,+p.price||0,photo,+p.happyPrice||0];
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
       if(photo==="__KEEP__")row[5]=sh.getRange(i+2,6).getValue(); // photo inchangée, non renvoyée
-      sh.getRange(i+2,1,1,6).setValues([row]);
+      sh.getRange(i+2,1,1,7).setValues([row]);
       return{ok:true,action:"updated"};
     }}
   }
