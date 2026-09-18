@@ -1194,11 +1194,11 @@ function App(){
               {currentUser&&<span style={{background:"rgba(255,255,255,0.1)",borderRadius:6,padding:"1px 7px"}}>{currentUser.name}</span>}
             </div>
           </div>
+          <SiteSelector sites={sites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}} big align="left"/>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:600}}>↻</button>}
-          <SiteSelector sites={sites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}}/>
-          {users.length>0&&<button onClick={doLogout} disabled={loggingOut} style={{background:"rgba(255,255,255,0.1)",border:"none",borderRadius:8,color:"rgba(255,255,255,0.6)",padding:"7px 10px",fontSize:13,cursor:loggingOut?"default":"pointer"}}>⎋</button>}
+          {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:700}}>↻</button>}
+          {users.length>0&&<button onClick={doLogout} disabled={loggingOut} title="Déconnexion / changer d'utilisateur" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:loggingOut?"default":"pointer",fontWeight:700}}>⎋</button>}
         </div>
       </div>
 
@@ -1284,17 +1284,17 @@ function LoginScreen({users,onLogin}){
 }
 
 // ═══ SÉLECTEUR SITE ═══
-function SiteSelector({sites,siteId,onChange}){
+function SiteSelector({sites,siteId,onChange,big,align}){
   const [open,setOpen]=useState(false);
   const site=sites.find(s=>s.id===siteId)||sites[0];
   return(<div style={{position:"relative"}}>
-    <button onClick={()=>setOpen(!open)} style={{display:"flex",alignItems:"center",gap:7,background:"rgba(255,255,255,0.1)",
-      border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:"7px 12px",color:"white",cursor:"pointer"}}>
-      <span style={{width:10,height:10,borderRadius:"50%",background:site?.color,display:"inline-block",flexShrink:0}}/>
-      <span style={{fontSize:14,fontWeight:700}}>{site?.name}</span>
-      <span style={{fontSize:11}}>▾</span>
+    <button onClick={()=>setOpen(!open)} style={{display:"flex",alignItems:"center",gap:big?9:7,background:"rgba(255,255,255,0.1)",
+      border:"1px solid rgba(255,255,255,0.2)",borderRadius:10,padding:big?"8px 14px":"7px 12px",color:"white",cursor:"pointer"}}>
+      <span style={{width:big?13:10,height:big?13:10,borderRadius:"50%",background:site?.color,display:"inline-block",flexShrink:0}}/>
+      <span style={{fontSize:big?17:14,fontWeight:800}}>{site?.name}</span>
+      <span style={{fontSize:big?13:11}}>▾</span>
     </button>
-    {open&&<div style={{position:"absolute",top:"calc(100% + 6px)",right:0,background:T.card,borderRadius:14,
+    {open&&<div style={{position:"absolute",top:"calc(100% + 6px)",[align||"right"]:0,background:T.card,borderRadius:14,
       boxShadow:"0 8px 32px rgba(0,0,0,0.2)",border:`1px solid ${T.border}`,zIndex:100,minWidth:190,overflow:"hidden"}}>
       {sites.map(s=><button key={s.id} onClick={()=>{onChange(s.id);setOpen(false);}}
         style={{display:"flex",alignItems:"center",gap:10,width:"100%",padding:"13px 14px",
@@ -1756,11 +1756,11 @@ function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose
     <div style={sh}>
       <div style={{padding:"16px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div style={{width:40,height:4,background:T.border,borderRadius:2,position:"absolute",left:"50%",top:12,transform:"translateX(-50%)"}}/> 
-        <div style={{fontWeight:700,fontSize:16}}>🛒 Panier</div>
-        <div style={{display:"flex",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          <div style={{fontWeight:700,fontSize:16}}>🛒 Panier</div>
           {cart.length>0&&<button onClick={clearCart} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,fontSize:12}}>🗑 Vider</button>}
-          <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>
         </div>
+        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid,marginLeft:16}}>✕</button>
       </div>
       <div style={{flex:1,overflowY:"auto"}}>
         {cart.length===0?<div style={{padding:30,textAlign:"center",color:T.light}}>Panier vide</div>
@@ -3800,7 +3800,11 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
                   style={{width:64,padding:"5px 6px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:13,textAlign:"center"}}/>
                 {l.prod?.sellByVolume&&<span style={{fontSize:11,color:T.mid}}>{l.prod.unit||"cl"}</span>}
               </div>
-              :<div style={{fontSize:13,fontWeight:700,color:T.dark}}>×{l.qty}</div>}
+              :<div style={{fontSize:13,fontWeight:700,color:T.dark}}>
+                {l.prod?.sellByVolume
+                  ?`×${Math.round(l.qty/(l.prod.baseQty||1))} (${l.qty}${l.prod.unit||"cl"})`
+                  :`×${l.qty}`}
+              </div>}
           </div>
         ))}
       </div>
