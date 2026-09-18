@@ -459,7 +459,8 @@ const LS={get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch{return nu
 // réellement fermé, pour qu'on retombe sur le code PIN à la prochaine ouverture —
 // mais reste active pendant l'utilisation (rechargement de page, synchro...).
 const SS={get:k=>{try{return JSON.parse(sessionStorage.getItem(k))}catch{return null}},
-  set:(k,v)=>{try{sessionStorage.setItem(k,JSON.stringify(v))}catch{}}};
+  set:(k,v)=>{try{sessionStorage.setItem(k,JSON.stringify(v))}catch{}},
+  remove:k=>{try{sessionStorage.removeItem(k)}catch{}}};
 
 // ═══ DEFAULTS ═══
 const DSITES=[{id:"s1",name:"Buvette Nord",village:"Village 1",color:"#CC0000"},{id:"s2",name:"Buvette Est",village:"Village 2",color:"#1565C0"},{id:"s3",name:"Buvette Sud",village:"Village 3",color:"#2E7D32"},{id:"s4",name:"Buvette Ouest",village:"Village 4",color:"#E65100"}];
@@ -4390,7 +4391,13 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
     LS.set("anf87_caisse_url",cuT);LS.set("anf87_url",buT);
     setCu(cuT);setBu(buT);
     setEditingUrls(false);
-    setMsg("✅ URLs enregistrées, rechargement…");
+    // On efface la session en cours : changer d'URL change potentiellement de club/
+    // organisation (ou de feuille de test), donc on ne veut JAMAIS rester connecté
+    // automatiquement sur le compte Admin après ce changement — mieux vaut repasser
+    // par l'écran de code PIN. sessionStorage seul ne suffit pas ici : il survit à un
+    // simple rechargement de page (contrairement à la fermeture de l'onglet).
+    SS.remove("anf87_user");
+    setMsg("✅ URLs enregistrées, retour à l'écran de connexion…");
     setTimeout(()=>window.location.reload(),900);
   };
   // Enregistrés sur Google Sheets (feuille "Config") — partagés automatiquement par
