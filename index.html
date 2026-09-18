@@ -1228,7 +1228,7 @@ function App(){
           accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})} currentUser={currentUser} setCU={setCU}
-          sumupKey={sumupKey} sumupAppId={sumupAppId} setConfig={setConfig}/>}
+          sumupKey={sumupKey} sumupAppId={sumupAppId} setConfig={setConfig} setLoggingOut={setLoggingOut}/>}
       </div>
 
       {/* ── NAVIGATION ── */}
@@ -4505,7 +4505,7 @@ function MyProfile({currentUser,setCU,caisseUrl}){
   </div>);
 }
 
-function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,sumupKey,sumupAppId,setConfig}){
+function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,sumupKey,sumupAppId,setConfig,setLoggingOut}){
   const [cu,setCu]=useState(caisseUrl);const [bu,setBu]=useState(boissonsUrl);const [msg,setMsg]=useState("");
   const [sk,setSk]=useState(sumupKey||"");const [said,setSaid]=useState(sumupAppId||"");
   const [initBusy,setInitBusy]=useState(false); // anti double-clic sur l'initialisation
@@ -4517,19 +4517,46 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
   // TOUS les appels réseau sans message clair -> on nettoie et on vérifie avant d'enregistrer).
   const urlOk=u=>/^https:\/\/script\.google\.com\/macros\/s\/[^\s]+\/exec$/.test(u.trim());
   const cuOk=!cu.trim()||urlOk(cu), buOk=!bu.trim()||urlOk(bu);
-  const save=()=>{
+  const save=async()=>{
     const cuT=cu.trim(), buT=bu.trim();
-    LS.set("anf87_caisse_url",cuT);LS.set("anf87_url",buT);
-    setCu(cuT);setBu(buT);
     setEditingUrls(false);
-    // On efface la session en cours : changer d'URL change potentiellement de club/
-    // organisation (ou de feuille de test), donc on ne veut JAMAIS rester connecté
-    // automatiquement sur le compte Admin après ce changement — mieux vaut repasser
-    // par l'écran de code PIN. sessionStorage seul ne suffit pas ici : il survit à un
-    // simple rechargement de page (contrairement à la fermeture de l'onglet).
-    SS.remove("anf87_user");
-    setMsg("✅ URLs enregistrées, retour à l'écran de connexion…");
-    setTimeout(()=>window.location.reload(),900);
+    if(cuT){
+      // Sablier plein écran (même mécanisme que la déconnexion) le temps de vérifier
+      // la connexion et d'initialiser les feuilles — pour une 1ère configuration
+      // (ou tout changement d'URL), ça évite d'avoir à cliquer manuellement sur
+      // "Initialiser les feuilles" ensuite.
+      setLoggingOut&&setLoggingOut(true);
+      const syncResult=await api(cuT,{action:"getAll"});
+      if(!syncResult?.ok){
+        setLoggingOut&&setLoggingOut(false);
+        await customAlert("⚠️ Impossible de se connecter avec cette URL Script Caisse ("+(syncResult?.error||"connexion")+"). Vérifiez l'adresse puis réessayez — rien n'a été enregistré.");
+        return;
+      }
+      const initResult=await api(cuT,{action:"initSheets"});
+      if(!initResult?.ok){
+        setLoggingOut&&setLoggingOut(false);
+        await customAlert("⚠️ La connexion fonctionne, mais l'initialisation des feuilles a échoué ("+(initResult?.error||"erreur inconnue")+"). Réessayez, ou utilisez le bouton \"Initialiser les feuilles\" plus tard.");
+        // On enregistre quand même l'URL puisque la connexion elle-même fonctionne.
+      }
+      LS.set("anf87_caisse_url",cuT);LS.set("anf87_url",buT);
+      setCu(cuT);setBu(buT);
+      // On efface la session en cours : changer d'URL change potentiellement de club/
+      // organisation (ou de feuille de test), donc on ne veut JAMAIS rester connecté
+      // automatiquement sur le compte Admin après ce changement — mieux vaut repasser
+      // par l'écran de code PIN. sessionStorage seul ne suffit pas ici : il survit à un
+      // simple rechargement de page (contrairement à la fermeture de l'onglet).
+      SS.remove("anf87_user");
+      setLoggingOut&&setLoggingOut(false);
+      setMsg("✅ URLs enregistrées et feuilles initialisées, retour à l'écran de connexion…");
+      setTimeout(()=>window.location.reload(),900);
+    }else{
+      // Pas d'URL Caisse renseignée : rien à vérifier/initialiser, comportement simple.
+      LS.set("anf87_caisse_url",cuT);LS.set("anf87_url",buT);
+      setCu(cuT);setBu(buT);
+      SS.remove("anf87_user");
+      setMsg("✅ URLs enregistrées, retour à l'écran de connexion…");
+      setTimeout(()=>window.location.reload(),900);
+    }
   };
   // Enregistrés sur Google Sheets (feuille "Config") — partagés automatiquement par
   // tous les appareils du club, contrairement aux URLs ci-dessus qui restent locales.
