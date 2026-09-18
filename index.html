@@ -4519,12 +4519,11 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
   const cuOk=!cu.trim()||urlOk(cu), buOk=!bu.trim()||urlOk(bu);
   const save=async()=>{
     const cuT=cu.trim(), buT=bu.trim();
-    setEditingUrls(false);
-    if(cuT){
-      // Sablier plein écran (même mécanisme que la déconnexion) le temps de vérifier
-      // la connexion et d'initialiser les feuilles — pour une 1ère configuration
-      // (ou tout changement d'URL), ça évite d'avoir à cliquer manuellement sur
-      // "Initialiser les feuilles" ensuite.
+    if(cuT&&buT){
+      setEditingUrls(false);
+      // Séquence complète uniquement quand les DEUX URLs sont renseignées ensemble —
+      // sablier plein écran (même mécanisme que la déconnexion) le temps de vérifier
+      // la connexion et d'initialiser les feuilles.
       setLoggingOut&&setLoggingOut(true);
       const syncResult=await api(cuT,{action:"getAll"});
       if(!syncResult?.ok){
@@ -4549,13 +4548,20 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
       setLoggingOut&&setLoggingOut(false);
       setMsg("✅ URLs enregistrées et feuilles initialisées, retour à l'écran de connexion…");
       setTimeout(()=>window.location.reload(),900);
-    }else{
-      // Pas d'URL Caisse renseignée : rien à vérifier/initialiser, comportement simple.
+    }else if(!cuT&&!buT){
+      // Les deux vides : on autorise à effacer complètement la configuration, sans
+      // séquence particulière (rien à vérifier/initialiser).
+      setEditingUrls(false);
       LS.set("anf87_caisse_url",cuT);LS.set("anf87_url",buT);
       setCu(cuT);setBu(buT);
       SS.remove("anf87_user");
       setMsg("✅ URLs enregistrées, retour à l'écran de connexion…");
       setTimeout(()=>window.location.reload(),900);
+    }else{
+      // Une seule des deux est renseignée : on ne sauvegarde rien, il faut les deux
+      // ensemble pour que l'appli fonctionne complètement.
+      setMsg("ℹ️ Renseignez les DEUX URLs (Script Caisse et Script Boissons Offertes) pour pouvoir les enregistrer — rien n'a été modifié pour l'instant.");
+      setTimeout(()=>setMsg(""),6000);
     }
   };
   // Enregistrés sur Google Sheets (feuille "Config") — partagés automatiquement par
