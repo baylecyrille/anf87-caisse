@@ -1177,9 +1177,10 @@ function App(){
     return <LoginScreen users={users} onLogin={u=>{setCU(u);SS.set("anf87_user",u);}}/>;
   }
 
-  const navItems=isAdmin
+  const isManager=currentUser?.role==="manager";
+  const navItems=(isAdmin||isManager)
     ?[["pos","🛒","Caisse"],["stock","📦","Stock"],["reports","📊","Rapports"],["admin","🔧","Admin"],["settings","⚙️","Config"]]
-    :[["pos","🛒","Caisse"],["settings","⚙️","Config"]];
+    :[["pos","🛒","Caisse"],["stock","📦","Stock"],["reports","📊","Rapports"],["settings","⚙️","Config"]];
 
   return(
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:T.bg}}>
@@ -1220,12 +1221,12 @@ function App(){
           cartTotal={cartTotal} cartCount={cartCount} currentUser={currentUser}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}/>}
-        {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits}/>}
-        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd}/>}
-        {tab==="admin"&&isAdmin&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
+        {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager}/>}
+        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager}/>}
+        {tab==="admin"&&(isAdmin||isManager)&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
-          accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits}/>}
+          accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits} isManager={isManager}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})} currentUser={currentUser} setCU={setCU}
           sumupKey={sumupKey} sumupAppId={sumupAppId} setConfig={setConfig} setLoggingOut={setLoggingOut}/>}
@@ -2533,24 +2534,25 @@ function ScannerModal({products,siteId,onFound,onClose}){
 }
 
 // ═══ STOCK SCREEN ═══
-function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve,deposits,setDeposits}){
+function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve,deposits,setDeposits,readOnly}){
   const [view,setView]=useState("list"); // list | entry | transfer | containers
   const [sel,setSel]=useState(siteId);
 
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {/* Tabs */}
-    <div style={{background:T.card,borderBottom:`1px solid ${T.border}`,display:"flex",flexShrink:0,overflowX:"auto"}}>
+    {!readOnly&&<div style={{background:T.card,borderBottom:`1px solid ${T.border}`,display:"flex",flexShrink:0,overflowX:"auto"}}>
       {[["list","📋 Stock"],["entry","📥 Entrée rapide"],["containers","🧴 Contenants"],["transfer","↔ Transfert"]].map(([v,l])=>(
         <button key={v} onClick={()=>setView(v)} style={{flex:"1 0 auto",padding:"12px 10px",border:"none",background:"none",cursor:"pointer",
           fontSize:12,fontWeight:600,color:view===v?T.red:T.mid,borderBottom:view===v?`2px solid ${T.red}`:"2px solid transparent",whiteSpace:"nowrap"}}>
           {l}
         </button>
       ))}
-    </div>
-    {view==="list"&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits}/>}
-    {view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
-    {view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
-    {view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} reserve={reserve} setReserve={setReserve}/>}
+    </div>}
+    {readOnly&&<div style={{background:"#FFF8E1",padding:"8px 14px",fontSize:12,color:"#E65100",flexShrink:0}}>👁 Consultation uniquement</div>}
+    {(view==="list"||readOnly)&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={readOnly}/>}
+    {!readOnly&&view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
+    {!readOnly&&view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
+    {!readOnly&&view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} reserve={reserve} setReserve={setReserve}/>}
   </div>);
 }
 
@@ -3158,7 +3160,7 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
   </div>);
 }
 
-function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve,deposits,setDeposits}){
+function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve,deposits,setDeposits,readOnly}){
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:v<=10?"#EAB308":T.green;
   const [containerModalFor,setContainerModalFor]=useState(null); // produit dont la popup contenant est ouverte
   const [editingDeposit,setEditingDeposit]=useState(null); // id du produit "consigne" dont le compteur est en édition
@@ -3201,15 +3203,21 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
             const stk=prod.stock[siteId]||0;
             return [<div key={prod.id} style={{display:"flex",alignItems:"center",padding:"11px 14px",borderBottom:idx<arr.length-1&&!needsContainerPanel?`1px solid ${T.border}`:"none",gap:10}}>
               {needsContainerPanel
-                ?<button onClick={()=>setContainerModalFor(prod)} style={{padding:0,border:`2px solid ${gaugeColor}`,borderRadius:8,cursor:"pointer",background:"none",flexShrink:0}}>
-                  {prod.photo?<img src={prod.photo} style={{width:26,height:26,borderRadius:5,objectFit:"cover",display:"block"}}/>:<span style={{fontSize:20,display:"block",width:26,height:26,textAlign:"center",lineHeight:"26px"}}>{prod.emoji}</span>}
-                </button>
+                ?(readOnly
+                  ?<div style={{padding:0,border:`2px solid ${gaugeColor}`,borderRadius:8,flexShrink:0}}>
+                    {prod.photo?<img src={prod.photo} style={{width:26,height:26,borderRadius:5,objectFit:"cover",display:"block"}}/>:<span style={{fontSize:20,display:"block",width:26,height:26,textAlign:"center",lineHeight:"26px"}}>{prod.emoji}</span>}
+                  </div>
+                  :<button onClick={()=>setContainerModalFor(prod)} style={{padding:0,border:`2px solid ${gaugeColor}`,borderRadius:8,cursor:"pointer",background:"none",flexShrink:0}}>
+                    {prod.photo?<img src={prod.photo} style={{width:26,height:26,borderRadius:5,objectFit:"cover",display:"block"}}/>:<span style={{fontSize:20,display:"block",width:26,height:26,textAlign:"center",lineHeight:"26px"}}>{prod.emoji}</span>}
+                  </button>)
                 :(prod.photo?<img src={prod.photo} style={{width:28,height:28,borderRadius:6,objectFit:"cover",flexShrink:0}}/>
                   :<span style={{fontSize:22,flexShrink:0}}>{prod.emoji}</span>)}
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{prod.name}</div>
                 <div style={{fontSize:11,color:T.mid}}>{fmt(prod.price)}{prod.sellByVolume?" • au "+prod.unit:""}</div>
-                {isDepositProduct(products,prod.id)&&(editingDeposit===prod.id
+                {isDepositProduct(products,prod.id)&&(readOnly
+                  ?<div style={{fontSize:11,color:T.orange,fontWeight:600}}>🔄 {depositsFor(deposits,siteId,prod.id)} dehors</div>
+                  :editingDeposit===prod.id
                   ?<input type="number" min="0" autoFocus defaultValue={depositsFor(deposits,siteId,prod.id)}
                       onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v))adjustDepositCount(prod,v);else setEditingDeposit(null);}}
                       onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape")setEditingDeposit(null);}}
@@ -3224,7 +3232,12 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
                   display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,
                   color:s.id===siteId?"white":T.mid}}>{prod.stock[s.id]||0}</div>)}
               </div>
-              <div style={{display:"flex",alignItems:"center",gap:4}}>
+              {readOnly
+                ?<div style={{width:40,height:24,borderRadius:5,flexShrink:0,
+                    background:T.dark,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"white"}}>
+                    {Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0)}
+                  </div>
+                :<div style={{display:"flex",alignItems:"center",gap:4}}>
                 <button onClick={()=>updateQty(prod,siteId,stk-1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14,flexShrink:0}}>−</button>
                 <input key={prod.id+"_"+stk} type="number" defaultValue={stk}
                   onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v)&&v!==stk)updateQty(prod,siteId,v);}}
@@ -3236,12 +3249,22 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
                   background:T.dark,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"white"}}>
                   {Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0)}
                 </div>
-              </div>
+              </div>}
             </div>,
             // Résumé compact du contenant : une jauge avec le texte écrit à
             // l'intérieur, cliquable pour ouvrir la popup de gestion complète —
             // prend beaucoup moins de place que l'ancien bloc toujours déplié.
-            needsContainerPanel&&<button key={prod.id+"_cp"} onClick={()=>setContainerModalFor(prod)}
+            needsContainerPanel&&(readOnly
+              ?<div key={prod.id+"_cp"} style={{padding:"0 14px 10px",borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",paddingBottom:10}}>
+                <div style={{position:"relative",height:26,borderRadius:7,overflow:"hidden",background:T.bg,border:`1px solid ${T.border}`}}>
+                  {cont&&<div style={{position:"absolute",inset:0,width:gaugePct+"%",background:gaugeColor,opacity:.55}}/>}
+                  <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",gap:5,fontSize:11,fontWeight:700,color:T.dark}}>
+                    <span>🧴</span>
+                    <span>{cont?`${cont.label} — ${cont.remaining}/${cont.size}${prod.unit}`:"Aucun contenant ouvert"}</span>
+                  </div>
+                </div>
+              </div>
+              :<button key={prod.id+"_cp"} onClick={()=>setContainerModalFor(prod)}
               style={{display:"block",width:"100%",padding:"0 14px 10px",border:"none",background:"none",cursor:"pointer",
                 borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",paddingBottom:10}}>
               <div style={{position:"relative",height:26,borderRadius:7,overflow:"hidden",background:T.bg,border:`1px solid ${T.border}`}}>
@@ -3251,7 +3274,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
                   <span>{cont?`${cont.label} — ${cont.remaining}/${cont.size}${prod.unit}`:"Aucun contenant ouvert — toucher pour gérer"}</span>
                 </div>
               </div>
-            </button>];
+            </button>)];
           })}
         </div>
       </div>)}
@@ -3531,7 +3554,8 @@ function StockTransfer({products,sites,caisseUrl,onSave,reserve,setReserve}){
 }
 
 // ═══ REPORTS ═══
-function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts}){
+function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,isAdmin,isManager}){
+  const canSeeAllPeriods=isAdmin||isManager; // Caissier : uniquement "Aujourd'hui"
   const [sales,setSales]=useState([]);const [loading,setLoading]=useState(false);const [period,setPeriod]=useState("today");
   const [viewMonth,setViewMonth]=useState(()=>{const d=new Date();return{y:d.getFullYear(),m:d.getMonth()};});
   const [selectedDay,setSelectedDay]=useState(null); // "dd/mm/yyyy" sélectionné dans le calendrier
@@ -3596,7 +3620,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts})
   return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
       <div style={{display:"flex",gap:7}}>
-        {[["today","Aujourd'hui"],["calendar","📅 Calendrier"],["all","Tout"]].map(([v,l])=>(
+        {(canSeeAllPeriods?[["today","Aujourd'hui"],["calendar","📅 Calendrier"],["all","Tout"]]:[["today","Aujourd'hui"]]).map(([v,l])=>(
           <button key={v} onClick={()=>{setPeriod(v);if(v!=="calendar")setSelectedDay(null);}} style={{padding:"6px 14px",borderRadius:20,border:"none",
             background:period===v?T.red:T.card,color:period===v?"white":T.dark,fontSize:12,fontWeight:600,cursor:"pointer",boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
             {l}
@@ -3662,6 +3686,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts})
     </>}
 
     {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} caisseUrl={caisseUrl} onSaveProducts={onSaveProducts}
+      isAdmin={isAdmin} isManager={isManager} today={today}
       onClose={()=>setOpenSale(null)} onReorder={reorder}
       onSaleUpdated={updated=>{ setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s)); setOpenSale(updated); }}
       onSaleDeleted={id=>{ setSales(prev=>prev.filter(s=>s.id!==id)); setOpenSale(null); }}/>}
@@ -3669,7 +3694,9 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts})
 }
 
 // ═══ DÉTAIL D'UNE VENTE (avec photos des produits, et reprise en panier) ═══
-function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,onReorder,onSaleUpdated,onSaleDeleted}){
+function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,isManager,today,onClose,onReorder,onSaleUpdated,onSaleDeleted}){
+  const isToday=sale.date===today;
+  const canModify=isToday?(isAdmin||isManager):isAdmin; // aujourd'hui : Admin+Manager ; passé : Admin seul
   const [editMode,setEditMode]=useState(false);
   const [saving,setSaving]=useState(false);
   let items=[]; try{items=JSON.parse(sale.items||"[]");}catch{}
@@ -3758,6 +3785,38 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
     onSaleDeleted&&onSaleDeleted(sale.id);
   };
 
+  // "Recommencer" une vente d'AUJOURD'HUI : contrairement à l'ancien comportement
+  // (juste copier dans le panier, la vente d'origine restant enregistrée), on
+  // supprime réellement la vente et on remet son stock — comme deleteSale — AVANT
+  // de reconstruire le panier, pour un vrai "redémarrage" plutôt qu'une simple copie
+  // en double. Disponible à tous les rôles ayant accès aux ventes du jour.
+  const restartToday=async()=>{
+    if(saving)return;
+    if(!(await customConfirm(`Recommencer cette commande ? Elle sera supprimée (stock remis en place), puis reconstruite dans le panier pour être encaissée à nouveau.`)))return;
+    setSaving(true);
+    if(caisseUrl){
+      for(const it of items){
+        if(!it.id||!it.qty)continue;
+        await apiWrite(caisseUrl,{action:"updateStock",id:it.id,site:sale.siteId,qty:+it.qty,mode:"delta"});
+      }
+      const r=await apiWrite(caisseUrl,{action:"deleteSale",id:sale.id});
+      if(!r.ok){await customAlert("⚠️ Échec : "+(r.error||"connexion")+". Rien n'a été modifié.");setSaving(false);return;}
+    }
+    if(onSaveProducts){
+      const deltaByProduct={};
+      items.forEach(it=>{ if(it.id&&it.qty)deltaByProduct[it.id]=(deltaByProduct[it.id]||0)+(+it.qty); });
+      const upd=products.map(p=>{
+        const d=deltaByProduct[p.id];
+        if(!d)return p;
+        return{...p,stock:{...p.stock,[sale.siteId]:(p.stock[sale.siteId]||0)+d}};
+      });
+      onSaveProducts(upd);
+    }
+    setSaving(false);
+    onSaleDeleted&&onSaleDeleted(sale.id); // referme la fenêtre + retire la vente de la liste locale
+    onReorder(sale); // réutilise la reconstruction de panier déjà existante (mêmes produits, prix actuels)
+  };
+
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:230,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}
     onClick={e=>e.target===e.currentTarget&&!saving&&onClose()}>
     <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:420,maxHeight:"90vh",overflowY:"auto"}}>
@@ -3823,17 +3882,17 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
         </div>
         <div style={{fontSize:10,color:T.mid,textAlign:"center"}}>Le stock est ajusté automatiquement selon l'écart avec la vente d'origine.</div>
       </>:<>
-        <button onClick={startEdit} style={{width:"100%",padding:"12px",background:"#FF9F0A",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
+        {canModify&&<button onClick={startEdit} style={{width:"100%",padding:"12px",background:"#FF9F0A",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
           ✏️ Modifier cette vente (même date)
-        </button>
-        <button onClick={()=>onReorder(sale)} disabled={lines.length===0}
-          style={{width:"100%",padding:"12px",background:lines.length===0?"#ccc":T.blue,color:"white",border:"none",borderRadius:10,cursor:lines.length===0?"default":"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
-          🔄 Recommencer cette commande (nouveau panier)
-        </button>
-        <div style={{fontSize:10,color:T.mid,textAlign:"center",marginBottom:10}}>Remet les mêmes produits dans le panier (aux prix actuels) — n'enregistre rien tant que vous n'encaissez pas.</div>
-        <button onClick={deleteSale} disabled={saving} style={{width:"100%",padding:"11px",background:saving?"#eee":"#FFF0F0",border:"1px solid #FFCDD2",borderRadius:10,cursor:saving?"default":"pointer",fontWeight:700,fontSize:13,color:T.red,marginBottom:8}}>
+        </button>}
+        {isToday&&<button onClick={restartToday} disabled={lines.length===0||saving}
+          style={{width:"100%",padding:"12px",background:(lines.length===0||saving)?"#ccc":T.blue,color:"white",border:"none",borderRadius:10,cursor:(lines.length===0||saving)?"default":"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
+          {saving?"⏳...":"🔄 Recommencer cette commande"}
+        </button>}
+        {isToday&&<div style={{fontSize:10,color:T.mid,textAlign:"center",marginBottom:10}}>Supprime cette vente (stock remis en place), puis remet les mêmes produits dans le panier pour l'encaisser à nouveau.</div>}
+        {canModify&&<button onClick={deleteSale} disabled={saving} style={{width:"100%",padding:"11px",background:saving?"#eee":"#FFF0F0",border:"1px solid #FFCDD2",borderRadius:10,cursor:saving?"default":"pointer",fontWeight:700,fontSize:13,color:T.red,marginBottom:8}}>
           {saving?"⏳...":"🗑 Supprimer cette vente (remet le stock)"}
-        </button>
+        </button>}
         <button onClick={onClose} disabled={saving} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:saving?"default":"pointer",fontWeight:600}}>Fermer</button>
       </>}
     </div>
@@ -3841,11 +3900,13 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,onClose,o
 }
 
 // ═══ ADMIN ═══
-function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,accompaniments,setAccompaniments,deposits}){
+function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,accompaniments,setAccompaniments,deposits,isManager}){
   const [tab,setTab]=useState("products");
+  const allTabs=[["products","🏷 Produits"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"],["cartes","🍺 Cartes Boissons"]];
+  const visibleTabs=isManager?allTabs.filter(([v])=>!["cats","sites","users"].includes(v)):allTabs;
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{display:"flex",background:T.card,borderBottom:`1px solid ${T.border}`,overflowX:"auto",flexShrink:0}}>
-      {[["products","🏷 Produits"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"],["cartes","🍺 Cartes Boissons"]].map(([v,l])=>(
+      {visibleTabs.map(([v,l])=>(
         <button key={v} onClick={()=>setTab(v)} style={{flexShrink:0,padding:"12px 16px",border:"none",background:"none",cursor:"pointer",
           fontSize:13,fontWeight:600,color:tab===v?T.red:T.mid,borderBottom:tab===v?`2px solid ${T.red}`:"2px solid transparent"}}>
           {l}
@@ -3856,9 +3917,9 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
       {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits}/>}
       {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} caisseUrl={caisseUrl}/>}
       {tab==="cartes"&&<CardsAdmin boissonsUrl={boissonsUrl}/>}
-      {tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
-      {tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl}/>}
-      {tab==="users"&&<UsersAdmin users={users} onSave={onSaveUsers} caisseUrl={caisseUrl}/>}
+      {!isManager&&tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
+      {!isManager&&tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl}/>}
+      {!isManager&&tab==="users"&&<UsersAdmin users={users} onSave={onSaveUsers} caisseUrl={caisseUrl}/>}
     </div>
   </div>);
 }
@@ -4424,7 +4485,7 @@ function UsersAdmin({users,onSave,caisseUrl}){
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role});setBusy(false);setEditU(null);};
   const del=async(id)=>{if(users.length<=1){await customAlert("Impossible de supprimer le dernier utilisateur");return;}
     if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);onSave(users.filter(u=>u.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteUser",id});setBusy(false);};
-  const roleLabel={admin:"🔑 Admin",cashier:"💳 Caissier",test:"🧪 Test"};
+  const roleLabel={admin:"🔑 Admin",manager:"🗂 Manager",cashier:"💳 Caissier",test:"🧪 Test"};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:"#E3F2FD",borderRadius:12,padding:12,marginBottom:14,fontSize:13,color:"#1565C0"}}>ℹ️ <strong>Admin</strong> : accès complet. <strong>Caissier</strong> : accès caisse uniquement. Si aucun utilisateur, connexion libre.</div>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
@@ -4432,7 +4493,7 @@ function UsersAdmin({users,onSave,caisseUrl}){
       <input style={inp} placeholder="Nom" value={newU.name} onChange={e=>setNewU({...newU,name:e.target.value})}/>
       <input style={inp} type="password" placeholder="PIN (chiffres)" value={newU.pin} onChange={e=>setNewU({...newU,pin:e.target.value})} maxLength={6}/>
       <select value={newU.role} onChange={e=>setNewU({...newU,role:e.target.value})} style={{...inp}}>
-        <option value="admin">Admin (accès complet)</option><option value="cashier">Caissier (caisse uniquement)</option><option value="test">Test (accès complet, rien n'est enregistré)</option>
+        <option value="admin">Admin (accès complet)</option><option value="manager">Manager (tout sauf Catégories/Sites/Utilisateurs, ventes passées non modifiables)</option><option value="cashier">Caissier (caisse, stock en lecture, ventes du jour)</option><option value="test">Test (accès complet, rien n'est enregistré)</option>
       </select>
       <button onClick={add} disabled={busy} style={{width:"100%",padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Ajouter"}</button>
     </div>
@@ -4450,7 +4511,7 @@ function UsersAdmin({users,onSave,caisseUrl}){
         <input style={inp} value={editU.name} onChange={e=>setEditU({...editU,name:e.target.value})} placeholder="Nom"/>
         <input style={inp} type="password" value={editU.pin} onChange={e=>setEditU({...editU,pin:e.target.value})} placeholder="PIN"/>
         <select value={editU.role} onChange={e=>setEditU({...editU,role:e.target.value})} style={{...inp}}>
-          <option value="admin">Admin</option><option value="cashier">Caissier</option><option value="test">Test</option>
+          <option value="admin">Admin</option><option value="manager">Manager</option><option value="cashier">Caissier</option><option value="test">Test</option>
         </select>
         <div style={{display:"flex",gap:8}}>
           <button onClick={()=>setEditU(null)} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
