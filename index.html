@@ -848,6 +848,7 @@ function App(){
   const [modal,setModal]=useState(null);
   const [currentUser,setCU]=useState(SS.get("anf87_user")||null);
   const [syncing,setSyncing]=useState(false);
+  const [loggingOut,setLoggingOut]=useState(false); // bloque l'écran le temps de resynchroniser avant de revenir au code PIN
   const [lastSync,setLastSync]=useState(LS.get("anf87_lastsync")||null);
   const [syncError,setSyncError]=useState(null);
   const [volumeProd,setVolumeProd]=useState(null); // produit à vendre au verre
@@ -902,6 +903,16 @@ function App(){
     setSyncing(false);
   }
 
+  // Déconnexion : on force une resynchronisation complète AVANT de revenir à l'écran
+  // du code PIN, écran bloqué le temps que ça se termine — pour ne jamais laisser
+  // quelqu'un (ex: après une session Test) atterrir sur des données périmées/locales
+  // qui n'existent pas vraiment sur Google Sheets, même le temps d'un instant.
+  const doLogout=async()=>{
+    setLoggingOut(true);
+    if(caisseUrl)await syncAll();
+    setCU(null);SS.remove("anf87_user");
+    setLoggingOut(false);
+  };
   const saveProd=async arr=>{setProducts(arr);LS.set("anf87_products",arr);};
   const saveSites=async arr=>{setSites(arr);LS.set("anf87_sites",arr);};
   const saveCats=async arr=>{setCats(arr);LS.set("anf87_cats",arr);};
@@ -1091,12 +1102,17 @@ function App(){
         <div style={{display:"flex",alignItems:"center",gap:6}}>
           {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:600}}>↻</button>}
           <SiteSelector sites={sites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}}/>
-          {users.length>0&&<button onClick={()=>{setCU(null);SS.set("anf87_user",null);}} style={{background:"rgba(255,255,255,0.1)",border:"none",borderRadius:8,color:"rgba(255,255,255,0.6)",padding:"7px 10px",fontSize:13,cursor:"pointer"}}>⎋</button>}
+          {users.length>0&&<button onClick={doLogout} disabled={loggingOut} style={{background:"rgba(255,255,255,0.1)",border:"none",borderRadius:8,color:"rgba(255,255,255,0.6)",padding:"7px 10px",fontSize:13,cursor:loggingOut?"default":"pointer"}}>⎋</button>}
         </div>
       </div>
 
       {isTestMode()&&<div style={{background:"#FF9500",color:"white",textAlign:"center",padding:"6px 10px",fontSize:12,fontWeight:700,flexShrink:0}}>
         🧪 Mode test — rien n'est enregistré sur Google Sheets
+      </div>}
+
+      {loggingOut&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:999,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14}}>
+        <div style={{fontSize:40}}>⏳</div>
+        <div style={{color:"white",fontWeight:700,fontSize:15}}>Synchronisation avant déconnexion...</div>
       </div>}
 
       {/* ── CORPS ── */}
