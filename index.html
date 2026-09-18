@@ -906,12 +906,17 @@ function App(){
   const [config,setConfig]=useState(LS.get("anf87_config")||{});
   const sumupKey=config.sumup_key!==undefined?config.sumup_key:(LS.get("anf87_sumup_key")||"");
   const sumupAppId=config.sumup_appid!==undefined?config.sumup_appid:(LS.get("anf87_sumup_appid")||"");
-  // Happy Hour : partagé sur tous les sites/appareils (comme la clé SumUp), pour que
-  // tout le monde applique les mêmes tarifs réduits en même temps.
-  const happyHourActive=config.happy_hour_active==="true";
+  // Happy Hour : partagé sur tous les sites/appareils (comme la clé SumUp), MAIS une
+  // fois activé/désactivé manuellement sur CET appareil, on ignore la valeur reçue
+  // par les synchros suivantes (jusqu'à fermeture/rechargement de l'appli) — sinon
+  // une synchro automatique arrivant juste après le clic (avant que l'écriture ait
+  // fini d'atteindre le serveur) réinitialisait le bouton dans le mauvais sens.
+  const happyHourUserSetRef=useRef(false);
+  const [happyHourActive,setHappyHourActive]=useState(()=>(LS.get("anf87_config")||{}).happy_hour_active==="true");
   const toggleHappyHour=async()=>{
     const next=!happyHourActive;
-    setConfig(prev=>({...prev,happy_hour_active:next?"true":"false"}));
+    happyHourUserSetRef.current=true;
+    setHappyHourActive(next);
     if(caisseUrl)await apiWrite(caisseUrl,{action:"saveConfig",key:"happy_hour_active",value:next?"true":"false"});
   };
   const site=sites.find(s=>s.id===siteId)||sites[0]||{id:"s1",name:"Buvette",color:T.red};
@@ -946,6 +951,7 @@ function App(){
       setReserve(r.reserve||[]);LS.set("anf87_reserve",r.reserve||[]);
       setDeposits(r.deposits||[]);LS.set("anf87_deposits",r.deposits||[]);
       setConfig(r.config||{});LS.set("anf87_config",r.config||{});
+      if(!happyHourUserSetRef.current)setHappyHourActive((r.config||{}).happy_hour_active==="true");
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);LS.set("anf87_lastsync",t);
       setSyncError(null);
@@ -1212,12 +1218,12 @@ function App(){
           <SiteSelector sites={sites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}} big align="left"/>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:700}}>↻</button>}
           <button onClick={toggleHappyHour} title={happyHourActive?"Désactiver le Happy Hour":"Activer le Happy Hour"}
             style={{display:"flex",alignItems:"center",gap:5,background:happyHourActive?"#FF9500":"rgba(255,255,255,0.18)",
               border:`1px solid ${happyHourActive?"#FF9500":"rgba(255,255,255,0.3)"}`,borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:"pointer",fontWeight:700}}>
             🎉{happyHourActive?" ON":""}
           </button>
+          {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:700}}>↻</button>}
           {users.length>0&&<button onClick={doLogout} disabled={loggingOut} title="Déconnexion / changer d'utilisateur" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:loggingOut?"default":"pointer",fontWeight:700}}>⎋</button>}
         </div>
       </div>
