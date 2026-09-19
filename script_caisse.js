@@ -337,20 +337,20 @@ function setReserveCount(e){
 
 function getAccompanimentsData(ss){
   var sh=ss.getSheetByName("Accompagnements"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,4).getValues().filter(r=>r[0]&&r[1]&&r[2])
-    .map(r=>({id:r[0],productId:r[1],assocId:r[2],qty:+r[3]||1}));
+  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0]&&r[1]&&r[2])
+    .map(r=>({id:r[0],productId:r[1],assocId:r[2],qty:+r[3]||1,portionId:(r[4]||"").toString()}));
 }
 function saveAccompaniment(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Accompagnements"), p=e.parameter;
   if(sh.getLastRow()<=1){
-    sh.getRange(1,1,1,4).setValues([["ID","ProduitID","ProduitAssocieID","Qte"]]);
-    sh.getRange(1,1,1,4).setFontWeight("bold"); sh.setFrozenRows(1);
+    sh.getRange(1,1,1,5).setValues([["ID","ProduitID","ProduitAssocieID","Qte","PortionID"]]);
+    sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
   }
-  var row=[p.id,p.productId,p.assocId,+p.qty||1];
+  var row=[p.id,p.productId,p.assocId,+p.qty||1,p.portionId||""];
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      sh.getRange(i+2,1,1,4).setValues([row]);
+      sh.getRange(i+2,1,1,5).setValues([row]);
       return{ok:true,action:"updated"};
     }}
   }

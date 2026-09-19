@@ -1011,7 +1011,7 @@ function App(){
       if(ex)return prev.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i);
       return[...prev,{id:p.id,pid:p.id,name:p.name,price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
   };
-  const addVolumeToCart=async(prod,qty,unit,price)=>{
+  const addVolumeToCart=async(prod,qty,unit,price,portionId)=>{
     // Vérifie que le contenant ouvert (ou le stock, si aucun contenant configuré)
     // contient assez de volume pour cette portion — en tenant compte de ce qui est
     // déjà dans le panier pour ce même produit (ex: 3 demis déjà ajoutés + celui-ci).
@@ -1035,7 +1035,7 @@ function App(){
     // c'est pid qu'il faut envoyer au serveur pour que le décompte de stock trouve la
     // bonne ligne (avant ce correctif, le serveur recevait l'ID composite et ne
     // trouvait donc jamais le produit : le stock des ventes au cl n'était jamais décompté).
-    setCart(prev=>[...prev,{id:prod.id+"-"+Date.now(),pid:prod.id,name:prod.name+" "+qty+unit,price,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,qty:1,vol:qty,free:false,unit:unit}]);
+    setCart(prev=>[...prev,{id:prod.id+"-"+Date.now(),pid:prod.id,portionId:portionId||"",name:prod.name+" "+qty+unit,price,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,qty:1,vol:qty,free:false,unit:unit}]);
     setVolumeProd(null);
   };
   // Un combo regroupe plusieurs PRODUITS DIFFÉRENTS en une seule ligne de panier
@@ -1121,12 +1121,16 @@ function App(){
       }else{
         const pid=item.pid||item.id;
         stockEntries.push({id:pid,qty:stockAmount(item)});
-        // Accompagnements automatiques (gobelet, sucre, touillette...) : décomptés
-        // en plus du produit vendu, sans ligne de panier ni impact sur le prix.
-        // Basé sur item.qty (nb de services), pas stockAmount (qui inclut le volume
-        // en cl pour les ventes au verre — un café ×2 consomme 2 gobelets, pas
-        // "2×volume" gobelets).
-        accompaniments.filter(a=>a.productId.toString()===pid.toString())
+        // Accompagnements automatiques (gobelet, sucre, touillette, consigne de
+        // portion...) : décomptés en plus du produit vendu, sans ligne de panier ni
+        // impact sur le prix. Basé sur item.qty (nb de services), pas stockAmount
+        // (qui inclut le volume en cl pour les ventes au verre — un café ×2 consomme
+        // 2 gobelets, pas "2×volume" gobelets).
+        // Un accompagnement peut être rattaché à une portion précise (ex: Pichet ->
+        // Consigne Pichet) : dans ce cas il ne s'applique QUE pour cette portion-là,
+        // pas pour les autres portions du même produit (ex: Demi).
+        accompaniments.filter(a=>a.productId.toString()===pid.toString()
+          &&(!a.portionId||a.portionId===(item.portionId||"")))
           .forEach(a=>stockEntries.push({id:a.assocId,qty:a.qty*item.qty}));
       }
     });
@@ -1591,7 +1595,7 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
                   opacity:dragId===p.id.toString()?0.35:1,
                   outline:reorderMode&&dragOverId===p.id.toString()&&dragId!==p.id.toString()?`3px dashed ${T.red}`:"none",
                   outlineOffset:2,borderRadius:14}}>
-              <button onClick={()=>{if(reorderMode)return;portionSellable&&addVolumeToCart(p,portion.size,p.unit,portionPrice);}} disabled={!portionSellable&&!reorderMode}
+              <button onClick={()=>{if(reorderMode)return;portionSellable&&addVolumeToCart(p,portion.size,p.unit,portionPrice,portion.id);}} disabled={!portionSellable&&!reorderMode}
                 style={photo?{position:"relative",width:"100%",height:132,borderRadius:14,overflow:"hidden",padding:0,
                     cursor:reorderMode?"grab":portionSellable?"pointer":"not-allowed",opacity:!portionSellable&&!reorderMode?.45:1,
                     border:`2px solid ${isDrink&&portionSellable?"#FF9F0A":T.border}`,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}
@@ -1859,7 +1863,7 @@ function VolumeModal({prod,onClose,onAdd,portions,happyHourActive}){
   // Chacune a aussi son propre prix Happy Hour optionnel.
   const basePrice=effectivePrice(prod,happyHourActive);
   const configured=(portions||[]).filter(po=>po.productId.toString()===prod.id.toString())
-    .map(po=>({qty:po.size,price:(happyHourActive&&po.happyPrice>0)?po.happyPrice:po.price,originalPrice:po.price,isHappy:happyHourActive&&po.happyPrice>0}));
+    .map(po=>({qty:po.size,price:(happyHourActive&&po.happyPrice>0)?po.happyPrice:po.price,originalPrice:po.price,isHappy:happyHourActive&&po.happyPrice>0,portionId:po.id}));
   const presets=configured.length?configured:[1,2,3].map(m=>({qty:prod.baseQty*m,price:+(basePrice*m).toFixed(2)}));
   const [selectedIdx,setSelectedIdx]=useState(0);
   const [customQty,setCustomQty]=useState(null); // non-null dès qu'on ajuste manuellement (+/-)
@@ -1901,7 +1905,7 @@ function VolumeModal({prod,onClose,onAdd,portions,happyHourActive}){
       </div>
       <div style={{display:"flex",gap:8}}>
         <button onClick={onClose} style={{flex:1,padding:"13px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:"pointer",fontWeight:600}}>Annuler</button>
-        <button onClick={()=>onAdd(prod,qty,prod.unit,price)} style={{flex:2,padding:"13px",background:T.red,color:"white",border:"none",borderRadius:12,cursor:"pointer",fontWeight:700,fontSize:15}}>
+        <button onClick={()=>onAdd(prod,qty,prod.unit,price,customQty==null?selected?.portionId:undefined)} style={{flex:2,padding:"13px",background:T.red,color:"white",border:"none",borderRadius:12,cursor:"pointer",fontWeight:700,fontSize:15}}>
           + Ajouter {fmt(price)}
         </button>
       </div>
@@ -4363,7 +4367,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       </div>
     </div>}
     {portionsFor&&<PortionsManager product={portionsFor} portions={portions} setPortions={setPortions} caisseUrl={caisseUrl} onClose={()=>setPortionsFor(null)}/>}
-    {accompFor&&<AccompanimentsManager product={accompFor} products={products} accompaniments={accompaniments} setAccompaniments={setAccompaniments} caisseUrl={caisseUrl} onClose={()=>setAccompFor(null)}/>}
+    {accompFor&&<AccompanimentsManager product={accompFor} products={products} portions={portions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} caisseUrl={caisseUrl} onClose={()=>setAccompFor(null)}/>}
   </div>);
 }
 
@@ -4372,20 +4376,22 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
 // Décomptés discrètement en plus du produit vendu — pas de ligne de panier, pas
 // d'impact sur le prix. Ex: café -> gobelet, sucre, touillette (ou juste gobelet
 // pour un autre produit).
-function AccompanimentsManager({product,products,accompaniments,setAccompaniments,caisseUrl,onClose}){
+function AccompanimentsManager({product,products,portions,accompaniments,setAccompaniments,caisseUrl,onClose}){
   const mine=accompaniments.filter(a=>a.productId.toString()===product.id.toString());
   const otherProducts=products.filter(p=>p.id.toString()!==product.id.toString());
+  const myPortions=(portions||[]).filter(po=>po.productId.toString()===product.id.toString());
   const [assocId,setAssocId]=useState(otherProducts[0]?.id||"");
   const [qty,setQty]=useState(1);
+  const [portionId,setPortionId]=useState(""); // "" = tout le produit, quelle que soit la portion
   const [busy,setBusy]=useState(false);
 
   const add=async()=>{
     if(!assocId)return;
     setBusy(true);
     const id=uid();
-    const r=await apiWrite(caisseUrl,{action:"saveAccompaniment",id,productId:product.id,assocId,qty:+qty||1});
+    const r=await apiWrite(caisseUrl,{action:"saveAccompaniment",id,productId:product.id,assocId,qty:+qty||1,portionId});
     if(r.ok){
-      setAccompaniments(prev=>[...prev,{id,productId:product.id,assocId,qty:+qty||1}]);
+      setAccompaniments(prev=>[...prev,{id,productId:product.id,assocId,qty:+qty||1,portionId}]);
       setQty(1);
     }
     setBusy(false);
@@ -4396,17 +4402,22 @@ function AccompanimentsManager({product,products,accompaniments,setAccompaniment
   };
   const prodName=pid=>products.find(p=>p.id.toString()===pid.toString())?.name||"(produit supprimé)";
   const prodEmoji=pid=>products.find(p=>p.id.toString()===pid.toString())?.emoji||"🏷";
+  const portionName=pid=>myPortions.find(po=>po.id.toString()===pid.toString())?.name;
 
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
     <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
       <div style={{fontWeight:800,fontSize:17,marginBottom:4}}>🔗 Accompagnements — {product.name}</div>
-      <div style={{fontSize:12,color:T.mid,marginBottom:14}}>Décomptés automatiquement à chaque vente de "{product.name}", sans ligne de panier ni impact sur le prix.</div>
+      <div style={{fontSize:12,color:T.mid,marginBottom:14}}>Décomptés automatiquement à chaque vente de "{product.name}", sans ligne de panier ni impact sur le prix. Rattachez-en un à une portion précise (ex: Pichet) pour qu'il ne s'applique qu'à celle-ci.</div>
 
       {mine.length===0&&<div style={{fontSize:12,color:T.mid,fontStyle:"italic",marginBottom:10}}>Aucun accompagnement configuré.</div>}
       {mine.map(a=>(
         <div key={a.id} style={{display:"flex",alignItems:"center",gap:10,background:T.bg,borderRadius:10,padding:"9px 12px",marginBottom:7}}>
           <span style={{fontSize:20}}>{prodEmoji(a.assocId)}</span>
-          <div style={{flex:1,fontSize:13,color:T.dark}}>{a.qty}× {prodName(a.assocId)}</div>
+          <div style={{flex:1,fontSize:13,color:T.dark}}>
+            {a.qty}× {prodName(a.assocId)}
+            {a.portionId?<span style={{color:T.blue,fontWeight:600}}> — uniquement pour {portionName(a.portionId)||"(portion supprimée)"}</span>
+              :<span style={{color:T.mid}}> — tout le produit</span>}
+          </div>
           <button onClick={()=>del(a.id)} style={{padding:"6px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
         </div>
       ))}
@@ -4421,6 +4432,14 @@ function AccompanimentsManager({product,products,accompaniments,setAccompaniment
           <input type="number" min="1" value={qty} onChange={e=>setQty(e.target.value)}
             style={{width:60,padding:"9px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,textAlign:"center"}}/>
         </div>
+        {myPortions.length>0&&<>
+          <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Pour quelle portion ?</label>
+          <select value={portionId} onChange={e=>setPortionId(e.target.value)}
+            style={{width:"100%",padding:"9px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:9}}>
+            <option value="">— Tout le produit (toutes portions) —</option>
+            {myPortions.map(po=><option key={po.id} value={po.id}>{po.name} ({po.size}{product.unit})</option>)}
+          </select>
+        </>}
         <button onClick={add} disabled={busy||!assocId} style={{width:"100%",padding:"10px",background:"#6B4F3A",color:"white",border:"none",borderRadius:9,cursor:busy?"default":"pointer",fontWeight:700,fontSize:13}}>
           {busy?"⏳...":"+ Ajouter"}
         </button>
