@@ -1974,7 +1974,14 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
     const a=paidTotal.toFixed(2);
     const desc=encodeURIComponent("ANF87 "+site.name+" - "+cart.map(i=>i.name).join(", ").slice(0,50));
     const txId=uid();
-    let url=`sumupmerchant://pay/1.0?affiliate-key=${encodeURIComponent(sumupKey)}&total=${a}&currency=EUR&title=${desc}&foreign-tx-id=${txId}`;
+    // URL de retour vers l'appli elle-même (adresse actuelle, déterminée
+    // automatiquement) — sans ça, l'appli SumUp n'a aucune destination où revenir
+    // proprement une fois le paiement terminé, ce qui peut la laisser dans un état
+    // instable. Les trois noms de paramètre (callback, callbacksuccess, callbackfail)
+    // sont envoyés ensemble : selon la version/plateforme de l'appli SumUp, l'un ou
+    // l'autre est utilisé — envoyer les trois ne coûte rien et couvre les deux cas.
+    const returnUrl=encodeURIComponent(window.location.origin+window.location.pathname);
+    let url=`sumupmerchant://pay/1.0?affiliate-key=${encodeURIComponent(sumupKey)}&total=${a}&currency=EUR&title=${desc}&foreign-tx-id=${txId}&callback=${returnUrl}&callbacksuccess=${returnUrl}&callbackfail=${returnUrl}`;
     if(sumupAppId)url+=`&app-id=${encodeURIComponent(sumupAppId)}`;
     window.location.href=url;
     setTimeout(async()=>{if(await customConfirm("✅ Paiement CB confirmé par le TPE SumUp ?"))onDone({type:"cb"});else setSubmitting(false);},2000);
@@ -4863,7 +4870,7 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
       <label style={{fontSize:12,fontWeight:600,color:"#2E7D32",display:"block",marginBottom:4}}>Clé Affiliate SumUp (obligatoire — sans elle, l'appli SumUp ignore la demande)</label>
       <input value={sk} onChange={e=>setSk(e.target.value)} placeholder="Générée sur developer.sumup.com" disabled={!editingSumup}
         style={{width:"100%",padding:"10px 12px",border:"1px solid #A5D6A7",borderRadius:8,fontSize:13,marginBottom:9,outline:"none",background:editingSumup?"white":"#F2F2F2",color:editingSumup?"#1B5E20":"#66806E"}}/>
-      <label style={{fontSize:12,fontWeight:600,color:"#2E7D32",display:"block",marginBottom:4}}>App ID SumUp (optionnel, selon la config de votre clé)</label>
+      <label style={{fontSize:12,fontWeight:600,color:"#2E7D32",display:"block",marginBottom:4}}>App ID SumUp — doit correspondre EXACTEMENT à l'Application ID saisi lors de la création de la clé sur me.sumup.com/developers (sinon "Invalid affiliate key")</label>
       <input value={said} onChange={e=>setSaid(e.target.value)} placeholder="ex: com.anf87.caisse" disabled={!editingSumup}
         style={{width:"100%",padding:"10px 12px",border:"1px solid #A5D6A7",borderRadius:8,fontSize:13,marginBottom:9,outline:"none",background:editingSumup?"white":"#F2F2F2",color:editingSumup?"#1B5E20":"#66806E"}}/>
       {editingSumup&&<div style={{display:"flex",gap:8}}>
