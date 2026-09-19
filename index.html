@@ -734,6 +734,17 @@ const isDepositProduct=(products,productId)=>
 // prix "de base" du produit — pas aux portions (Demi/Pichet...) qui ont leur propre
 // prix fixe indépendant.
 const effectivePrice=(p,happyHourActive)=>(happyHourActive&&p.happyPrice>0)?p.happyPrice:p.price;
+// Propose des montants remis réalistes (vraies pièces/billets), plutôt que des
+// arrondis arbitraires : pour chaque coupure réelle, le plus petit multiple qui
+// couvre le total — donne les montants qu'on paierait vraiment avec une seule sorte
+// de pièce/billet. Le montant exact est exclu (déjà proposé par défaut dans le champ).
+const CASH_DENOMS=[0.5,1,2,5,10,20,50,100];
+const cashQuickAmounts=total=>{
+  const vals=[...new Set(CASH_DENOMS.map(d=>Math.ceil((total-0.001)/d)*d))]
+    .filter(v=>v>total+0.001)
+    .sort((a,b)=>a-b);
+  return vals.slice(0,5);
+};
 
 // Ouvre/ferme un contenant — utilisé à la fois depuis l'écran caisse (POS) et
 // l'écran Stock > Contenants, pour ne pas dupliquer la logique réseau.
@@ -1909,10 +1920,12 @@ function PaymentOptionButton({e,l,s,c,onClick,disabled}){
 // ═══ PAYMENT MODAL ═══
 function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupKey,sumupAppId,openBoissons,openSplit}){
   const [step,setStep]=useState("select");
-  const [given,setGiven]=useState("");const [checkN,setCheckN]=useState("");
-  const [submitting,setSubmitting]=useState(false); // anti double-clic / double-encaissement
   const drinkItems=cart.filter(i=>i.drink);const freeItems=cart.filter(i=>i.free);
   const paidTotal=cart.reduce((s,i)=>s+(i.free?0:i.price*i.qty),0);
+  // Montant remis pré-rempli avec le total exact (cas le plus fréquent) — modifiable
+  // si le client donne un billet plus gros.
+  const [given,setGiven]=useState(paidTotal.toFixed(2));const [checkN,setCheckN]=useState("");
+  const [submitting,setSubmitting]=useState(false); // anti double-clic / double-encaissement
   const ov={position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"};
   const sh={background:T.card,borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,padding:"20px 18px 34px",maxHeight:"92vh",overflowY:"auto"};
 
@@ -2002,10 +2015,10 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
         <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Montant remis</label>
         <input value={given} onChange={e=>{setGiven(e.target.value);const g=parseFloat(e.target.value.replace(",","."));if(!isNaN(g)&&Math.abs(g-paidTotal)<0.001)doCashPayment(g);}} type="number" step="0.50" placeholder="0,00"
           style={{width:"100%",padding:"14px",fontSize:24,fontWeight:700,border:`2px solid ${T.border}`,borderRadius:12,textAlign:"right",marginBottom:10,outline:"none"}}/>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7,marginBottom:12}}>
-          {/* Montants uniques (évite de proposer 2x la même valeur, ex: quand le total est déjà rond) */}
-          {[...new Set([paidTotal,Math.ceil(paidTotal),Math.ceil(paidTotal/5)*5,Math.ceil(paidTotal/10)*10])].map((v,i)=>(
-            <button key={i} onClick={()=>{setGiven(v.toFixed(2));if(Math.abs(v-paidTotal)<0.001)doCashPayment(v);}} style={{padding:"10px 4px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,fontSize:12,fontWeight:700,cursor:"pointer"}}>{fmt(v)}</button>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,marginBottom:12}}>
+          {/* Montants réalistes (vraies pièces/billets) au-delà du total, déjà pré-rempli dans le champ ci-dessus */}
+          {cashQuickAmounts(paidTotal).map((v,i)=>(
+            <button key={i} onClick={()=>{setGiven(v.toFixed(2));}} style={{padding:"10px 3px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,fontSize:12,fontWeight:700,cursor:"pointer"}}>{fmt(v)}</button>
           ))}
         </div>
         {given&&parseFloat(given.replace(",","."))>=paidTotal&&<div style={{background:"#E8F5E9",borderRadius:12,padding:14,marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -2055,7 +2068,7 @@ function SplitModal({total,boissonsUrl,onClose,onComplete}){
 
   const amountFor=idx=>mode==="equal"?perPerson:+(parseFloat(amounts[idx])||0).toFixed(2);
 
-  const openPay=idx=>{ if(amountFor(idx)<=0)return; setActiveIdx(idx);setStep("select");setGiven("");setCheckN("");setBName("");setBInfo(null); };
+  const openPay=idx=>{ if(amountFor(idx)<=0)return; setActiveIdx(idx);setStep("select");setGiven(amountFor(idx).toFixed(2));setCheckN("");setBName("");setBInfo(null); };
   const closePay=()=>{setActiveIdx(null);setStep("select");};
 
   const confirmPayment=(type,extra)=>{
@@ -2207,6 +2220,11 @@ function SplitModal({total,boissonsUrl,onClose,onComplete}){
           <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Montant remis</label>
           <input value={given} onChange={e=>{setGiven(e.target.value);const g=parseFloat(e.target.value.replace(",","."));if(!completing&&!isNaN(g)&&Math.abs(g-activeAmt)<0.001)confirmPayment("cash",{given:g,change:0});}} type="number" step="0.50" placeholder="0,00"
             style={{width:"100%",padding:"14px",fontSize:22,fontWeight:700,border:`2px solid ${T.border}`,borderRadius:12,textAlign:"right",marginBottom:10,outline:"none"}}/>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:5,marginBottom:12}}>
+            {cashQuickAmounts(activeAmt).map((v,i)=>(
+              <button key={i} onClick={()=>setGiven(v.toFixed(2))} style={{padding:"9px 2px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,fontSize:11,fontWeight:700,cursor:"pointer"}}>{fmt(v)}</button>
+            ))}
+          </div>
           {given&&parseFloat(given.replace(",","."))>=activeAmt&&<div style={{background:"#E8F5E9",borderRadius:12,padding:12,marginBottom:12,display:"flex",justifyContent:"space-between"}}>
             <span style={{color:"#2E7D32",fontWeight:600,fontSize:14}}>Monnaie à rendre</span>
             <span style={{color:"#2E7D32",fontWeight:900,fontSize:20}}>{fmt(parseFloat(given.replace(",","."))-activeAmt)}</span>
