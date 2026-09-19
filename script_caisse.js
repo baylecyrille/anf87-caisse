@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit"];
+  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit","logHappyHour"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -49,6 +49,7 @@ function doGet(e) {
       case "adjustContainer": result = adjustContainer(e); break;
       case "setReserveCount":  result = setReserveCount(e); break;
       case "saveConfig":       result = saveConfig(e); break;
+      case "logHappyHour":     result = logHappyHour(e); break;
       case "updateSale":       result = updateSale(e); break;
       case "deleteSale":       result = deleteSale(e); break;
       case "savePortion":     result = savePortion(e); break;
@@ -232,6 +233,20 @@ function saveConfig(e){
     }}
   }
   sh.appendRow([p.key,p.value||""]);
+  return{ok:true};
+}
+// Historique des activations/désactivations du Happy Hour — une ligne par bascule,
+// pour garder une trace de quand ça a été activé/désactivé et par qui.
+function logHappyHour(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"HappyHourLog"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,4).setValues([["Date","Heure","Action","Utilisateur"]]);
+    sh.getRange(1,1,1,4).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var now=new Date(), tz=Session.getScriptTimeZone();
+  var dateStr=Utilities.formatDate(now,tz,"dd/MM/yyyy"), heureStr=Utilities.formatDate(now,tz,"HH:mm:ss");
+  sh.appendRow([dateStr,heureStr,p.action2==="on"?"Activé":"Désactivé",p.user||""]);
+  sh.getRange(sh.getLastRow(),1,1,2).setNumberFormat("@"); // Date/Heure en texte, même raison que pour les ventes
   return{ok:true};
 }
 

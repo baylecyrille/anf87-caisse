@@ -917,7 +917,12 @@ function App(){
     const next=!happyHourActive;
     happyHourUserSetRef.current=true;
     setHappyHourActive(next);
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveConfig",key:"happy_hour_active",value:next?"true":"false"});
+    if(caisseUrl){
+      await apiWrite(caisseUrl,{action:"saveConfig",key:"happy_hour_active",value:next?"true":"false"});
+      // Trace de qui a activé/désactivé et à quelle heure — utile pour savoir combien
+      // de temps le Happy Hour a réellement duré.
+      await apiWrite(caisseUrl,{action:"logHappyHour",action2:next?"on":"off",user:currentUser?.name||""});
+    }
   };
   const site=sites.find(s=>s.id===siteId)||sites[0]||{id:"s1",name:"Buvette",color:T.red};
   const isAdmin=!users.length||currentUser?.role==="admin"||currentUser?.role==="test";
@@ -3208,6 +3213,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
   const stockC=v=>v===0?"#FF3B30":v<=5?T.orange:v<=10?"#EAB308":T.green;
   const [containerModalFor,setContainerModalFor]=useState(null); // produit dont la popup contenant est ouverte
   const [editingDeposit,setEditingDeposit]=useState(null); // id du produit "consigne" dont le compteur est en édition
+  const [collapsedCats,setCollapsedCats]=useState(new Set()); // catégories repliées — dépliées par défaut
   const adjustDepositCount=async(prod,newCount)=>{
     const oldCount=depositsFor(deposits,siteId,prod.id);
     const delta=newCount-oldCount;
@@ -3236,9 +3242,15 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
       {products.filter(p=>(p.stock[siteId]||0)<=5).length>0&&<div style={{background:"#FFF3E0",border:`1px solid ${T.orange}`,borderRadius:10,padding:"10px 12px",marginBottom:12,fontSize:13}}>
         ⚠️ {products.filter(p=>(p.stock[siteId]||0)<=5).length} produit(s) en stock faible
       </div>}
-      {cats.map(cat=><div key={cat} style={{marginBottom:14}}>
-        <div style={{fontSize:11,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>{cat}</div>
-        <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+      {cats.map(cat=>{
+        const isCollapsed=collapsedCats.has(cat);
+        return(<div key={cat} style={{marginBottom:14}}>
+        <button onClick={()=>setCollapsedCats(prev=>{const next=new Set(prev);if(next.has(cat))next.delete(cat);else next.add(cat);return next;})}
+          style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"6px 2px",background:"none",border:"none",cursor:"pointer",marginBottom:6}}>
+          <span style={{fontSize:11,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:1}}>{cat}</span>
+          <span style={{fontSize:11,color:T.mid,transform:isCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform .15s"}}>▾</span>
+        </button>
+        {!isCollapsed&&<div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
           {products.filter(p=>p.cat===cat).flatMap((prod,idx,arr)=>{
             const needsContainerPanel=prod.sellByVolume&&parseContainers(prod.containers).length>0;
             const cont=needsContainerPanel?containers.find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString()):null;
@@ -3320,8 +3332,9 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
               </div>
             </button>)];
           })}
-        </div>
-      </div>)}
+        </div>}
+      </div>);
+      })}
     </div>
     {containerModalFor&&<InlineContainerPanel prod={containerModalFor} siteId={siteId} caisseUrl={caisseUrl}
       containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} products={products} onSave={onSave}
@@ -4191,6 +4204,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   const [accompFor,setAccompFor]=useState(null); // produit dont on gère les accompagnements
   const [saving,setSaving]=useState(false); // anti double-clic (ajout/modif/suppression produit)
   const [valueDetail,setValueDetail]=useState(null); // "value"|"margin"|null — détail du bandeau stock/marge
+  const [collapsedCats,setCollapsedCats]=useState(new Set()); // catégories repliées — dépliées par défaut
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
   const handlePhoto=(e,setter)=>{const f=e.target.files[0];if(!f)return;
@@ -4259,25 +4273,41 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     {valueDetail&&<StockValueDetailModal mode={valueDetail} products={products} sites={sites} caisseUrl={caisseUrl}
       unitCost={unitCost} unitSell={unitSell} flattenProd={flattenProd} onSave={onSave} onClose={()=>setValueDetail(null)}/>}
     <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} products={products} handlePhoto={handlePhoto} busy={saving}/>
-    {products.map(p=>{
-      const margeUnit=(p.price||0)-(p.costPrice||0);
-      const margePct=p.costPrice>0?(margeUnit/p.costPrice*100):null;
-      const stockTotal=Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0);
-      return(<div key={p.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
-      {p.photo?<img src={p.photo} style={{width:32,height:32,borderRadius:7,objectFit:"cover",flexShrink:0}}/>
-        :<span style={{fontSize:24,flexShrink:0}}>{p.emoji}</span>}
-      <div style={{flex:1,minWidth:0}}>
-        <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
-        <div style={{fontSize:11,color:T.mid}}>{p.cat} • {fmt(p.price)}{p.drink?" • 🍺":""}{p.sellByVolume?" • au "+p.unit:""}{p.barcode?" • 🏷 "+p.barcode:""}
-          {isDepositProduct(products,p.id)?" • 🔄 "+(deposits||[]).filter(d=>d.productId.toString()===p.id.toString()).reduce((s,d)=>s+d.count,0)+" dehors (tous sites)":""}
-        </div>
-        {p.costPrice>0&&<div style={{fontSize:10,color:margeUnit>=0?"#2E7D32":T.red,fontWeight:600,marginTop:1}}>
-          Achat {fmt(p.costPrice)} • Marge {fmt(margeUnit)}{margePct!=null?` (${margePct.toFixed(0)}%)`:""} • Stock: {fmt(unitCost(p)*stockTotal)}
+    {[...categories.filter(c=>products.some(p=>p.cat===c.name)),
+      ...(products.some(p=>!categories.some(c=>c.name===p.cat))?[{name:"Autres"}]:[])].map(cat=>{
+      const catProducts=cat.name==="Autres"?products.filter(p=>!categories.some(c=>c.name===p.cat)):products.filter(p=>p.cat===cat.name);
+      const isCollapsed=collapsedCats.has(cat.name);
+      return(<div key={cat.name} style={{marginBottom:10}}>
+        <button onClick={()=>setCollapsedCats(prev=>{const next=new Set(prev);if(next.has(cat.name))next.delete(cat.name);else next.add(cat.name);return next;})}
+          style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"9px 12px",background:T.dark,color:"white",
+            border:"none",borderRadius:10,cursor:"pointer",marginBottom:isCollapsed?0:8}}>
+          <span style={{fontWeight:700,fontSize:13}}>{cat.name} <span style={{opacity:.65,fontWeight:600}}>({catProducts.length})</span></span>
+          <span style={{fontSize:12,transform:isCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform .15s"}}>▾</span>
+        </button>
+        {!isCollapsed&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8}}>
+          {catProducts.map(p=>{
+            const margeUnit=(p.price||0)-(p.costPrice||0);
+            const margePct=p.costPrice>0?(margeUnit/p.costPrice*100):null;
+            const stockTotal=Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0);
+            return(<div key={p.id} style={{background:T.card,borderRadius:10,padding:9,border:`1px solid ${T.border}`,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+              {p.photo?<img src={p.photo} style={{width:44,height:44,borderRadius:8,objectFit:"cover"}}/>
+                :<span style={{fontSize:32}}>{p.emoji}</span>}
+              <div style={{fontSize:11,fontWeight:600,color:T.dark,textAlign:"center",width:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={p.name}>{p.name}</div>
+              <div style={{fontSize:11,color:T.mid,textAlign:"center"}}>{fmt(p.price)}{p.drink?" 🍺":""}{p.sellByVolume?" •"+p.unit:""}</div>
+              {p.barcode&&<div style={{fontSize:9,color:T.mid}}>🏷 {p.barcode}</div>}
+              {isDepositProduct(products,p.id)&&<div style={{fontSize:9,color:T.orange}}>🔄 {(deposits||[]).filter(d=>d.productId.toString()===p.id.toString()).reduce((s,d)=>s+d.count,0)} dehors</div>}
+              {p.costPrice>0&&<div style={{fontSize:9,color:margeUnit>=0?"#2E7D32":T.red,fontWeight:600,textAlign:"center"}}>
+                Marge {fmt(margeUnit)}{margePct!=null?` (${margePct.toFixed(0)}%)`:""}
+              </div>}
+              <div style={{display:"flex",gap:5,width:"100%",marginTop:2}}>
+                <button onClick={()=>setEdit({...p})} style={{flex:1,padding:"5px 0",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,cursor:"pointer",fontSize:11}}>✏️</button>
+                <button onClick={()=>delProd(p.id)} style={{flex:1,padding:"5px 0",background:"#FFF0F0",border:"none",borderRadius:6,cursor:"pointer",color:T.red,fontSize:11}}>🗑</button>
+              </div>
+            </div>);
+          })}
         </div>}
-      </div>
-      <button onClick={()=>setEdit({...p})} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
-      <button onClick={()=>delProd(p.id)} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
-    </div>);})}
+      </div>);
+    })}
     {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>✏️ Modifier {edit.name}</div>
