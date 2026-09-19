@@ -3251,7 +3251,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
     const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[site]:Math.max(0,newQty)}});
     onSave(upd);if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:prod.id,site,qty:Math.max(0,newQty),mode:"set"});
   };
-  const cats=[...new Set(products.map(p=>p.cat))];
+  const cats=[...new Set(products.map(p=>p.cat))].sort((a,b)=>a.localeCompare(b,"fr"));
   return(<div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{padding:"10px 14px",background:T.card,borderBottom:`1px solid ${T.border}`,display:"flex",gap:7,overflowX:"auto",flexShrink:0}}>
       {sites.map(s=><button key={s.id} onClick={()=>setSiteId(s.id)} style={{flexShrink:0,padding:"7px 14px",borderRadius:20,
@@ -3272,7 +3272,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
           <span style={{fontSize:12,transform:isCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform .15s"}}>▾</span>
         </button>
         {!isCollapsed&&<div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
-          {products.filter(p=>p.cat===cat).flatMap((prod,idx,arr)=>{
+          {products.filter(p=>p.cat===cat).sort((a,b)=>a.name.localeCompare(b.name,"fr")).flatMap((prod,idx,arr)=>{
             const needsContainerPanel=prod.sellByVolume&&parseContainers(prod.containers).length>0;
             const cont=needsContainerPanel?containers.find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString()):null;
             const gaugePct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
@@ -4295,8 +4295,10 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       unitCost={unitCost} unitSell={unitSell} flattenProd={flattenProd} onSave={onSave} onClose={()=>setValueDetail(null)}/>}
     <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} products={products} handlePhoto={handlePhoto} busy={saving}/>
     {[...categories.filter(c=>products.some(p=>p.cat===c.name)),
-      ...(products.some(p=>!categories.some(c=>c.name===p.cat))?[{name:"Autres"}]:[])].map(cat=>{
-      const catProducts=cat.name==="Autres"?products.filter(p=>!categories.some(c=>c.name===p.cat)):products.filter(p=>p.cat===cat.name);
+      ...(products.some(p=>!categories.some(c=>c.name===p.cat))?[{name:"Autres"}]:[])]
+      .sort((a,b)=>a.name.localeCompare(b.name,"fr")).map(cat=>{
+      const catProducts=(cat.name==="Autres"?products.filter(p=>!categories.some(c=>c.name===p.cat)):products.filter(p=>p.cat===cat.name))
+        .sort((a,b)=>a.name.localeCompare(b.name,"fr"));
       const isCollapsed=collapsedCats.has(cat.name);
       return(<div key={cat.name} style={{marginBottom:10}}>
         <button onClick={()=>setCollapsedCats(prev=>{const next=new Set(prev);if(next.has(cat.name))next.delete(cat.name);else next.add(cat.name);return next;})}
