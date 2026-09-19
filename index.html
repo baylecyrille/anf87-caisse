@@ -994,6 +994,22 @@ function App(){
   const saveCats=async arr=>{setCats(arr);LS.set("anf87_cats",arr);};
   const saveUsers=async arr=>{setUsers(arr);LS.set("anf87_users",arr);};
 
+  // Accompagnements PAYANTS (prix > 0, ex: Consigne Pichet) : contrairement aux
+  // accompagnements gratuits (gobelet, sucre...) qui restent invisibles et juste
+  // décomptés du stock à l'encaissement, ceux-ci doivent apparaître comme une vraie
+  // ligne de panier, facturée au client.
+  const addPaidAccompaniments=(productId,portionId)=>{
+    accompaniments.filter(a=>a.productId.toString()===productId.toString()&&(!a.portionId||a.portionId===(portionId||"")))
+      .forEach(a=>{
+        const assocProd=products.find(p=>p.id.toString()===a.assocId.toString());
+        if(!assocProd)return;
+        const price=effectivePrice(assocProd,happyHourActive);
+        if(price>0){
+          setCart(prev=>[...prev,{id:assocProd.id+"-accomp-"+Date.now()+"-"+Math.random().toString(36).slice(2),
+            pid:assocProd.id,name:assocProd.name,price,emoji:assocProd.emoji,photo:assocProd.photo,drink:assocProd.drink,qty:a.qty,free:false,unit:"unité"}]);
+        }
+      });
+  };
   const addToCart=async p=>{
     const stock=p.stock[siteId]||0;
     if(stock<=0)return;
@@ -1010,6 +1026,7 @@ function App(){
       const price=effectivePrice(p,happyHourActive);
       if(ex)return prev.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i);
       return[...prev,{id:p.id,pid:p.id,name:p.name,price,emoji:p.emoji,photo:p.photo,drink:p.drink,qty:1,free:false,unit:"unité"}];});
+    addPaidAccompaniments(p.id,"");
   };
   const addVolumeToCart=async(prod,qty,unit,price,portionId)=>{
     // Vérifie que le contenant ouvert (ou le stock, si aucun contenant configuré)
@@ -1036,6 +1053,7 @@ function App(){
     // bonne ligne (avant ce correctif, le serveur recevait l'ID composite et ne
     // trouvait donc jamais le produit : le stock des ventes au cl n'était jamais décompté).
     setCart(prev=>[...prev,{id:prod.id+"-"+Date.now(),pid:prod.id,portionId:portionId||"",name:prod.name+" "+qty+unit,price,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,qty:1,vol:qty,free:false,unit:unit}]);
+    addPaidAccompaniments(prod.id,portionId);
     setVolumeProd(null);
   };
   // Un combo regroupe plusieurs PRODUITS DIFFÉRENTS en une seule ligne de panier
@@ -1121,17 +1139,24 @@ function App(){
       }else{
         const pid=item.pid||item.id;
         stockEntries.push({id:pid,qty:stockAmount(item)});
-        // Accompagnements automatiques (gobelet, sucre, touillette, consigne de
-        // portion...) : décomptés en plus du produit vendu, sans ligne de panier ni
-        // impact sur le prix. Basé sur item.qty (nb de services), pas stockAmount
-        // (qui inclut le volume en cl pour les ventes au verre — un café ×2 consomme
-        // 2 gobelets, pas "2×volume" gobelets).
+        // Accompagnements GRATUITS uniquement ici (gobelet, sucre, touillette...) :
+        // décomptés en plus du produit vendu, sans ligne de panier ni impact sur le
+        // prix. Basé sur item.qty (nb de services), pas stockAmount (qui inclut le
+        // volume en cl pour les ventes au verre — un café ×2 consomme 2 gobelets, pas
+        // "2×volume" gobelets). Les accompagnements PAYANTS (prix > 0, ex: Consigne
+        // Pichet) sont déjà ajoutés comme de VRAIES lignes de panier au moment de
+        // l'ajout (voir addPaidAccompaniments) — les retraiter ici décompterait leur
+        // stock deux fois.
         // Un accompagnement peut être rattaché à une portion précise (ex: Pichet ->
         // Consigne Pichet) : dans ce cas il ne s'applique QUE pour cette portion-là,
         // pas pour les autres portions du même produit (ex: Demi).
         accompaniments.filter(a=>a.productId.toString()===pid.toString()
           &&(!a.portionId||a.portionId===(item.portionId||"")))
-          .forEach(a=>stockEntries.push({id:a.assocId,qty:a.qty*item.qty}));
+          .forEach(a=>{
+            const assocProd=products.find(p=>p.id.toString()===a.assocId.toString());
+            if(assocProd&&effectivePrice(assocProd,happyHourActive)>0)return; // déjà une vraie ligne
+            stockEntries.push({id:a.assocId,qty:a.qty*item.qty});
+          });
       }
     });
     // Consignes : vendre "Consigne X" décompte son propre stock (normal, comme tout
