@@ -3104,11 +3104,14 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
 // ═══ PANNEAU CONTENANT INLINE (sous le produit, dans l'écran Stock) ═══
 function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,reserve,setReserve,products,onSave,onClose}){
   const [busy,setBusy]=useState(false);
-  const [editingRemaining,setEditingRemaining]=useState(false);
   const cont=containers.find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString());
   const presets=parseContainers(prod.containers);
   const pct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
   const gaugeColor=prod.color||T.orange;
+  // Modifications en attente : rien n'est envoyé tant qu'on n'appuie pas sur
+  // "Enregistrer" — évite les écritures accidentelles à chaque perte de focus.
+  const [pendingCounts,setPendingCounts]=useState({}); // label -> valeur tapée
+  const [pendingRemaining,setPendingRemaining]=useState(null); // valeur tapée, ou null si non touchée
 
   const doOpen=async(choice)=>{
     setBusy(true);
@@ -3124,21 +3127,18 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
   const doAdjust=async(newRemaining)=>{
     if(isNaN(newRemaining)||newRemaining<0||!cont)return;
     const delta=newRemaining-cont.remaining;
-    setBusy(true);
     // Reflet immédiat sur le stock local (le serveur ajuste pareil de son côté).
     if(delta!==0){
       const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)+delta)}});
       onSave(upd);
     }
     await adjustContainerApi(caisseUrl,siteId,prod,newRemaining,setContainers);
-    setBusy(false);setEditingRemaining(false);
   };
   // Corrige directement le NOMBRE de contenants d'une taille donnée en réserve (pas
   // d'estimation à partir du stock en cl — que la vraie valeur saisie ici ou via
   // Entrée rapide).
   const doSetReserve=async(choice,newCount)=>{
     if(isNaN(newCount)||newCount<0)return;
-    setBusy(true);
     const r=await apiWrite(caisseUrl,{action:"setReserveCount",site:siteId,id:prod.id,label:choice.label,size:choice.size,count:newCount});
     if(r.ok){
       setReserve(prev=>{
@@ -3147,6 +3147,27 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
         return[...prev,{site:siteId,productId:prod.id,label:choice.label,size:choice.size,count:newCount}];
       });
     }
+  };
+
+  const hasChanges=presets.some(c=>{
+    if(!(c.label in pendingCounts))return false;
+    const current=containerAvailable(reserve,0,siteId,prod.id,c.label,c.size);
+    return pendingCounts[c.label]!==current;
+  })||(pendingRemaining!=null&&cont&&pendingRemaining!==cont.remaining);
+
+  const saveAll=async()=>{
+    if(!hasChanges||busy)return;
+    setBusy(true);
+    for(const c of presets){
+      if(c.label in pendingCounts){
+        const current=containerAvailable(reserve,0,siteId,prod.id,c.label,c.size);
+        if(pendingCounts[c.label]!==current)await doSetReserve(c,pendingCounts[c.label]);
+      }
+    }
+    if(pendingRemaining!=null&&cont&&pendingRemaining!==cont.remaining){
+      await doAdjust(pendingRemaining);
+    }
+    setPendingCounts({});setPendingRemaining(null);
     setBusy(false);
   };
 
@@ -3168,11 +3189,10 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
       return(<div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"5px 0",borderBottom:i<presets.length-1?`1px solid ${T.border}`:"none"}}>
         <span style={{fontSize:12,color:T.dark,fontWeight:600}}>{c.label}</span>
         <div style={{display:"flex",alignItems:"center",gap:7}}>
-          <input type="number" min="0" key={prod.id+"_"+c.label+"_"+n} defaultValue={n}
-            onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v)&&v!==n)doSetReserve(c,v);}}
-            onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
+          <input type="number" min="0" value={c.label in pendingCounts?pendingCounts[c.label]:n}
+            onChange={e=>{const v=parseInt(e.target.value,10);setPendingCounts(prev=>({...prev,[c.label]:isNaN(v)?0:v}));}}
             disabled={busy}
-            style={{width:46,padding:"3px 5px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:12,textAlign:"center"}}/>
+            style={{width:46,padding:"3px 5px",border:`1px solid ${(c.label in pendingCounts)&&pendingCounts[c.label]!==n?T.orange:T.border}`,borderRadius:6,fontSize:12,textAlign:"center"}}/>
           <span style={{fontSize:10,color:T.mid}}>en stock</span>
           {!isOpenOne&&<button disabled={busy||n===0} onClick={()=>doOpen(c)}
             style={{padding:"5px 9px",background:n===0?"#ccc":T.green,color:"white",border:"none",borderRadius:7,cursor:(busy||n===0)?"default":"pointer",fontWeight:600,fontSize:11}}>
@@ -3185,26 +3205,26 @@ function InlineContainerPanel({prod,siteId,caisseUrl,containers,setContainers,re
     {cont&&<div style={{marginTop:8}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <span style={{fontSize:12,fontWeight:700,color:T.dark}}>🔓 {cont.label} — ouvert</span>
-        {editingRemaining?
-          <div style={{display:"flex",alignItems:"center",gap:5}}>
-            <input type="number" defaultValue={cont.remaining} autoFocus
-              onBlur={e=>doAdjust(parseInt(e.target.value,10))}
-              onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape")setEditingRemaining(false);}}
-              style={{width:60,padding:"3px 6px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:12,textAlign:"center"}}/>
-            <span style={{fontSize:11,color:T.mid}}>/{cont.size}{prod.unit}</span>
-          </div>
-          :<button onClick={()=>setEditingRemaining(true)} disabled={busy} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:T.blue,fontWeight:600}}>
-            {cont.remaining}/{cont.size}{prod.unit} ✏️
-          </button>}
+        <div style={{display:"flex",alignItems:"center",gap:5}}>
+          <input type="number" value={pendingRemaining!=null?pendingRemaining:cont.remaining}
+            onChange={e=>{const v=parseInt(e.target.value,10);setPendingRemaining(isNaN(v)?0:v);}}
+            disabled={busy}
+            style={{width:60,padding:"3px 6px",border:`1px solid ${pendingRemaining!=null&&pendingRemaining!==cont.remaining?T.orange:T.border}`,borderRadius:6,fontSize:12,textAlign:"center"}}/>
+          <span style={{fontSize:11,color:T.mid}}>/{cont.size}{prod.unit}</span>
+        </div>
       </div>
       <div style={{height:10,background:T.border,borderRadius:5,overflow:"hidden",marginBottom:6}}>
         <div style={{height:"100%",width:pct+"%",background:gaugeColor,transition:"width .3s"}}/>
       </div>
-      <div style={{fontSize:10,color:T.mid,marginBottom:8}}>Ouvert le {cont.openedAt} — touchez le chiffre pour corriger directement la jauge</div>
-      <button onClick={doClose} disabled={busy} style={{width:"100%",padding:"8px",background:busy?"#eee":T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:busy?"default":"pointer",fontWeight:600,fontSize:12,color:T.dark}}>
+      <div style={{fontSize:10,color:T.mid,marginBottom:8}}>Ouvert le {cont.openedAt} — modifiez le chiffre puis "Enregistrer" pour corriger la jauge</div>
+      <button onClick={doClose} disabled={busy} style={{width:"100%",padding:"8px",background:busy?"#eee":T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:busy?"default":"pointer",fontWeight:600,fontSize:12,color:T.dark,marginBottom:8}}>
         {busy?"⏳...":"🏁 Terminer ce contenant"}
       </button>
     </div>}
+    <button onClick={saveAll} disabled={!hasChanges||busy}
+      style={{width:"100%",padding:"10px",background:(!hasChanges||busy)?"#ccc":T.red,color:"white",border:"none",borderRadius:8,cursor:(!hasChanges||busy)?"default":"pointer",fontWeight:700,fontSize:13,marginTop:4}}>
+      {busy?"⏳ Enregistrement...":"💾 Enregistrer"}
+    </button>
     </div>
   </div>);
 }
@@ -3246,9 +3266,10 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
         const isCollapsed=collapsedCats.has(cat);
         return(<div key={cat} style={{marginBottom:14}}>
         <button onClick={()=>setCollapsedCats(prev=>{const next=new Set(prev);if(next.has(cat))next.delete(cat);else next.add(cat);return next;})}
-          style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"6px 2px",background:"none",border:"none",cursor:"pointer",marginBottom:6}}>
-          <span style={{fontSize:11,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:1}}>{cat}</span>
-          <span style={{fontSize:11,color:T.mid,transform:isCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform .15s"}}>▾</span>
+          style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"9px 12px",background:"#8E8E93",color:"white",
+            border:"none",borderRadius:10,cursor:"pointer",marginBottom:isCollapsed?0:8}}>
+          <span style={{fontWeight:700,fontSize:13}}>{cat}</span>
+          <span style={{fontSize:12,transform:isCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform .15s"}}>▾</span>
         </button>
         {!isCollapsed&&<div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
           {products.filter(p=>p.cat===cat).flatMap((prod,idx,arr)=>{
@@ -4279,7 +4300,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       const isCollapsed=collapsedCats.has(cat.name);
       return(<div key={cat.name} style={{marginBottom:10}}>
         <button onClick={()=>setCollapsedCats(prev=>{const next=new Set(prev);if(next.has(cat.name))next.delete(cat.name);else next.add(cat.name);return next;})}
-          style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"9px 12px",background:T.dark,color:"white",
+          style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"9px 12px",background:"#8E8E93",color:"white",
             border:"none",borderRadius:10,cursor:"pointer",marginBottom:isCollapsed?0:8}}>
           <span style={{fontWeight:700,fontSize:13}}>{cat.name} <span style={{opacity:.65,fontWeight:600}}>({catProducts.length})</span></span>
           <span style={{fontSize:12,transform:isCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform .15s"}}>▾</span>
