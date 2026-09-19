@@ -1924,7 +1924,7 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
   const paidTotal=cart.reduce((s,i)=>s+(i.free?0:i.price*i.qty),0);
   // Montant remis pré-rempli avec le total exact (cas le plus fréquent) — modifiable
   // si le client donne un billet plus gros.
-  const [given,setGiven]=useState(paidTotal.toFixed(2));const [checkN,setCheckN]=useState("");
+  const [given,setGiven]=useState(paidTotal.toFixed(2));const [checkN,setCheckN]=useState("");const [checkBank,setCheckBank]=useState("");
   const [submitting,setSubmitting]=useState(false); // anti double-clic / double-encaissement
   const ov={position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"};
   const sh={background:T.card,borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,padding:"20px 18px 34px",maxHeight:"92vh",overflowY:"auto"};
@@ -1966,12 +1966,14 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
           <div style={{fontSize:38,fontWeight:900,fontVariantNumeric:"tabular-nums"}}>{fmt(paidTotal)}</div>
           <div style={{fontSize:12,opacity:.65,marginTop:2}}>{site.name} • {cart.reduce((s,i)=>s+i.qty,0)} article(s)</div>
         </div>
-        {/* Diviser la note */}
-        <button onClick={openSplit} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",
-          background:"#F0F4FF",border:`2px dashed ${T.blue}`,borderRadius:13,cursor:"pointer",marginBottom:12,textAlign:"left"}}>
-          <div style={{width:46,height:46,borderRadius:12,background:T.blue,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>🔢</div>
-          <div><div style={{fontWeight:700,fontSize:15,color:T.dark}}>Diviser la note</div>
-            <div style={{fontSize:12,color:T.mid}}>Parts égales ou montants personnalisés</div></div>
+        <PaymentOptionButton e="💵" l="Espèces" s="Calcul automatique de la monnaie" c={T.green} onClick={()=>setStep("cash")}/>
+        <PaymentOptionButton e="💳" l={submitting?"⏳ Validation...":"Carte Bleue — SumUp"} s="Lance directement le TPE SumUp" c="#5856D6" onClick={handleSumUp} disabled={submitting}/>
+        {/* Consos offertes match (joueurs/dirigeants/arbitres) */}
+        <button onClick={()=>setStep("matchOffert")} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",
+          background:"#E8F5E9",border:`2px dashed ${T.green}`,borderRadius:13,cursor:"pointer",marginBottom:12,textAlign:"left"}}>
+          <div style={{width:46,height:46,borderRadius:12,background:T.green,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>⚽</div>
+          <div style={{flex:1}}><div style={{fontWeight:700,fontSize:15,color:T.dark}}>Consos offertes match</div>
+            <div style={{fontSize:12,color:T.mid}}>Joueurs, dirigeants, arbitres — gratuit</div></div>
         </button>
         {/* Carte boissons */}
         {drinkItems.length>0&&<button onClick={openBoissons} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",
@@ -1981,16 +1983,14 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
             <div style={{fontSize:12,color:T.mid}}>{drinkItems.length} boisson(s) éligible(s)</div></div>
           {freeItems.length>0&&<span style={{background:T.green,color:"white",borderRadius:8,padding:"2px 8px",fontSize:12,fontWeight:700}}>{freeItems.length} offertes</span>}
         </button>}
-        {/* Consos offertes match (joueurs/dirigeants/arbitres) */}
-        <button onClick={()=>setStep("matchOffert")} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",
-          background:"#E8F5E9",border:`2px dashed ${T.green}`,borderRadius:13,cursor:"pointer",marginBottom:12,textAlign:"left"}}>
-          <div style={{width:46,height:46,borderRadius:12,background:T.green,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>⚽</div>
-          <div style={{flex:1}}><div style={{fontWeight:700,fontSize:15,color:T.dark}}>Consos offertes match</div>
-            <div style={{fontSize:12,color:T.mid}}>Joueurs, dirigeants, arbitres — gratuit</div></div>
+        <PaymentOptionButton e="📝" l="Chèque" s="Saisir numéro de chèque et banque" c={T.blue} onClick={()=>setStep("check")}/>
+        {/* Diviser la note */}
+        <button onClick={openSplit} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",
+          background:"#F0F4FF",border:`2px dashed ${T.blue}`,borderRadius:13,cursor:"pointer",marginBottom:12,textAlign:"left"}}>
+          <div style={{width:46,height:46,borderRadius:12,background:T.blue,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>🔢</div>
+          <div><div style={{fontWeight:700,fontSize:15,color:T.dark}}>Diviser la note</div>
+            <div style={{fontSize:12,color:T.mid}}>Parts égales ou montants personnalisés</div></div>
         </button>
-        <PaymentOptionButton e="💵" l="Espèces" s="Calcul automatique de la monnaie" c={T.green} onClick={()=>setStep("cash")}/>
-        <PaymentOptionButton e="📝" l="Chèque" s="Saisir numéro de chèque" c={T.blue} onClick={()=>setStep("check")}/>
-        <PaymentOptionButton e="💳" l={submitting?"⏳ Validation...":"Carte Bleue — SumUp"} s="Lance directement le TPE SumUp" c="#5856D6" onClick={handleSumUp} disabled={submitting}/>
       </>}
       {step==="matchOffert"&&<>
         <button onClick={()=>setStep("select")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
@@ -2039,8 +2039,11 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
         </div>
         <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>N° chèque (optionnel)</label>
         <input value={checkN} onChange={e=>setCheckN(e.target.value)} placeholder="Ex: 1234567"
+          style={{width:"100%",padding:"13px",fontSize:15,border:`2px solid ${T.border}`,borderRadius:12,marginBottom:10,outline:"none"}}/>
+        <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Banque (optionnel)</label>
+        <input value={checkBank} onChange={e=>setCheckBank(e.target.value)} placeholder="Ex: Crédit Agricole"
           style={{width:"100%",padding:"13px",fontSize:15,border:`2px solid ${T.border}`,borderRadius:12,marginBottom:14,outline:"none"}}/>
-        <button onClick={()=>submit({type:"check",num:checkN})} disabled={submitting}
+        <button onClick={()=>submit({type:"check",num:checkN,bank:checkBank})} disabled={submitting}
           style={{width:"100%",padding:15,background:submitting?"#ccc":T.blue,color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:submitting?"default":"pointer"}}>{submitting?"⏳ Validation...":"✓ Valider"}</button>
       </>}
     </div>
@@ -2055,7 +2058,7 @@ function SplitModal({total,boissonsUrl,onClose,onComplete}){
   const [payments,setPayments]=useState([]); // [{idx,type,amount,given,change,checkNum,member}]
   const [activeIdx,setActiveIdx]=useState(null);
   const [step,setStep]=useState("select");
-  const [given,setGiven]=useState("");const [checkN,setCheckN]=useState("");
+  const [given,setGiven]=useState("");const [checkN,setCheckN]=useState("");const [checkBank,setCheckBank]=useState("");
   const [completing,setCompleting]=useState(false); // anti double-clic sur le dernier paiement
   // Carte boissons ANF 87, pour la part de la personne en cours
   const [bName,setBName]=useState("");const [bInfo,setBInfo]=useState(null);const [bLoading,setBLoading]=useState(false);
@@ -2177,21 +2180,21 @@ function SplitModal({total,boissonsUrl,onClose,onComplete}){
             <div style={{width:40,height:40,borderRadius:10,background:T.green,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>💵</div>
             <div style={{fontWeight:700,fontSize:14,color:T.dark}}>Espèces</div>
           </button>
-          <button onClick={()=>setStep("check")} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:"pointer",marginBottom:9,textAlign:"left"}}>
-            <div style={{width:40,height:40,borderRadius:10,background:T.blue,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>📝</div>
-            <div style={{fontWeight:700,fontSize:14,color:T.dark}}>Chèque</div>
-          </button>
-          <button onClick={()=>confirmPayment("cb")} disabled={completing} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:completing?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:completing?"default":"pointer",textAlign:"left",opacity:completing?.6:1}}>
+          <button onClick={()=>confirmPayment("cb")} disabled={completing} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:completing?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:completing?"default":"pointer",marginBottom:9,textAlign:"left",opacity:completing?.6:1}}>
             <div style={{width:40,height:40,borderRadius:10,background:"#5856D6",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>💳</div>
             <div style={{fontWeight:700,fontSize:14,color:T.dark}}>{completing?"⏳ Validation...":"Carte Bleue"}</div>
+          </button>
+          <button onClick={()=>confirmPayment("matchOffert")} disabled={completing} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:completing?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:completing?"default":"pointer",marginBottom:9,textAlign:"left",opacity:completing?.6:1}}>
+            <div style={{width:40,height:40,borderRadius:10,background:"#FF9500",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>⚽</div>
+            <div style={{fontWeight:700,fontSize:14,color:T.dark}}>{completing?"⏳ Validation...":"Consos offertes match"}</div>
           </button>
           <button onClick={()=>{setStep("boissons");setBName("");setBInfo(null);}} disabled={completing} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:completing?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:completing?"default":"pointer",marginBottom:9,textAlign:"left",opacity:completing?.6:1}}>
             <div style={{width:40,height:40,borderRadius:10,background:T.orange,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>🍺</div>
             <div style={{fontWeight:700,fontSize:14,color:T.dark}}>Carte boissons ANF 87</div>
           </button>
-          <button onClick={()=>confirmPayment("matchOffert")} disabled={completing} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:completing?"#f0f0f0":T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:completing?"default":"pointer",textAlign:"left",opacity:completing?.6:1}}>
-            <div style={{width:40,height:40,borderRadius:10,background:"#FF9500",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>⚽</div>
-            <div style={{fontWeight:700,fontSize:14,color:T.dark}}>{completing?"⏳ Validation...":"Consos offertes match"}</div>
+          <button onClick={()=>setStep("check")} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:"pointer",marginBottom:9,textAlign:"left"}}>
+            <div style={{width:40,height:40,borderRadius:10,background:T.blue,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>📝</div>
+            <div style={{fontWeight:700,fontSize:14,color:T.dark}}>Chèque</div>
           </button>
         </>}
         {step==="boissons"&&<>
@@ -2236,8 +2239,11 @@ function SplitModal({total,boissonsUrl,onClose,onComplete}){
         {step==="check"&&<>
           <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>N° chèque (optionnel)</label>
           <input value={checkN} onChange={e=>setCheckN(e.target.value)} placeholder="Ex: 1234567"
+            style={{width:"100%",padding:"13px",fontSize:15,border:`2px solid ${T.border}`,borderRadius:12,marginBottom:10,outline:"none"}}/>
+          <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Banque (optionnel)</label>
+          <input value={checkBank} onChange={e=>setCheckBank(e.target.value)} placeholder="Ex: Crédit Agricole"
             style={{width:"100%",padding:"13px",fontSize:15,border:`2px solid ${T.border}`,borderRadius:12,marginBottom:14,outline:"none"}}/>
-          <button onClick={()=>confirmPayment("check",{checkNum:checkN})} disabled={completing} style={{width:"100%",padding:14,background:completing?"#ccc":T.blue,color:"white",border:"none",borderRadius:12,fontWeight:700,fontSize:15,cursor:completing?"default":"pointer"}}>{completing?"⏳ Validation...":"✓ Valider"}</button>
+          <button onClick={()=>confirmPayment("check",{checkNum:checkN,checkBank})} disabled={completing} style={{width:"100%",padding:14,background:completing?"#ccc":T.blue,color:"white",border:"none",borderRadius:12,fontWeight:700,fontSize:15,cursor:completing?"default":"pointer"}}>{completing?"⏳ Validation...":"✓ Valider"}</button>
         </>}
         </>
       )}
@@ -3801,7 +3807,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
   let payType=null,payDetail=null; try{const pj=JSON.parse(sale.payment||"{}");payType=pj.type;payDetail=pj;}catch{}
   const [editedPayment,setEditedPayment]=useState(payType||"cash");
   const payLabel={cash:"💵 Espèces",cb:"💳 Carte Bleue",check:"📝 Chèque",split:"🔢 Note divisée",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes"}[payType]||"—";
-  const paySimpleOptions=[["cash","💵 Espèces"],["cb","💳 Carte Bleue"],["check","📝 Chèque"],["matchOffert","⚽ Offert match"]];
+  const paySimpleOptions=[["cash","💵 Espèces"],["cb","💳 Carte Bleue"],["matchOffert","⚽ Offert match"],["check","📝 Chèque"]];
 
   // Prix d'une ligne au tarif ACTUEL du catalogue : pour un produit au volume, qty
   // représente des cl (pas un nombre d'unités) — même logique que "Recommencer cette
