@@ -734,6 +734,12 @@ const isDepositProduct=(products,productId)=>
 // prix "de base" du produit — pas aux portions (Demi/Pichet...) qui ont leur propre
 // prix fixe indépendant.
 const effectivePrice=(p,happyHourActive)=>(happyHourActive&&p.happyPrice>0)?p.happyPrice:p.price;
+// Un produit est vendu sur un site si sa liste "siteAvailability" est vide (par
+// défaut : vendu partout) ou si elle contient explicitement ce site.
+const isAvailableAtSite=(p,siteId)=>{
+  const list=(p.siteAvailability||"").split(",").map(s=>s.trim()).filter(Boolean);
+  return list.length===0||list.includes(siteId);
+};
 // Propose des montants remis réalistes (vraies pièces/billets), plutôt que des
 // arrondis arbitraires : pour chaque coupure réelle, le plus petit multiple qui
 // couvre le total — donne les montants qu'on paierait vraiment avec une seule sorte
@@ -1525,7 +1531,7 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
   // ne pas l'encombrer — un bouton permet de les faire réapparaître au besoin.
   const [showFree,setShowFree]=useState(false);
   const hiddenFreeCount=products.filter(p=>+p.price===0&&(cat==="Tout"||p.cat===cat)).length;
-  const filteredRaw=products.filter(p=>(cat==="Tout"||p.cat===cat)&&(showFree||+p.price!==0));
+  const filteredRaw=products.filter(p=>(cat==="Tout"||p.cat===cat)&&(showFree||+p.price!==0)&&isAvailableAtSite(p,siteId));
   // Glisser-déposer pour réorganiser : on insère le produit déplacé juste à l'endroit
   // où le doigt est relâché, plutôt que de ne pouvoir échanger qu'avec le voisin direct.
   const [dragId,setDragId]=useState(null);
@@ -3347,7 +3353,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
     const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[site]:Math.max(0,newQty)}});
     onSave(upd);if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:prod.id,site,qty:Math.max(0,newQty),mode:"set"});
   };
-  const cats=[...new Set(products.map(p=>p.cat))].sort((a,b)=>a.localeCompare(b,"fr"));
+  const cats=[...new Set(products.filter(p=>isAvailableAtSite(p,siteId)).map(p=>p.cat))].sort((a,b)=>a.localeCompare(b,"fr"));
   return(<div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{padding:"10px 14px",background:T.card,borderBottom:`1px solid ${T.border}`,display:"flex",gap:7,overflowX:"auto",flexShrink:0}}>
       {sites.map(s=><button key={s.id} onClick={()=>setSiteId(s.id)} style={{flexShrink:0,padding:"7px 14px",borderRadius:20,
@@ -3368,7 +3374,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
           <span style={{fontSize:12,transform:isCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform .15s"}}>▾</span>
         </button>
         {!isCollapsed&&<div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
-          {products.filter(p=>p.cat===cat).sort((a,b)=>a.name.localeCompare(b.name,"fr")).flatMap((prod,idx,arr)=>{
+          {products.filter(p=>p.cat===cat&&isAvailableAtSite(p,siteId)).sort((a,b)=>a.name.localeCompare(b.name,"fr")).flatMap((prod,idx,arr)=>{
             const needsContainerPanel=prod.sellByVolume&&parseContainers(prod.containers).length>0;
             const cont=needsContainerPanel?containers.find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString()):null;
             const gaugePct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
@@ -4138,7 +4144,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
   </div>);
 }
 
-function ProdForm({data,setData,onSubmit,label,categories,products,handlePhoto,onManagePortions,onManageAccompaniments,busy}){
+function ProdForm({data,setData,onSubmit,label,categories,products,sites,handlePhoto,onManagePortions,onManageAccompaniments,busy}){
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const videoRef=useRef(null);const readerRef=useRef(null);const camIdRef=useRef(null);
   const [scanningBarcode,setScanningBarcode]=useState(false);
@@ -4208,6 +4214,21 @@ function ProdForm({data,setData,onSubmit,label,categories,products,handlePhoto,o
       <select value={data.cat} onChange={e=>setData({...data,cat:e.target.value})} style={{...inp}}>
         {categories.map(c=><option key={c.id}>{c.name}</option>)}
       </select>
+      <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>📍 Vendu sur (touchez pour exclure un site — tous cochés par défaut)</label>
+      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:9}}>
+        {(sites||[]).map(s=>{
+          const list=(data.siteAvailability||"").split(",").map(x=>x.trim()).filter(Boolean);
+          const checked=list.length===0||list.includes(s.id);
+          return(<button key={s.id} type="button" onClick={()=>{
+            const allIds=(sites||[]).map(x=>x.id);
+            let current=list.length===0?allIds.slice():list;
+            current=current.includes(s.id)?current.filter(x=>x!==s.id):[...current,s.id];
+            setData({...data,siteAvailability:current.length===allIds.length?"":current.join(",")});
+          }} style={{padding:"6px 10px",borderRadius:16,border:`1px solid ${checked?s.color:T.border}`,background:checked?s.color:"white",color:checked?"white":T.dark,fontSize:11,fontWeight:600,cursor:"pointer"}}>
+            {s.name}
+          </button>);
+        })}
+      </div>
       <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>🎉 Prix Happy Hour (optionnel — 0 = pas de tarif spécial)</label>
       <input type="number" step="0.01" min="0" value={data.happyPrice||""} onChange={e=>setData({...data,happyPrice:+e.target.value||0})} placeholder="ex: 1.50" style={{...inp}}/>
       <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>🔄 Ce produit est un retour de consigne pour :</label>
@@ -4404,7 +4425,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   const delProd=async(id)=>{if(!(await customConfirm("Supprimer ?"))||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});setSaving(false);};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
-    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
+    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,siteAvailability:p.siteAvailability||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
   // Le prix d'achat/vente d'un produit au volume est saisi PAR PORTION (ex: 0,90€
   // l'achat d'un verre de 25cl), mais son stock est compté en cl (ex: 3000cl pour un
@@ -4429,7 +4450,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     </div>
     {valueDetail&&<StockValueDetailModal mode={valueDetail} products={products} sites={sites} caisseUrl={caisseUrl}
       unitCost={unitCost} unitSell={unitSell} flattenProd={flattenProd} onSave={onSave} onClose={()=>setValueDetail(null)}/>}
-    <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} products={products} handlePhoto={handlePhoto} busy={saving}/>
+    <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} products={products} sites={sites} handlePhoto={handlePhoto} busy={saving}/>
     {[...categories.filter(c=>products.some(p=>p.cat===c.name)),
       ...(products.some(p=>!categories.some(c=>c.name===p.cat))?[{name:"Autres"}]:[])]
       .sort((a,b)=>a.name.localeCompare(b.name,"fr")).map(cat=>{
@@ -4455,6 +4476,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
               <div style={{fontSize:11,color:T.mid,textAlign:"center"}}>{fmt(p.price)}{p.drink?" 🍺":""}{p.sellByVolume?" •"+p.unit:""}</div>
               {p.barcode&&<div style={{fontSize:9,color:T.mid}}>🏷 {p.barcode}</div>}
               {isDepositProduct(products,p.id)&&<div style={{fontSize:9,color:T.orange}}>🔄 {(deposits||[]).filter(d=>d.productId.toString()===p.id.toString()).reduce((s,d)=>s+d.count,0)} dehors</div>}
+              {p.siteAvailability&&<div style={{fontSize:9,color:T.blue,textAlign:"center"}}>📍 {p.siteAvailability.split(",").map(id=>sites.find(s=>s.id===id.trim())?.name||id).join(", ")}</div>}
               {p.costPrice>0&&<div style={{fontSize:9,color:margeUnit>=0?"#2E7D32":T.red,fontWeight:600,textAlign:"center"}}>
                 Marge {fmt(margeUnit)}{margePct!=null?` (${margePct.toFixed(0)}%)`:""}
               </div>}
@@ -4470,7 +4492,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>✏️ Modifier {edit.name}</div>
-        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} products={products} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)} onManageAccompaniments={p=>setAccompFor(p)} busy={saving}/>
+        <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} products={products} sites={sites} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)} onManageAccompaniments={p=>setAccompFor(p)} busy={saving}/>
         <button onClick={()=>setEdit(null)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:6}}>Annuler</button>
       </div>
     </div>}

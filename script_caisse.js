@@ -502,11 +502,13 @@ function getProductsData(ss){
   var sh=ss.getSheetByName("Produits"); if(!sh||sh.getLastRow()<=1)return [];
   var sites=getSitesData(ss); // pour associer chaque site à SA colonne de stock, dans l'ordre
   // Colonne Y (25) réservée à "Contenants", Z (26) à "Couleur", AA (27) à "ReturnFor"
-  // (retour de consigne), AB (28) à "HappyPrice" (prix Happy Hour) — volontairement
-  // loin des colonnes de stock des sites au-delà du 4e (qui démarrent à R=18 et
-  // peuvent grandir), pour ne jamais entrer en collision avec elles.
-  var CONTAINERS_COL=25, COLOR_COL=26, RETURNFOR_COL=27, HAPPYPRICE_COL=28;
-  var maxCol=Math.max(HAPPYPRICE_COL, sites.length>4 ? 18+(sites.length-4)-1 : 17);
+  // (retour de consigne), AB (28) à "HappyPrice" (prix Happy Hour), AC (29) à
+  // "SitesVendus" (IDs de sites séparés par virgule où le produit est vendu — vide =
+  // tous les sites) — volontairement loin des colonnes de stock des sites au-delà du
+  // 4e (qui démarrent à R=18 et peuvent grandir), pour ne jamais entrer en collision
+  // avec elles.
+  var CONTAINERS_COL=25, COLOR_COL=26, RETURNFOR_COL=27, HAPPYPRICE_COL=28, SITESVENDUS_COL=29;
+  var maxCol=Math.max(SITESVENDUS_COL, sites.length>4 ? 18+(sites.length-4)-1 : 17);
   return sh.getRange(2,1,sh.getLastRow()-1,maxCol).getValues()
     .filter(r=>r[0]).map(r=>{
       var stock={};
@@ -525,7 +527,8 @@ function getProductsData(ss){
         containers:(r[CONTAINERS_COL-1]||"").toString(),
         color:(r[COLOR_COL-1]||"").toString(),
         returnFor:(r[RETURNFOR_COL-1]||"").toString(),
-        happyPrice:+r[HAPPYPRICE_COL-1]||0
+        happyPrice:+r[HAPPYPRICE_COL-1]||0,
+        siteAvailability:(r[SITESVENDUS_COL-1]||"").toString()
       };
     });
 }
@@ -701,6 +704,7 @@ function saveProduct(e){
   var color=(p.color||"").toString();
   var returnFor=(p.returnFor||"").toString();
   var happyPrice=+p.happyPrice||0;
+  var siteAvailability=(p.siteAvailability||"").toString();
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
@@ -721,6 +725,7 @@ function saveProduct(e){
       sh.getRange(i+2,26).setValue(color);     // Z = Couleur de la jauge (comme les sites)
       sh.getRange(i+2,27).setValue(returnFor); // AA = Retour de consigne pour (ID du produit "consigne")
       sh.getRange(i+2,28).setValue(happyPrice);// AB = Prix Happy Hour
+      sh.getRange(i+2,29).setValue(siteAvailability);// AC = Sites où le produit est vendu (vide = tous)
       return{ok:true,action:"updated"};
     }}
   }
@@ -730,8 +735,9 @@ function saveProduct(e){
   var meta=[p.id,p.name,+p.price,p.cat,p.emoji,createPhoto,p.barcode||"",
     p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
   // Stock initialisé à 0 sur tous les sites (les 4 colonnes historiques L:O, plus une
-  // colonne par site au-delà du 4e, jusqu'aux colonnes Y=25/Z=26/AA=27/AB=28 réservées à
-  // Contenants/Couleur/ReturnFor/HappyPrice — donc jusqu'à 11 sites au total sans collision).
+  // colonne par site au-delà du 4e, jusqu'aux colonnes Y=25/Z=26/AA=27/AB=28/AC=29
+  // réservées à Contenants/Couleur/ReturnFor/HappyPrice/SitesVendus — donc jusqu'à 11
+  // sites au total sans collision).
   var nbSites=getSitesData(ss).length;
   var row=meta.slice();               // colonnes 1-11 (A:K)
   row.push(0,0,0,0);                  // colonnes 12-15 (L:O) — toujours réservées aux 4 premiers sites
@@ -739,11 +745,12 @@ function saveProduct(e){
   row.push(presets);                  // colonne 17 (Q)
   var extra=nbSites>4?nbSites-4:0;
   for(var s=0;s<extra;s++)row.push(0);// colonnes 18+ (R, S...) pour le 5e site et au-delà
-  while(row.length<27)row.push("");   // comble jusqu'à la colonne 27 si besoin
+  while(row.length<28)row.push("");   // comble jusqu'à la colonne 28 si besoin
   row[24]=containers;                 // colonne 25 (Y)
   row[25]=color;                      // colonne 26 (Z)
   row[26]=returnFor;                  // colonne 27 (AA)
   row[27]=happyPrice;                 // colonne 28 (AB)
+  row[28]=siteAvailability;           // colonne 29 (AC)
   sh.appendRow(row);
   sh.getRange(sh.getLastRow(),7).setNumberFormat("@"); // Codebarres en texte, même raison que ci-dessus
   return{ok:true,action:"created"};
