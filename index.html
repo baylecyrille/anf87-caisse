@@ -901,11 +901,16 @@ function App(){
   const [deposits,setDeposits]=useState(LS.get("anf87_deposits")||[]); // consignes actuellement chez les clients, par produit et par site
   const [siteId,setSiteId]=useState(LS.get("anf87_site")||"s1");
   const [tab,setTab]=useState("pos");
-  const [cart,setCart]=useState([]);
+  const [cart,setCart]=useState(()=>LS.get("anf87_cart")||[]);
   const [modal,setModal]=useState(null);
   const [currentUser,setCU]=useState(SS.get("anf87_user")||null);
   const [syncing,setSyncing]=useState(false);
   const [loggingOut,setLoggingOut]=useState(false); // bloque l'écran le temps de resynchroniser avant de revenir au code PIN
+  // Récupération après un plantage de l'appli SumUp : si un paiement CB a été lancé
+  // mais que l'appli a redémarré avant qu'on ait pu confirmer/annuler (voir
+  // handleSumUp), ce marqueur persiste et permet de reprendre la main au redémarrage,
+  // avec le panier intact (lui aussi désormais conservé en continu).
+  const [pendingCb,setPendingCb]=useState(()=>LS.get("anf87_pending_cb")||null);
   const [lastSync,setLastSync]=useState(LS.get("anf87_lastsync")||null);
   const [syncError,setSyncError]=useState(null);
   const [volumeProd,setVolumeProd]=useState(null); // produit à vendre au verre
@@ -939,6 +944,9 @@ function App(){
   const isAdmin=!users.length||currentUser?.role==="admin"||currentUser?.role==="test";
 
   useEffect(()=>{ if(caisseUrl)syncAll(); },[caisseUrl]);
+  // Panier conservé en continu (pas seulement en mémoire) : si l'appli SumUp plante
+  // et redémarre entièrement notre appli, le panier en cours n'est plus perdu.
+  useEffect(()=>{ LS.set("anf87_cart",cart); },[cart]);
 
   // Actualisation auto : toutes les 20s + au retour au premier plan (multi-appareils)
   useEffect(()=>{
@@ -1278,6 +1286,25 @@ function App(){
       </div>}
 
       <ModalHost/>
+      {pendingCb&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",zIndex:998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div style={{background:"white",borderRadius:16,padding:22,maxWidth:380,width:"100%",textAlign:"center"}}>
+          <div style={{fontSize:36,marginBottom:8}}>⚠️</div>
+          <div style={{fontWeight:800,fontSize:16,color:T.dark,marginBottom:6}}>Paiement CB non confirmé</div>
+          <div style={{fontSize:13,color:T.mid,marginBottom:18}}>
+            Un paiement de <b>{fmt(+pendingCb.amount)}</b> ({pendingCb.site}) a été lancé sur le TPE SumUp, mais l'appli n'a pas pu confirmer le résultat (probablement à cause d'un plantage de l'appli SumUp). Le client a-t-il réellement payé ?
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>{LS.set("anf87_pending_cb",null);setPendingCb(null);}}
+              style={{flex:1,padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,fontSize:13}}>
+              ❌ Non / Annuler
+            </button>
+            <button onClick={()=>{LS.set("anf87_pending_cb",null);setPendingCb(null);finalizeSale({type:"cb"});}}
+              style={{flex:1,padding:"12px",background:T.green,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13}}>
+              ✅ Oui, il a payé
+            </button>
+          </div>
+        </div>
+      </div>}
       {loggingOut&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:999,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14}}>
         <div style={{fontSize:40}}>⏳</div>
         <div style={{color:"white",fontWeight:700,fontSize:15}}>Synchronisation avant déconnexion...</div>
@@ -1983,8 +2010,17 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
     const returnUrl=encodeURIComponent(window.location.origin+window.location.pathname);
     let url=`sumupmerchant://pay/1.0?affiliate-key=${encodeURIComponent(sumupKey)}&total=${a}&currency=EUR&title=${desc}&foreign-tx-id=${txId}&callback=${returnUrl}&callbacksuccess=${returnUrl}&callbackfail=${returnUrl}`;
     if(sumupAppId)url+=`&app-id=${encodeURIComponent(sumupAppId)}`;
+    // Marqueur "paiement CB en attente" — survit même si l'appli SumUp plante et que
+    // notre appli redémarre entièrement (le panier est désormais aussi conservé, voir
+    // plus haut). Sans ce marqueur, un paiement réellement encaissé par le client
+    // pouvait ne jamais être enregistré chez nous si le retour ne se faisait pas.
+    LS.set("anf87_pending_cb",{amount:a,site:site.name,timestamp:Date.now()});
     window.location.href=url;
-    setTimeout(async()=>{if(await customConfirm("✅ Paiement CB confirmé par le TPE SumUp ?"))onDone({type:"cb"});else setSubmitting(false);},2000);
+    setTimeout(async()=>{
+      const confirmed=await customConfirm("✅ Paiement CB confirmé par le TPE SumUp ?");
+      LS.set("anf87_pending_cb",null);
+      if(confirmed)onDone({type:"cb"});else setSubmitting(false);
+    },2000);
   };
   const doCashPayment=g=>{if(submitting)return;if(isNaN(g)||g<paidTotal)return;setSubmitting(true);onDone({type:"cash",given:g,change:+(g-paidTotal).toFixed(2)});};
   const handleCash=()=>{doCashPayment(parseFloat(given.replace(",",".")));};
