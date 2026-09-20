@@ -1789,7 +1789,10 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         // Fusionne produits ET menus dans le même ordre personnalisé, pour pouvoir
         // aussi déplacer les menus n'importe où dans la grille (pas coincés à la fin).
         const productEntries=filteredRaw.map(p=>({id:p.id.toString(),els:buildProductTile(p)}));
-        const comboEntries=(cat==="Tout"||cat==="Menus")?combos.map(c=>({id:"combo-"+c.id,els:[buildComboTile(c)]})):[];
+        const comboEntries=(cat==="Tout"||cat==="Menus")?combos.filter(c=>c.items.every(it=>{
+            const prod=products.find(p=>p.id.toString()===it.productId.toString());
+            return prod&&isAvailableAtSite(prod,siteId);
+          })).map(c=>({id:"combo-"+c.id,els:[buildComboTile(c)]})):[];
         const allEntries=[...productEntries,...comboEntries];
         const orderedEntries=customOrder.length===0?allEntries:(()=>{
           const idx=id=>{const i=customOrder.indexOf(id);return i===-1?999999:i;};
