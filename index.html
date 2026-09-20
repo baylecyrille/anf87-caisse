@@ -3752,6 +3752,20 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
     :period==="calendar"&&selectedDay?sales.filter(s=>s.date===selectedDay)
     :period==="all"?sales:[];
   const totalCA=filtered.reduce((a,s)=>a+(+s.total||0),0);
+  const [showProductSummary,setShowProductSummary]=useState(false);
+  // Résumé produit par produit (toutes ventes de la période affichée confondues),
+  // trié du plus vendu au moins vendu — pour "combien de X ai-je vendu aujourd'hui".
+  const productSummary=(()=>{
+    const totals={}; // productId -> quantité cumulée (nb d'unités, ou cl pour le volume)
+    filtered.forEach(s=>{
+      let items=[]; try{items=JSON.parse(s.items||"[]");}catch{}
+      items.forEach(it=>{ totals[it.id]=(totals[it.id]||0)+(+it.qty||0); });
+    });
+    return Object.entries(totals).map(([id,qty])=>{
+      const prod=products.find(p=>p.id.toString()===id.toString());
+      return{id,prod,qty};
+    }).sort((a,b)=>b.qty-a.qty);
+  })();
   const bySite=sites.map(s=>({...s,ca:filtered.filter(v=>v.siteId===s.id).reduce((a,v)=>a+(+v.total||0),0),nb:filtered.filter(v=>v.siteId===s.id).length}));
 
   // Grille du mois affiché (calendrier)
@@ -3834,11 +3848,11 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
     </>}
 
     {(period!=="calendar"||selectedDay)&&<>
-      <div style={{background:T.red,borderRadius:14,padding:"18px 16px",marginBottom:14,color:"white"}}>
+      <button onClick={()=>filtered.length>0&&setShowProductSummary(true)} style={{width:"100%",textAlign:"left",background:T.red,borderRadius:14,padding:"18px 16px",marginBottom:14,color:"white",border:"none",cursor:filtered.length>0?"pointer":"default"}}>
         <div style={{fontSize:11,opacity:.75,marginBottom:2}}>{period==="calendar"?selectedDay:"CHIFFRE D'AFFAIRES"}</div>
         <div style={{fontSize:36,fontWeight:900}}>{fmt(totalCA)}</div>
-        <div style={{fontSize:12,opacity:.65}}>{filtered.length} vente(s)</div>
-      </div>
+        <div style={{fontSize:12,opacity:.65}}>{filtered.length} vente(s){filtered.length>0?" • toucher pour le détail produits":""}</div>
+      </button>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:16}}>
         {bySite.map(s=><div key={s.id} style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`}}>
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
@@ -3864,6 +3878,32 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
       onClose={()=>setOpenSale(null)} onReorder={reorder}
       onSaleUpdated={updated=>{ setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s)); setOpenSale(updated); }}
       onSaleDeleted={id=>{ setSales(prev=>prev.filter(s=>s.id!==id)); setOpenSale(null); }}/>}
+
+    {showProductSummary&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:230,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}
+      onClick={e=>e.target===e.currentTarget&&setShowProductSummary(false)}>
+      <div style={{background:T.card,borderRadius:18,padding:20,width:"100%",maxWidth:420,maxHeight:"85vh",display:"flex",flexDirection:"column"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+          <div style={{fontWeight:800,fontSize:16,color:T.dark}}>📦 Détail produits — {period==="calendar"?selectedDay:period==="all"?"Tout":"Aujourd'hui"}</div>
+          <button onClick={()=>setShowProductSummary(false)} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>
+        </div>
+        <div style={{fontSize:12,color:T.mid,marginBottom:12}}>{filtered.length} vente(s) • du plus au moins vendu</div>
+        <div style={{overflowY:"auto",flex:1}}>
+          {productSummary.map(({id,prod,qty})=>(
+            <div key={id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
+              {prod?.photo?<img src={prod.photo} style={{width:34,height:34,borderRadius:7,objectFit:"cover",flexShrink:0}}/>
+                :<span style={{fontSize:24,flexShrink:0}}>{prod?.emoji||"🏷"}</span>}
+              <div style={{flex:1,fontSize:13,color:T.dark,fontWeight:600}}>{prod?.name||"(produit supprimé, ID "+id+")"}</div>
+              <div style={{fontSize:14,fontWeight:800,color:T.dark}}>
+                {prod?.sellByVolume
+                  ?`×${Math.round(qty/(prod.baseQty||1))} (${qty}${prod.unit||"cl"})`
+                  :`×${qty}`}
+              </div>
+            </div>
+          ))}
+          {productSummary.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Aucun produit vendu.</div>}
+        </div>
+      </div>
+    </div>}
   </div>);
 }
 
