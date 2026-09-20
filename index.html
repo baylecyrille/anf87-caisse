@@ -734,6 +734,10 @@ const isDepositProduct=(products,productId)=>
 // prix "de base" du produit — pas aux portions (Demi/Pichet...) qui ont leur propre
 // prix fixe indépendant.
 const effectivePrice=(p,happyHourActive)=>(happyHourActive&&p.happyPrice>0)?p.happyPrice:p.price;
+// Prix d'achat ramené à l'unité vendue : pour un produit au volume, le prix d'achat
+// est saisi PAR PORTION DE BASE (ex: 0,90€ le fût de 25cl), donc il faut le ramener
+// au cl avant de comparer/multiplier avec des quantités elles aussi en cl.
+const unitCost=p=>p.sellByVolume?(p.costPrice||0)/(p.baseQty||1):(p.costPrice||0);
 // Un produit est vendu sur un site si sa liste "siteAvailability" est vide (par
 // défaut : vendu partout) ou si elle contient explicitement ce site.
 const isAvailableAtSite=(p,siteId)=>{
@@ -3911,6 +3915,23 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
           ))}
           {productSummary.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Aucun produit vendu.</div>}
         </div>
+        {productSummary.length>0&&(()=>{
+          const totalCost=productSummary.reduce((s,{prod,qty})=>s+(prod?unitCost(prod)*qty:0),0);
+          const profit=totalCA-totalCost;
+          return(<div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${T.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:T.mid,marginBottom:3}}>
+              <span>Ventes</span><span>{fmt(totalCA)}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:T.mid,marginBottom:8}}>
+              <span>Prix d'achat des produits vendus</span><span>− {fmt(totalCost)}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:profit>=0?"#E8F5E9":"#FFF0F0",borderRadius:10,padding:"10px 12px"}}>
+              <span style={{fontSize:13,fontWeight:700,color:profit>=0?"#2E7D32":T.red}}>💰 Bénéfice</span>
+              <span style={{fontSize:17,fontWeight:900,color:profit>=0?"#2E7D32":T.red}}>{fmt(profit)}</span>
+            </div>
+            <div style={{fontSize:10,color:T.mid,marginTop:4,fontStyle:"italic"}}>Basé sur le prix d'achat renseigné dans chaque fiche produit — un produit sans prix d'achat compte pour 0€ d'achat.</div>
+          </div>);
+        })()}
       </div>
     </div>}
   </div>);
@@ -4435,7 +4456,6 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   // fût) — deux unités différentes. Sans ramener le prix "au cl" avant de multiplier
   // par le stock, la valeur calculée était gonflée d'un facteur ~baseQty (25 à 30
   // fois trop élevée pour un produit vendu au verre de 25-30cl).
-  const unitCost=p=>p.sellByVolume?(p.costPrice||0)/(p.baseQty||1):(p.costPrice||0);
   const unitSell=p=>p.sellByVolume?(p.price||0)/(p.baseQty||1):(p.price||0);
   const totalStockValue=products.reduce((s,p)=>s+unitCost(p)*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
   const totalPotentialMargin=products.reduce((s,p)=>s+(unitSell(p)-unitCost(p))*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
