@@ -3388,7 +3388,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
             const gaugeColor=prod.color||T.orange;
             const stk=prod.stock[siteId]||0;
             const totalStock=Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0);
-            const isEmpty=totalStock<=0; // grisé + ligne compacte uniquement quand il n'y a plus rien nulle part
+            const isEmpty=stk<=0; // grisé + ligne compacte dès que le stock est à 0 sur CE site (même s'il y en a ailleurs)
             const photoSz=isEmpty?32:40, plainPhotoSz=isEmpty?24:28, emojiSz=isEmpty?18:24, plainEmojiSz=isEmpty?18:22;
             const nameFs=isEmpty?12:13, priceFs=isEmpty?10:11, badgeFs=isEmpty?9:10;
             const badgeSz=isEmpty?20:24, totalW=isEmpty?34:40, totalH=isEmpty?20:24;
