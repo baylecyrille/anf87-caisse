@@ -424,7 +424,7 @@ function getCombosData(ss){
   return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0]).map(r=>{
     var items=(r[3]||"").toString().split(",").map(function(pair){
       var parts=pair.split(":");
-      return{productId:(parts[0]||"").trim(),qty:+parts[1]||1};
+      return{productId:(parts[0]||"").trim(),qty:+parts[1]||1,portionId:(parts[2]||"").trim()};
     }).filter(function(it){return it.productId;});
     return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||""};
   });

@@ -3489,7 +3489,7 @@ function MemberCardPreview({member,boissonsUrl,onClose}){
   </div>);
 }
 
-function CombosAdmin({products,combos,setCombos,caisseUrl}){
+function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
   const [edit,setEdit]=useState(null); // combo en cours d'édition, ou {} pour nouveau
   const [busy,setBusy]=useState(false);
 
@@ -3498,9 +3498,21 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
 
   const addItem=()=>{
     if(!products.length)return;
-    setEdit(prev=>({...prev,items:[...prev.items,{productId:products[0].id,qty:1}]}));
+    setEdit(prev=>({...prev,items:[...prev.items,{productId:products[0].id,qty:1,portionId:""}]}));
   };
   const updateItem=(idx,field,val)=>setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i===idx?{...it,[field]:val}:it)}));
+  // Changer de produit réinitialise qty/portionId (une portion d'un autre produit
+  // n'a pas de sens, et un produit à l'unité n'a pas de portionId).
+  const selectItemProduct=(idx,prodId)=>{
+    const prod=products.find(p=>p.id.toString()===prodId.toString());
+    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{productId:prodId,qty:prod?.sellByVolume?0:1,portionId:""})}));
+  };
+  // Choisir une portion configurée fixe la quantité en cl/g directement (pas un
+  // "nombre d'unités") — c'est cette valeur qui sera réellement décomptée du stock.
+  const selectItemPortion=(idx,portionId)=>{
+    const po=(portions||[]).find(p=>p.id.toString()===portionId.toString());
+    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,portionId,qty:po?po.size:it.qty})}));
+  };
   const removeItem=idx=>setEdit(prev=>({...prev,items:prev.items.filter((_,i)=>i!==idx)}));
 
   const handlePhoto=e=>{const f=e.target.files[0];if(!f)return;
@@ -3509,6 +3521,10 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
 
   const save=async()=>{
     if(!edit.name||!edit.price||edit.items.length===0)return;
+    if(edit.items.some(it=>!it.qty||+it.qty<=0)){
+      await customAlert("⚠️ Choisissez une portion (ou une quantité) pour chaque produit au volume du menu avant d'enregistrer.");
+      return;
+    }
     setBusy(true);
     const id=edit.id||uid();
     // Même optimisation que pour les produits/portions : photo renvoyée seulement si
@@ -3523,10 +3539,10 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
     }else{
       photoParam="__KEEP__";
     }
-    const itemsStr=edit.items.map(it=>it.productId+":"+it.qty).join(",");
+    const itemsStr=edit.items.map(it=>it.productId+":"+it.qty+":"+(it.portionId||"")).join(",");
     const r=await apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsStr,photo:photoParam,...extra});
     if(r.ok){
-      const newEntry={id,name:edit.name,price:+edit.price,items:edit.items.map(it=>({productId:it.productId,qty:+it.qty})),
+      const newEntry={id,name:edit.name,price:+edit.price,items:edit.items.map(it=>({productId:it.productId,qty:+it.qty,portionId:it.portionId||""})),
         photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setCombos(prev=>[...prev.filter(c=>c.id!==id),newEntry]);
       setEdit(null);
@@ -3541,6 +3557,14 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
   };
 
   const prodName=pid=>products.find(p=>p.id.toString()===pid.toString())?.name||"(produit supprimé)";
+  const itemLabel=it=>{
+    const prod=products.find(p=>p.id.toString()===it.productId.toString());
+    if(prod?.sellByVolume){
+      const po=(portions||[]).find(p=>p.id.toString()===(it.portionId||"").toString());
+      return(po?po.name+" ":"")+it.qty+(prod.unit||"cl")+" "+prod.name;
+    }
+    return it.qty+"× "+(prod?.name||"(produit supprimé)");
+  };
 
   return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
     <button onClick={startNew} style={{width:"100%",padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,marginBottom:14}}>
@@ -3552,7 +3576,7 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:13,fontWeight:600,color:T.dark}}>{c.name}</div>
           <div style={{fontSize:11,color:T.mid,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-            {fmt(c.price)} • {c.items.map(it=>it.qty+"× "+prodName(it.productId)).join(", ")}
+            {fmt(c.price)} • {c.items.map(itemLabel).join(", ")}
           </div>
         </div>
         <button onClick={()=>startEdit(c)} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
@@ -3573,17 +3597,34 @@ function CombosAdmin({products,combos,setCombos,caisseUrl}){
         <input type="file" accept="image/*" onChange={handlePhoto} style={{fontSize:12,color:T.mid,marginBottom:12}}/>
 
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:6}}>Produits inclus</label>
-        {edit.items.map((it,idx)=>(
-          <div key={idx} style={{display:"flex",gap:6,marginBottom:6,alignItems:"center"}}>
-            <select value={it.productId} onChange={e=>updateItem(idx,"productId",e.target.value)}
-              style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
-              {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-            <input type="number" min="1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
-              style={{width:50,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center"}}/>
-            <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
-          </div>
-        ))}
+        {edit.items.map((it,idx)=>{
+          const prod=products.find(p=>p.id.toString()===it.productId.toString());
+          const itemPortions=prod?(portions||[]).filter(po=>po.productId.toString()===prod.id.toString()):[];
+          return(<div key={idx} style={{marginBottom:8}}>
+            <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:prod?.sellByVolume?6:0}}>
+              <select value={it.productId} onChange={e=>selectItemProduct(idx,e.target.value)}
+                style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
+                {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              {!prod?.sellByVolume&&<input type="number" min="1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
+                style={{width:50,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center"}}/>}
+              <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+            </div>
+            {prod?.sellByVolume&&(itemPortions.length>0?(
+              <select value={it.portionId||""} onChange={e=>selectItemPortion(idx,e.target.value)}
+                style={{width:"100%",padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
+                <option value="">— Choisir une portion —</option>
+                {itemPortions.map(po=><option key={po.id} value={po.id}>{po.name} ({po.size}{prod.unit})</option>)}
+              </select>
+            ):(
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <input type="number" min="1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)} placeholder="Quantité"
+                  style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}/>
+                <span style={{fontSize:11,color:T.mid}}>{prod.unit||"cl"} (aucune portion configurée pour ce produit)</span>
+              </div>
+            ))}
+          </div>);
+        })}
         <button onClick={addItem} style={{width:"100%",padding:"9px",background:T.bg,border:`1px dashed ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600,color:T.dark,marginBottom:14}}>
           + Ajouter un produit au menu
         </button>
@@ -4534,7 +4575,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
     </div>
     <div style={{flex:1,overflow:"hidden"}}>
       {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits}/>}
-      {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} caisseUrl={caisseUrl}/>}
+      {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} caisseUrl={caisseUrl} portions={portions}/>}
       {tab==="cartes"&&<CardsAdmin boissonsUrl={boissonsUrl}/>}
       {!isManager&&tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
       {!isManager&&tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl}/>}
