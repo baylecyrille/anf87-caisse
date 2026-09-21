@@ -3387,14 +3387,17 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
             const gaugePct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
             const gaugeColor=prod.color||T.orange;
             const stk=prod.stock[siteId]||0;
-            return [<div key={prod.id} style={{display:"flex",alignItems:"center",padding:"11px 14px",borderBottom:idx<arr.length-1&&!needsContainerPanel?`1px solid ${T.border}`:"none",gap:10}}>
+            return [<div key={prod.id} style={{display:"flex",alignItems:"center",padding:"11px 14px",borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",gap:10}}>
               {needsContainerPanel
                 ?(readOnly
-                  ?<div style={{padding:0,border:`2px solid ${gaugeColor}`,borderRadius:8,flexShrink:0}}>
-                    {prod.photo?<img src={prod.photo} style={{width:26,height:26,borderRadius:5,objectFit:"cover",display:"block"}}/>:<span style={{fontSize:20,display:"block",width:26,height:26,textAlign:"center",lineHeight:"26px"}}>{prod.emoji}</span>}
+                  ?<div style={{position:"relative",width:40,height:40,border:`2px solid ${gaugeColor}`,borderRadius:8,flexShrink:0,overflow:"hidden"}}>
+                    {prod.photo?<img src={prod.photo} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>:<div style={{fontSize:24,display:"flex",alignItems:"center",justifyContent:"center",width:"100%",height:"100%"}}>{prod.emoji}</div>}
+                    {cont&&<div style={{position:"absolute",left:0,right:0,bottom:0,height:gaugePct+"%",background:gaugeColor,opacity:.5}}/>}
                   </div>
-                  :<button onClick={()=>setContainerModalFor(prod)} style={{padding:0,border:`2px solid ${gaugeColor}`,borderRadius:8,cursor:"pointer",background:"none",flexShrink:0}}>
-                    {prod.photo?<img src={prod.photo} style={{width:26,height:26,borderRadius:5,objectFit:"cover",display:"block"}}/>:<span style={{fontSize:20,display:"block",width:26,height:26,textAlign:"center",lineHeight:"26px"}}>{prod.emoji}</span>}
+                  :<button onClick={()=>setContainerModalFor(prod)} title={cont?`${cont.label} — ${cont.remaining}/${cont.size}${prod.unit}`:"Aucun contenant ouvert — toucher pour gérer"}
+                    style={{position:"relative",width:40,height:40,padding:0,border:`2px solid ${gaugeColor}`,borderRadius:8,cursor:"pointer",background:"none",flexShrink:0,overflow:"hidden"}}>
+                    {prod.photo?<img src={prod.photo} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>:<div style={{fontSize:24,display:"flex",alignItems:"center",justifyContent:"center",width:"100%",height:"100%"}}>{prod.emoji}</div>}
+                    {cont&&<div style={{position:"absolute",left:0,right:0,bottom:0,height:gaugePct+"%",background:gaugeColor,opacity:.5}}/>}
                   </button>)
                 :(prod.photo?<img src={prod.photo} style={{width:28,height:28,borderRadius:6,objectFit:"cover",flexShrink:0}}/>
                   :<span style={{fontSize:22,flexShrink:0}}>{prod.emoji}</span>)}
@@ -3436,31 +3439,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
                   {Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0)}
                 </div>
               </div>}
-            </div>,
-            // Résumé compact du contenant : une jauge avec le texte écrit à
-            // l'intérieur, cliquable pour ouvrir la popup de gestion complète —
-            // prend beaucoup moins de place que l'ancien bloc toujours déplié.
-            needsContainerPanel&&(readOnly
-              ?<div key={prod.id+"_cp"} style={{padding:"0 14px 10px",borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",paddingBottom:10}}>
-                <div style={{position:"relative",height:26,borderRadius:7,overflow:"hidden",background:T.bg,border:`1px solid ${T.border}`}}>
-                  {cont&&<div style={{position:"absolute",inset:0,width:gaugePct+"%",background:gaugeColor,opacity:.55}}/>}
-                  <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",gap:5,fontSize:11,fontWeight:700,color:T.dark}}>
-                    <span>🧴</span>
-                    <span>{cont?`${cont.label} — ${cont.remaining}/${cont.size}${prod.unit}`:"Aucun contenant ouvert"}</span>
-                  </div>
-                </div>
-              </div>
-              :<button key={prod.id+"_cp"} onClick={()=>setContainerModalFor(prod)}
-              style={{display:"block",width:"100%",padding:"0 14px 10px",border:"none",background:"none",cursor:"pointer",
-                borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",paddingBottom:10}}>
-              <div style={{position:"relative",height:26,borderRadius:7,overflow:"hidden",background:T.bg,border:`1px solid ${T.border}`}}>
-                {cont&&<div style={{position:"absolute",inset:0,width:gaugePct+"%",background:gaugeColor,opacity:.55}}/>}
-                <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",gap:5,fontSize:11,fontWeight:700,color:T.dark}}>
-                  <span>🧴</span>
-                  <span>{cont?`${cont.label} — ${cont.remaining}/${cont.size}${prod.unit}`:"Aucun contenant ouvert — toucher pour gérer"}</span>
-                </div>
-              </div>
-            </button>)];
+            </div>];
           })}
         </div>}
       </div>);
