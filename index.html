@@ -2821,7 +2821,7 @@ function StockCsvImport({products,sites,caisseUrl,onSave}){
         const remaining=remainingFor(r);
         return(<div key={i} style={{background:r.skip?"#F5F5F5":(r.matchType.includes("⚠️")?"#FFF8E1":"#FFF"),border:`1px solid ${T.border}`,borderRadius:10,padding:10,marginBottom:8,opacity:r.skip?.55:1}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
-            <span style={{fontSize:11,color:T.mid}}>Ligne {r.lineNo} — {r.ean?`EAN ${r.ean}`:r.nom}</span>
+            <span style={{fontSize:11,color:T.mid}}>Ligne {r.lineNo}{r.ean?` — EAN ${r.ean}`:""}{r.nom?` — "${r.nom}"`:""}</span>
             <button onClick={()=>toggleSkip(i)} style={{fontSize:11,color:T.red,background:"none",border:"none",cursor:"pointer"}}>{r.skip?"↩️ Réactiver":"✕ Ignorer"}</button>
           </div>
           {r.prod?(
@@ -2830,11 +2830,11 @@ function StockCsvImport({products,sites,caisseUrl,onSave}){
               {r.prod.name} <span style={{fontSize:10,color:T.mid,fontWeight:400}}>({r.matchType})</span>
             </div>
           ):(
-            <div style={{fontSize:12,color:T.red,marginBottom:4}}>⚠️ Aucun produit reconnu automatiquement — choisissez-en un :</div>
+            <div style={{fontSize:12,color:T.red,marginBottom:4}}>⚠️ "{r.nom||r.ean||"(ligne vide)"}" non reconnu automatiquement — choisissez le produit correspondant :</div>
           )}
           <select value={r.prod?.id||""} onChange={e=>toggleProduct(i,e.target.value)} style={{width:"100%",padding:7,border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,marginBottom:8}}>
             <option value="">— Aucun (ignorer cette ligne) —</option>
-            {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            {[...products].sort((a,b)=>a.name.localeCompare(b.name,"fr")).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7,background:T.bg,borderRadius:8,padding:"6px 10px"}}>
             <span style={{fontSize:12,color:T.dark}}>Quantité totale reçue : <b>{r.qtyTotal}</b></span>
