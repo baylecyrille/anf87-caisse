@@ -3387,56 +3387,58 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
             const gaugePct=cont?Math.max(0,Math.min(100,(cont.remaining/cont.size)*100)):0;
             const gaugeColor=prod.color||T.orange;
             const stk=prod.stock[siteId]||0;
-            return [<div key={prod.id} style={{display:"flex",alignItems:"center",padding:"11px 14px",borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",gap:10}}>
+            const totalStock=Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0);
+            const isEmpty=totalStock<=0; // grisé + ligne plus fine quand il n'y a plus rien nulle part
+            return [<div key={prod.id} style={{display:"flex",alignItems:"center",padding:"6px 12px",borderBottom:idx<arr.length-1?`1px solid ${T.border}`:"none",gap:8,opacity:isEmpty?.45:1}}>
               {needsContainerPanel
                 ?(readOnly
-                  ?<div style={{position:"relative",width:40,height:40,border:`2px solid ${gaugeColor}`,borderRadius:8,flexShrink:0,overflow:"hidden"}}>
-                    {prod.photo?<img src={prod.photo} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>:<div style={{fontSize:24,display:"flex",alignItems:"center",justifyContent:"center",width:"100%",height:"100%"}}>{prod.emoji}</div>}
+                  ?<div style={{position:"relative",width:32,height:32,border:`2px solid ${gaugeColor}`,borderRadius:7,flexShrink:0,overflow:"hidden"}}>
+                    {prod.photo?<img src={prod.photo} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>:<div style={{fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",width:"100%",height:"100%"}}>{prod.emoji}</div>}
                     {cont&&<div style={{position:"absolute",left:0,right:0,bottom:0,height:gaugePct+"%",background:gaugeColor,opacity:.5}}/>}
                   </div>
                   :<button onClick={()=>setContainerModalFor(prod)} title={cont?`${cont.label} — ${cont.remaining}/${cont.size}${prod.unit}`:"Aucun contenant ouvert — toucher pour gérer"}
-                    style={{position:"relative",width:40,height:40,padding:0,border:`2px solid ${gaugeColor}`,borderRadius:8,cursor:"pointer",background:"none",flexShrink:0,overflow:"hidden"}}>
-                    {prod.photo?<img src={prod.photo} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>:<div style={{fontSize:24,display:"flex",alignItems:"center",justifyContent:"center",width:"100%",height:"100%"}}>{prod.emoji}</div>}
+                    style={{position:"relative",width:32,height:32,padding:0,border:`2px solid ${gaugeColor}`,borderRadius:7,cursor:"pointer",background:"none",flexShrink:0,overflow:"hidden"}}>
+                    {prod.photo?<img src={prod.photo} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>:<div style={{fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",width:"100%",height:"100%"}}>{prod.emoji}</div>}
                     {cont&&<div style={{position:"absolute",left:0,right:0,bottom:0,height:gaugePct+"%",background:gaugeColor,opacity:.5}}/>}
                   </button>)
-                :(prod.photo?<img src={prod.photo} style={{width:28,height:28,borderRadius:6,objectFit:"cover",flexShrink:0}}/>
-                  :<span style={{fontSize:22,flexShrink:0}}>{prod.emoji}</span>)}
+                :(prod.photo?<img src={prod.photo} style={{width:24,height:24,borderRadius:5,objectFit:"cover",flexShrink:0}}/>
+                  :<span style={{fontSize:18,flexShrink:0}}>{prod.emoji}</span>)}
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{prod.name}</div>
-                <div style={{fontSize:11,color:T.mid}}>{fmt(prod.price)}{prod.sellByVolume?" • au "+prod.unit:""}</div>
+                <div style={{fontSize:12,fontWeight:600,color:T.dark,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{prod.name}</div>
+                <div style={{fontSize:10,color:T.mid}}>{fmt(prod.price)}{prod.sellByVolume?" • au "+prod.unit:""}</div>
                 {isDepositProduct(products,prod.id)&&(readOnly
-                  ?<div style={{fontSize:11,color:T.orange,fontWeight:600}}>🔄 {depositsFor(deposits,siteId,prod.id)} dehors</div>
+                  ?<div style={{fontSize:10,color:T.orange,fontWeight:600}}>🔄 {depositsFor(deposits,siteId,prod.id)} dehors</div>
                   :editingDeposit===prod.id
                   ?<input type="number" min="0" autoFocus defaultValue={depositsFor(deposits,siteId,prod.id)}
                       onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v))adjustDepositCount(prod,v);else setEditingDeposit(null);}}
                       onKeyDown={e=>{if(e.key==="Enter")e.target.blur();if(e.key==="Escape")setEditingDeposit(null);}}
-                      style={{width:50,padding:"1px 4px",fontSize:11,border:`1px solid ${T.orange}`,borderRadius:5,textAlign:"center"}}/>
-                  :<button onClick={()=>setEditingDeposit(prod.id)} style={{background:"none",border:"none",padding:0,cursor:"pointer",fontSize:11,color:T.orange,fontWeight:600}}>
+                      style={{width:50,padding:"1px 4px",fontSize:10,border:`1px solid ${T.orange}`,borderRadius:5,textAlign:"center"}}/>
+                  :<button onClick={()=>setEditingDeposit(prod.id)} style={{background:"none",border:"none",padding:0,cursor:"pointer",fontSize:10,color:T.orange,fontWeight:600}}>
                     🔄 {depositsFor(deposits,siteId,prod.id)} dehors ✏️
                   </button>)}
               </div>
-              <div style={{display:"flex",gap:3,marginRight:6}}>
-                {sites.map(s=><div key={s.id} title={s.name} style={{width:24,height:24,borderRadius:5,
+              <div style={{display:"flex",gap:2,marginRight:5}}>
+                {sites.map(s=><div key={s.id} title={s.name} style={{width:20,height:20,borderRadius:4,
                   background:s.id===siteId?s.color:"rgba(0,0,0,0.06)",
-                  display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,
+                  display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,
                   color:s.id===siteId?"white":T.mid}}>{prod.stock[s.id]||0}</div>)}
               </div>
               {readOnly
-                ?<div style={{width:40,height:24,borderRadius:5,flexShrink:0,
-                    background:T.dark,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"white"}}>
-                    {Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0)}
+                ?<div style={{width:34,height:20,borderRadius:4,flexShrink:0,
+                    background:T.dark,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:800,color:"white"}}>
+                    {totalStock}
                   </div>
-                :<div style={{display:"flex",alignItems:"center",gap:4}}>
-                <button onClick={()=>updateQty(prod,siteId,stk-1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14,flexShrink:0}}>−</button>
+                :<div style={{display:"flex",alignItems:"center",gap:3}}>
+                <button onClick={()=>updateQty(prod,siteId,stk-1)} style={{width:20,height:20,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:12,flexShrink:0}}>−</button>
                 <input key={prod.id+"_"+stk} type="number" defaultValue={stk}
                   onBlur={e=>{const v=parseInt(e.target.value,10);if(!isNaN(v)&&v!==stk)updateQty(prod,siteId,v);}}
                   onKeyDown={e=>{if(e.key==="Enter")e.target.blur();}}
-                  style={{width:46,fontSize:14,fontWeight:800,textAlign:"center",color:stockC(stk),
-                    border:`1px solid ${T.border}`,borderRadius:6,padding:"3px 0",outline:"none",flexShrink:0}}/>
-                <button onClick={()=>updateQty(prod,siteId,stk+1)} style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:14,flexShrink:0}}>+</button>
-                <div title="Total tous sites" style={{width:40,height:24,borderRadius:5,marginLeft:4,flexShrink:0,
-                  background:T.dark,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"white"}}>
-                  {Object.values(prod.stock||{}).reduce((a,b)=>a+(+b||0),0)}
+                  style={{width:38,fontSize:12,fontWeight:800,textAlign:"center",color:stockC(stk),
+                    border:`1px solid ${T.border}`,borderRadius:5,padding:"2px 0",outline:"none",flexShrink:0}}/>
+                <button onClick={()=>updateQty(prod,siteId,stk+1)} style={{width:20,height:20,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:12,flexShrink:0}}>+</button>
+                <div title="Total tous sites" style={{width:34,height:20,borderRadius:4,marginLeft:3,flexShrink:0,
+                  background:T.dark,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:800,color:"white"}}>
+                  {totalStock}
                 </div>
               </div>}
             </div>];
