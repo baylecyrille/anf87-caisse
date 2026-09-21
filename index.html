@@ -2693,6 +2693,173 @@ function ScannerModal({products,siteId,onFound,onClose}){
 
 // ═══ STOCK SCREEN ═══
 // ═══ TABLEAU DE BORD STOCK (alertes + comparaison sites + valeur/rentabilité) ═══
+// ═══ IMPORT CSV — entrée de stock en masse, reconnaissance par EAN ou nom, ventilée par site ═══
+// Format attendu : EAN,Nom,<Site1>,<Site2>,... — une ligne par produit, une colonne par
+// site (quantité à AJOUTER sur ce site). EAN ou Nom suffit pour identifier le produit
+// (EAN prioritaire, plus fiable). Accepte aussi bien la virgule que le point-virgule
+// (Excel français exporte souvent en point-virgule).
+function parseCsvText(text){
+  const delim=(text.split("\n")[0].split(";").length>text.split("\n")[0].split(",").length)?";":",";
+  const parseLine=line=>{
+    const cells=[];let cur="",inQuotes=false;
+    for(let i=0;i<line.length;i++){
+      const ch=line[i];
+      if(ch==='"'){ inQuotes=!inQuotes; }
+      else if(ch===delim&&!inQuotes){ cells.push(cur.trim());cur=""; }
+      else cur+=ch;
+    }
+    cells.push(cur.trim());
+    return cells;
+  };
+  return text.split(/\r?\n/).filter(l=>l.trim()!=="").map(parseLine);
+}
+
+function StockCsvImport({products,sites,caisseUrl,onSave}){
+  const [raw,setRaw]=useState("");
+  const [rows,setRows]=useState(null); // null = pas encore analysé
+  const [busy,setBusy]=useState(false);
+  const [msg,setMsg]=useState("");
+
+  const downloadTemplate=()=>{
+    const lines=["EAN;Nom;Quantite",
+      ...products.map(p=>[p.barcode||"",p.name,""].join(";"))];
+    const blob=new Blob(["\uFEFF"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="modele-reapprovisionnement-anf87.csv";
+    a.click();
+  };
+
+  const handleFile=e=>{
+    const f=e.target.files[0];if(!f)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{setRaw(ev.target.result);setRows(null);};
+    reader.readAsText(f,"UTF-8");
+  };
+
+  const analyze=()=>{
+    if(!raw.trim())return;
+    const parsed=parseCsvText(raw);
+    if(parsed.length===0)return;
+    const header=parsed[0].map(h=>h.toLowerCase());
+    const eanIdx=header.findIndex(h=>h.includes("ean")||h.includes("code")||h.includes("barre"));
+    const nomIdx=header.findIndex(h=>h.includes("nom")||h.includes("produit")||h.includes("name"));
+    const qtyIdx=header.findIndex(h=>h.includes("qt")||h.includes("quantit"));
+    const dataLines=parsed.slice(1);
+    const result=dataLines.map((line,i)=>{
+      const ean=eanIdx>=0?(line[eanIdx]||"").trim():"";
+      const nom=nomIdx>=0?(line[nomIdx]||"").trim():"";
+      const qtyTotal=Math.max(0,parseInt((qtyIdx>=0?line[qtyIdx]:"0").replace(",","."),10)||0);
+      let prod=null,matchType="";
+      if(ean){ prod=products.find(p=>p.barcode&&p.barcode.toString()===ean); if(prod)matchType="EAN"; }
+      if(!prod&&nom){
+        prod=products.find(p=>p.name.toLowerCase()===nom.toLowerCase());
+        if(prod)matchType="nom exact";
+        if(!prod){ prod=products.find(p=>p.name.toLowerCase().includes(nom.toLowerCase())||nom.toLowerCase().includes(p.name.toLowerCase())); if(prod)matchType="nom approché ⚠️"; }
+      }
+      return{lineNo:i+2,ean,nom,qtyTotal,prod,matchType,skip:!prod||qtyTotal<=0,alloc:{}};
+    });
+    setRows(result);
+  };
+
+  const toggleProduct=(idx,prodId)=>{
+    setRows(prev=>prev.map((r,i)=>i!==idx?r:{...r,prod:products.find(p=>p.id.toString()===prodId)||null,matchType:"manuel",skip:!prodId||r.qtyTotal<=0}));
+  };
+  const toggleSkip=idx=>setRows(prev=>prev.map((r,i)=>i!==idx?r:{...r,skip:!r.skip}));
+  const setAlloc=(idx,siteId,val)=>{
+    const v=Math.max(0,parseInt(val,10)||0);
+    setRows(prev=>prev.map((r,i)=>i!==idx?r:{...r,alloc:{...r.alloc,[siteId]:v}}));
+  };
+  const remainingFor=r=>r.qtyTotal-Object.values(r.alloc).reduce((a,b)=>a+b,0);
+
+  const apply=async()=>{
+    if(!rows||busy)return;
+    const usable=rows.filter(r=>!r.skip&&r.prod&&Object.values(r.alloc).some(v=>v>0));
+    if(usable.length===0)return;
+    setBusy(true);
+    let upd=products;
+    for(const r of usable){
+      for(const site of sites){
+        const qty=r.alloc[site.id]||0;
+        if(qty<=0)continue;
+        upd=upd.map(p=>p.id.toString()===r.prod.id.toString()?{...p,stock:{...p.stock,[site.id]:(p.stock[site.id]||0)+qty}}:p);
+        if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:r.prod.id,site:site.id,qty,mode:"delta"});
+      }
+    }
+    onSave(upd);
+    setMsg(`✅ Import terminé : ${usable.length} produit(s) mis à jour.`);
+    setRows(null);setRaw("");
+    setBusy(false);
+    setTimeout(()=>setMsg(""),6000);
+  };
+
+  return(<div style={{flex:1,overflowY:"auto",padding:14}}>
+    <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:4}}>📄 Import CSV — réapprovisionnement</div>
+    <div style={{fontSize:12,color:T.mid,marginBottom:4}}>Colonnes attendues : <code>EAN;Nom;Quantite</code> — une ligne par produit, avec la quantité TOTALE reçue (pas encore répartie).</div>
+    <div style={{fontSize:12,color:T.mid,marginBottom:14}}>La répartition entre sites se fait ensuite ici, à l'écran, avec un compteur "reste à ventiler".</div>
+
+    <button onClick={downloadTemplate} style={{width:"100%",padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,fontSize:13,marginBottom:16}}>
+      📥 Télécharger un modèle pré-rempli avec votre catalogue
+    </button>
+
+    {msg&&<div style={{background:"#E8F5E9",borderRadius:10,padding:"10px 12px",marginBottom:14,fontSize:13,fontWeight:600,color:"#2E7D32"}}>{msg}</div>}
+
+    <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:6}}>Choisir un fichier CSV</label>
+    <input type="file" accept=".csv,text/csv" onChange={handleFile} style={{marginBottom:12,fontSize:13}}/>
+
+    <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:6}}>...ou coller directement le contenu (copié depuis Excel/Sheets)</label>
+    <textarea value={raw} onChange={e=>{setRaw(e.target.value);setRows(null);}} rows={5} placeholder="EAN;Nom;Quantite"
+      style={{width:"100%",padding:10,border:`1px solid ${T.border}`,borderRadius:10,fontSize:12,fontFamily:"monospace",marginBottom:12}}/>
+
+    <button onClick={analyze} disabled={!raw.trim()} style={{width:"100%",padding:"12px",background:raw.trim()?T.blue:"#ccc",color:"white",border:"none",borderRadius:10,cursor:raw.trim()?"pointer":"default",fontWeight:700,fontSize:14,marginBottom:16}}>
+      🔍 Analyser
+    </button>
+
+    {rows&&<>
+      <div style={{fontWeight:700,fontSize:13,color:T.dark,marginBottom:8}}>Répartition par site ({rows.length} ligne(s))</div>
+      {rows.map((r,i)=>{
+        const remaining=remainingFor(r);
+        return(<div key={i} style={{background:r.skip?"#F5F5F5":(r.matchType.includes("⚠️")?"#FFF8E1":"#FFF"),border:`1px solid ${T.border}`,borderRadius:10,padding:10,marginBottom:8,opacity:r.skip?.55:1}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+            <span style={{fontSize:11,color:T.mid}}>Ligne {r.lineNo} — {r.ean?`EAN ${r.ean}`:r.nom}</span>
+            <button onClick={()=>toggleSkip(i)} style={{fontSize:11,color:T.red,background:"none",border:"none",cursor:"pointer"}}>{r.skip?"↩️ Réactiver":"✕ Ignorer"}</button>
+          </div>
+          {r.prod?(
+            <div style={{fontSize:13,fontWeight:600,color:T.dark,marginBottom:4}}>
+              {r.prod.photo?<img src={r.prod.photo} style={{width:20,height:20,borderRadius:4,objectFit:"cover",verticalAlign:"middle",marginRight:6}}/>:r.prod.emoji+" "}
+              {r.prod.name} <span style={{fontSize:10,color:T.mid,fontWeight:400}}>({r.matchType})</span>
+            </div>
+          ):(
+            <div style={{fontSize:12,color:T.red,marginBottom:4}}>⚠️ Aucun produit reconnu automatiquement — choisissez-en un :</div>
+          )}
+          <select value={r.prod?.id||""} onChange={e=>toggleProduct(i,e.target.value)} style={{width:"100%",padding:7,border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,marginBottom:8}}>
+            <option value="">— Aucun (ignorer cette ligne) —</option>
+            {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7,background:T.bg,borderRadius:8,padding:"6px 10px"}}>
+            <span style={{fontSize:12,color:T.dark}}>Quantité totale reçue : <b>{r.qtyTotal}</b></span>
+            <span style={{fontSize:12,fontWeight:800,color:remaining===0?"#2E7D32":remaining<0?T.red:T.orange}}>
+              Reste à ventiler : {remaining}
+            </span>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:6}}>
+            {sites.map(s=>(
+              <div key={s.id} style={{display:"flex",alignItems:"center",gap:6}}>
+                <span style={{fontSize:11,color:T.mid,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.name}</span>
+                <input type="number" min="0" value={r.alloc[s.id]||""} placeholder="0" onChange={e=>setAlloc(i,s.id,e.target.value)}
+                  style={{width:50,padding:"5px 6px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:12,textAlign:"center"}}/>
+              </div>
+            ))}
+          </div>
+        </div>);
+      })}
+      <button onClick={apply} disabled={busy||rows.every(r=>r.skip||!r.prod)} style={{width:"100%",padding:"14px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:12,cursor:busy?"default":"pointer",fontWeight:700,fontSize:15,marginTop:4}}>
+        {busy?"⏳ Import en cours...":"✓ Valider la répartition"}
+      </button>
+    </>}
+  </div>);
+}
+
 function StockDashboard({products,sites,siteId,setSiteId,containers,deposits}){
   const site=sites.find(s=>s.id===siteId)||sites[0];
 
@@ -2835,7 +3002,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {/* Tabs */}
     {!readOnly&&<div style={{background:T.card,borderBottom:`1px solid ${T.border}`,display:"flex",flexShrink:0,overflowX:"auto"}}>
-      {[["dashboard","📊 Dashboard"],["list","📋 Stock"],["entry","📥 Entrée rapide"],["containers","🧴 Contenants"],["transfer","↔ Transfert"]].map(([v,l])=>(
+      {[["dashboard","📊 Dashboard"],["list","📋 Stock"],["entry","📥 Entrée rapide"],["csv","📄 Import CSV"],["containers","🧴 Contenants"],["transfer","↔ Transfert"]].map(([v,l])=>(
         <button key={v} onClick={()=>setView(v)} style={{flex:"1 0 auto",padding:"12px 10px",border:"none",background:"none",cursor:"pointer",
           fontSize:12,fontWeight:600,color:view===v?T.red:T.mid,borderBottom:view===v?`2px solid ${T.red}`:"2px solid transparent",whiteSpace:"nowrap"}}>
           {l}
@@ -2846,6 +3013,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
     {!readOnly&&view==="dashboard"&&<StockDashboard products={products} sites={sites} siteId={sel} setSiteId={setSel} containers={containers} deposits={deposits}/>}
     {(view==="list"||readOnly)&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={readOnly}/>}
     {!readOnly&&view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
+    {!readOnly&&view==="csv"&&<StockCsvImport products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
     {!readOnly&&view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
     {!readOnly&&view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} reserve={reserve} setReserve={setReserve}/>}
   </div>);
