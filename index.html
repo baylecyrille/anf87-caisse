@@ -2721,8 +2721,8 @@ function StockCsvImport({products,sites,caisseUrl,onSave}){
   const [msg,setMsg]=useState("");
 
   const downloadTemplate=()=>{
-    const lines=["EAN;Nom;Quantite",
-      ...products.map(p=>[p.barcode||"",p.name,""].join(";"))];
+    const lines=["EAN;Nom;Quantite;TarifTTC",
+      ...products.map(p=>[p.barcode||"",p.name,"",p.costPrice||""].join(";"))];
     const blob=new Blob(["\uFEFF"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
     const a=document.createElement("a");
     a.href=URL.createObjectURL(blob);
@@ -2745,19 +2745,26 @@ function StockCsvImport({products,sites,caisseUrl,onSave}){
     const eanIdx=header.findIndex(h=>h.includes("ean")||h.includes("code")||h.includes("barre"));
     const nomIdx=header.findIndex(h=>h.includes("nom")||h.includes("produit")||h.includes("name"));
     const qtyIdx=header.findIndex(h=>h.includes("qt")||h.includes("quantit"));
+    const prixIdx=header.findIndex(h=>h.includes("prix")||h.includes("tarif")||h.includes("ttc"));
     const dataLines=parsed.slice(1);
     const result=dataLines.map((line,i)=>{
       const ean=eanIdx>=0?(line[eanIdx]||"").trim():"";
       const nom=nomIdx>=0?(line[nomIdx]||"").trim():"";
       const qtyTotal=Math.max(0,parseInt((qtyIdx>=0?line[qtyIdx]:"0").replace(",","."),10)||0);
+      const prixTTC=prixIdx>=0?Math.max(0,parseFloat((line[prixIdx]||"").replace(",","."))||0):0;
       let prod=null,matchType="";
-      if(ean){ prod=products.find(p=>p.barcode&&p.barcode.toString()===ean); if(prod)matchType="EAN"; }
-      if(!prod&&nom){
+      if(ean){
+        // Un EAN renseigné qui ne correspond à rien n'est PLUS jamais rattrapé par le
+        // nom : mieux vaut une ligne clairement "non reconnue" à traiter à la main
+        // qu'un mauvais rapprochement automatique sur un simple hasard de nom.
+        prod=products.find(p=>p.barcode&&p.barcode.toString()===ean);
+        if(prod)matchType="EAN";
+      }else if(nom){
         prod=products.find(p=>p.name.toLowerCase()===nom.toLowerCase());
         if(prod)matchType="nom exact";
         if(!prod){ prod=products.find(p=>p.name.toLowerCase().includes(nom.toLowerCase())||nom.toLowerCase().includes(p.name.toLowerCase())); if(prod)matchType="nom approché ⚠️"; }
       }
-      return{lineNo:i+2,ean,nom,qtyTotal,prod,matchType,skip:!prod||qtyTotal<=0,alloc:{}};
+      return{lineNo:i+2,ean,nom,qtyTotal,prixTTC,prod,matchType,skip:!prod||qtyTotal<=0,alloc:{}};
     });
     setRows(result);
   };
@@ -2785,6 +2792,15 @@ function StockCsvImport({products,sites,caisseUrl,onSave}){
         upd=upd.map(p=>p.id.toString()===r.prod.id.toString()?{...p,stock:{...p.stock,[site.id]:(p.stock[site.id]||0)+qty}}:p);
         if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:r.prod.id,site:site.id,qty,mode:"delta"});
       }
+      // Met aussi à jour le prix d'achat si un Tarif TTC a été renseigné sur la ligne.
+      if(r.prixTTC>0&&r.prixTTC!==r.prod.costPrice){
+        const p=r.prod;
+        upd=upd.map(x=>x.id.toString()===p.id.toString()?{...x,costPrice:r.prixTTC}:x);
+        if(caisseUrl)await apiWrite(caisseUrl,{action:"saveProduct",id:p.id,name:p.name,price:p.price,costPrice:r.prixTTC,cat:p.cat,emoji:p.emoji,
+          barcode:p.barcode||"",drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,
+          presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,
+          siteAvailability:p.siteAvailability||"",photo:"__KEEP__"});
+      }
     }
     onSave(upd);
     setMsg(`✅ Import terminé : ${usable.length} produit(s) mis à jour.`);
@@ -2795,7 +2811,7 @@ function StockCsvImport({products,sites,caisseUrl,onSave}){
 
   return(<div style={{flex:1,overflowY:"auto",padding:14}}>
     <div style={{fontWeight:700,fontSize:16,color:T.dark,marginBottom:4}}>📄 Import CSV — réapprovisionnement</div>
-    <div style={{fontSize:12,color:T.mid,marginBottom:4}}>Colonnes attendues : <code>EAN;Nom;Quantite</code> — une ligne par produit, avec la quantité TOTALE reçue (pas encore répartie).</div>
+    <div style={{fontSize:12,color:T.mid,marginBottom:4}}>Colonnes attendues : <code>EAN;Nom;Quantite;TarifTTC</code> — une ligne par produit, avec la quantité TOTALE reçue (pas encore répartie). Le Tarif TTC est optionnel, il met à jour le prix d'achat.</div>
     <div style={{fontSize:12,color:T.mid,marginBottom:14}}>La répartition entre sites se fait ensuite ici, à l'écran, avec un compteur "reste à ventiler".</div>
 
     <button onClick={downloadTemplate} style={{width:"100%",padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,fontSize:13,marginBottom:16}}>
@@ -2842,6 +2858,7 @@ function StockCsvImport({products,sites,caisseUrl,onSave}){
               Reste à ventiler : {remaining}
             </span>
           </div>
+          {r.prixTTC>0&&<div style={{fontSize:11,color:T.mid,marginBottom:7}}>💶 Tarif TTC : <b style={{color:T.dark}}>{fmt(r.prixTTC)}</b>{r.prod&&r.prixTTC!==r.prod.costPrice?" (remplacera le prix d'achat actuel de "+fmt(r.prod.costPrice||0)+")":" (déjà à jour)"}</div>}
           <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:6}}>
             {sites.map(s=>(
               <div key={s.id} style={{display:"flex",alignItems:"center",gap:6}}>
