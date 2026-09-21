@@ -2692,14 +2692,150 @@ function ScannerModal({products,siteId,onFound,onClose}){
 }
 
 // ═══ STOCK SCREEN ═══
+// ═══ TABLEAU DE BORD STOCK (alertes + comparaison sites + valeur/rentabilité) ═══
+function StockDashboard({products,sites,siteId,setSiteId,containers,deposits}){
+  const site=sites.find(s=>s.id===siteId)||sites[0];
+
+  // ── A. Alertes pour le site sélectionné ──
+  const availableHere=products.filter(p=>isAvailableAtSite(p,siteId));
+  const ruptures=availableHere.filter(p=>(p.stock[siteId]||0)<=0);
+  const low=availableHere.filter(p=>{const s=p.stock[siteId]||0;return s>0&&s<=5;});
+  const priorityList=[...ruptures,...low].slice(0,8);
+  const openContainersHere=containers.filter(c=>c.site===siteId);
+
+  // ── B. Comparaison multi-sites, catégorie par catégorie ──
+  const cats=[...new Set(products.map(p=>p.cat))].sort((a,b)=>a.localeCompare(b,"fr"));
+  const catStatus=(cat,sId)=>{
+    const prods=products.filter(p=>p.cat===cat&&isAvailableAtSite(p,sId));
+    if(prods.length===0)return null; // pas vendu sur ce site
+    const total=prods.reduce((s,p)=>s+(p.stock[sId]||0),0);
+    if(prods.some(p=>(p.stock[sId]||0)<=0))return "rupture";
+    if(total<=10)return "bas";
+    return "ok";
+  };
+  const statusStyle={rupture:{bg:"#FFEBEE",color:T.red,label:"0"},bas:{bg:"#FFF8E1",color:"#E65100",label:"Bas"},ok:{bg:"#E8F5E9",color:"#2E7D32",label:"Ok"}};
+
+  // ── C. Valeur & rentabilité (tous sites confondus) ──
+  const totalStockValue=products.reduce((s,p)=>s+unitCost(p)*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0),0);
+  const totalPotentialMargin=products.reduce((s,p)=>{
+    const us=p.sellByVolume?(p.price||0)/(p.baseQty||1):(p.price||0);
+    return s+(us-unitCost(p))*Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0);
+  },0);
+  const marginRanked=products.filter(p=>p.costPrice>0).map(p=>{
+    const uc=unitCost(p), us=p.sellByVolume?(p.price||0)/(p.baseQty||1):(p.price||0);
+    return{p,pct:uc>0?((us-uc)/uc*100):null};
+  }).filter(x=>x.pct!=null).sort((a,b)=>b.pct-a.pct);
+  const bestMargins=marginRanked.slice(0,3);
+  const worstMargins=marginRanked.slice(-3).reverse();
+
+  return(<div style={{flex:1,overflowY:"auto",padding:14}}>
+    {/* ── A. Alertes du site sélectionné ── */}
+    <div style={{display:"flex",gap:7,overflowX:"auto",marginBottom:12}}>
+      {sites.map(s=><button key={s.id} onClick={()=>setSiteId(s.id)} style={{flexShrink:0,padding:"7px 14px",borderRadius:20,
+        border:"none",background:s.id===siteId?s.color:T.card,color:s.id===siteId?"white":T.dark,fontSize:12,fontWeight:600,cursor:"pointer",boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        {s.name}
+      </button>)}
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+      <div style={{background:"#FFEBEE",borderRadius:12,padding:12}}>
+        <div style={{fontSize:11,color:T.red,fontWeight:600}}>🔴 Ruptures — {site?.name}</div>
+        <div style={{fontSize:26,fontWeight:900,color:T.red}}>{ruptures.length}</div>
+      </div>
+      <div style={{background:"#FFF8E1",borderRadius:12,padding:12}}>
+        <div style={{fontSize:11,color:"#E65100",fontWeight:600}}>🟠 Stock faible (≤5)</div>
+        <div style={{fontSize:26,fontWeight:900,color:"#E65100"}}>{low.length}</div>
+      </div>
+    </div>
+    {priorityList.length>0&&<div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:12,marginBottom:16}}>
+      <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:8}}>À réapprovisionner en priorité</div>
+      {priorityList.map(p=>{const s=p.stock[siteId]||0;return(
+        <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0"}}>
+          {p.photo?<img src={p.photo} style={{width:22,height:22,borderRadius:5,objectFit:"cover"}}/>:<span style={{fontSize:16}}>{p.emoji}</span>}
+          <span style={{flex:1,fontSize:12,color:T.dark}}>{p.name}</span>
+          <b style={{fontSize:12,color:s<=0?T.red:"#E65100"}}>{s}</b>
+        </div>
+      );})}
+    </div>}
+    {openContainersHere.length>0&&<div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:12,marginBottom:16}}>
+      <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:8}}>🧴 Contenants ouverts — {site?.name}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:7}}>
+        {openContainersHere.map((c,i)=>{
+          const prod=products.find(p=>p.id.toString()===c.productId.toString());
+          const pct=Math.max(0,Math.min(100,(c.remaining/c.size)*100));
+          return(<div key={i} style={{background:T.bg,borderRadius:8,padding:7,textAlign:"center"}}>
+            <div style={{fontSize:16}}>{prod?.emoji||"🧴"}</div>
+            <div style={{fontSize:10,color:T.mid,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{prod?.name||c.label}</div>
+            <div style={{fontSize:12,fontWeight:800,color:T.dark}}>{Math.round(pct)}%</div>
+          </div>);
+        })}
+      </div>
+    </div>}
+
+    {/* ── B. Comparaison multi-sites ── */}
+    <div style={{fontWeight:700,fontSize:13,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Comparaison entre sites</div>
+    <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:12,marginBottom:16,overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+        <thead><tr>
+          <td></td>
+          {sites.map(s=><td key={s.id} style={{textAlign:"center",color:T.mid,fontWeight:600,padding:"0 4px 6px"}}>{s.name}</td>)}
+        </tr></thead>
+        <tbody>
+          {cats.map(cat=>(<tr key={cat}>
+            <td style={{padding:"3px 6px 3px 0",fontWeight:600,color:T.dark,whiteSpace:"nowrap"}}>{cat}</td>
+            {sites.map(s=>{
+              const st=catStatus(cat,s.id);
+              const style=st?statusStyle[st]:null;
+              return(<td key={s.id} style={{padding:"3px 4px",textAlign:"center"}}>
+                {style?<span style={{display:"inline-block",minWidth:34,padding:"3px 0",borderRadius:6,background:style.bg,color:style.color,fontWeight:700}}>{style.label}</span>
+                  :<span style={{color:T.border}}>—</span>}
+              </td>);
+            })}
+          </tr>))}
+        </tbody>
+      </table>
+    </div>
+
+    {/* ── C. Valeur & rentabilité ── */}
+    <div style={{fontWeight:700,fontSize:13,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Valeur & rentabilité (tous sites)</div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+      <div style={{background:T.dark,borderRadius:12,padding:12,color:"white"}}>
+        <div style={{fontSize:11,opacity:.7}}>💰 Valeur du stock</div>
+        <div style={{fontSize:19,fontWeight:900}}>{fmt(totalStockValue)}</div>
+      </div>
+      <div style={{background:T.green,borderRadius:12,padding:12,color:"white"}}>
+        <div style={{fontSize:11,opacity:.85}}>📈 Marge potentielle</div>
+        <div style={{fontSize:19,fontWeight:900}}>{fmt(totalPotentialMargin)}</div>
+      </div>
+    </div>
+    {marginRanked.length>0&&<div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:12}}>
+      {bestMargins.length>0&&<>
+        <div style={{fontSize:11,fontWeight:700,color:T.mid,marginBottom:5}}>Meilleures marges</div>
+        {bestMargins.map(({p,pct})=>(
+          <div key={p.id} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",fontSize:12}}>
+            <span style={{color:T.dark}}>{p.name}</span><b style={{color:"#2E7D32"}}>+{pct.toFixed(0)}%</b>
+          </div>
+        ))}
+      </>}
+      {worstMargins.length>0&&<>
+        <div style={{fontSize:11,fontWeight:700,color:T.mid,margin:"10px 0 5px"}}>Marges les plus faibles</div>
+        {worstMargins.map(({p,pct})=>(
+          <div key={p.id} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",fontSize:12}}>
+            <span style={{color:T.dark}}>{p.name}</span><b style={{color:pct<0?T.red:"#E65100"}}>{pct>=0?"+":""}{pct.toFixed(0)}%</b>
+          </div>
+        ))}
+      </>}
+    </div>}
+  </div>);
+}
+
 function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve,deposits,setDeposits,readOnly}){
-  const [view,setView]=useState("list"); // list | entry | transfer | containers
+  const [view,setView]=useState("list"); // list | entry | transfer | containers | dashboard
   const [sel,setSel]=useState(siteId);
 
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {/* Tabs */}
     {!readOnly&&<div style={{background:T.card,borderBottom:`1px solid ${T.border}`,display:"flex",flexShrink:0,overflowX:"auto"}}>
-      {[["list","📋 Stock"],["entry","📥 Entrée rapide"],["containers","🧴 Contenants"],["transfer","↔ Transfert"]].map(([v,l])=>(
+      {[["dashboard","📊 Dashboard"],["list","📋 Stock"],["entry","📥 Entrée rapide"],["containers","🧴 Contenants"],["transfer","↔ Transfert"]].map(([v,l])=>(
         <button key={v} onClick={()=>setView(v)} style={{flex:"1 0 auto",padding:"12px 10px",border:"none",background:"none",cursor:"pointer",
           fontSize:12,fontWeight:600,color:view===v?T.red:T.mid,borderBottom:view===v?`2px solid ${T.red}`:"2px solid transparent",whiteSpace:"nowrap"}}>
           {l}
@@ -2707,6 +2843,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
       ))}
     </div>}
     {readOnly&&<div style={{background:"#FFF8E1",padding:"8px 14px",fontSize:12,color:"#E65100",flexShrink:0}}>👁 Consultation uniquement</div>}
+    {!readOnly&&view==="dashboard"&&<StockDashboard products={products} sites={sites} siteId={sel} setSiteId={setSel} containers={containers} deposits={deposits}/>}
     {(view==="list"||readOnly)&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={readOnly}/>}
     {!readOnly&&view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
     {!readOnly&&view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
