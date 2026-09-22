@@ -2955,13 +2955,19 @@ function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,cai
   },[caisseUrl]);
   const salesQtyBySite=(()=>{
     const cutoff=new Date(); cutoff.setDate(cutoff.getDate()-30);
-    const map={}; // "siteId|productId" -> quantité vendue (30 derniers jours)
+    const map={}; // "siteId|productId" -> nombre d'articles vendus (30 derniers jours)
     recentSales.forEach(s=>{
       const[d,m,y]=(s.date||"").split("/").map(Number);
       if(!d||!m||!y)return;
       if(new Date(y,m-1,d)<cutoff)return;
       let items=[]; try{items=JSON.parse(s.items||"[]");}catch{}
-      items.forEach(it=>{ const key=s.siteId+"|"+it.id; map[key]=(map[key]||0)+(+it.qty||0); });
+      items.forEach(it=>{
+        const prod=products.find(p=>p.id.toString()===it.id.toString());
+        // Équivalent "nombre d'articles" pour un produit au volume (cl converti via
+        // sa quantité de base) — pour être comparable à un produit vendu à l'unité.
+        const qty=prod?.sellByVolume?(+it.qty||0)/(prod.baseQty||1):(+it.qty||0);
+        const key=s.siteId+"|"+it.id; map[key]=(map[key]||0)+qty;
+      });
     });
     return map;
   })();
@@ -4244,8 +4250,12 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
     });
     return Object.entries(totals).map(([id,qty])=>{
       const prod=products.find(p=>p.id.toString()===id.toString());
-      return{id,prod,qty};
-    }).sort((a,b)=>b.qty-a.qty);
+      // Tri par nombre d'articles réellement vendus (converti depuis le cl pour les
+      // produits au volume), pas par quantité brute — sinon un fût dominerait
+      // artificiellement un soda juste parce que le cl est un chiffre plus grand.
+      const sortQty=prod?.sellByVolume?qty/(prod.baseQty||1):qty;
+      return{id,prod,qty,sortQty};
+    }).sort((a,b)=>b.sortQty-a.sortQty);
   })();
   const bySite=sites.map(s=>({...s,ca:filtered.filter(v=>v.siteId===s.id).reduce((a,v)=>a+(+v.total||0),0),nb:filtered.filter(v=>v.siteId===s.id).length}));
 
