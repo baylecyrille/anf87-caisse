@@ -724,6 +724,11 @@ const depositsFor=(deposits,siteId,productId)=>{
   const entry=(deposits||[]).find(d=>d.site===siteId&&d.productId.toString()===productId.toString());
   return entry?entry.count:0;
 };
+// Portions d'un MENU déjà préparées d'avance et prêtes à vendre, sur un site donné.
+const readyStockFor=(readyCombos,siteId,comboId)=>{
+  const entry=(readyCombos||[]).find(r=>r.site===siteId&&r.comboId.toString()===comboId.toString());
+  return entry?entry.count:0;
+};
 // Vrai si CE produit est un produit "consigne" — c'est-à-dire qu'un AUTRE produit
 // (typiquement "Retour consigne") a son champ returnFor qui pointe vers lui. Permet
 // d'afficher le compteur "X dehors" uniquement sur les produits concernés.
@@ -956,6 +961,7 @@ function App(){
   const [accompaniments,setAccompaniments]=useState(LS.get("anf87_accompaniments")||[]); // gobelet/sucre/touillette... auto-décomptés
   const [reserve,setReserve]=useState(LS.get("anf87_reserve")||[]); // réserve précise de contenants par type (via Entrée rapide)
   const [deposits,setDeposits]=useState(LS.get("anf87_deposits")||[]); // consignes actuellement chez les clients, par produit et par site
+  const [readyCombos,setReadyCombos]=useState(LS.get("anf87_ready_combos")||[]); // portions de menu déjà préparées d'avance, par menu et par site
   const [siteId,setSiteId]=useState(LS.get("anf87_site")||"s1");
   const [tab,setTab]=useState("pos");
   const [cart,setCart]=useState(()=>LS.get("anf87_cart")||[]);
@@ -1048,6 +1054,7 @@ function App(){
       setAccompaniments(r.accompaniments||[]);LS.set("anf87_accompaniments",r.accompaniments||[]);
       setReserve(r.reserve||[]);LS.set("anf87_reserve",r.reserve||[]);
       setDeposits(r.deposits||[]);LS.set("anf87_deposits",r.deposits||[]);
+      setReadyCombos(r.readyCombos||[]);LS.set("anf87_ready_combos",r.readyCombos||[]);
       setConfig(r.config||{});LS.set("anf87_config",r.config||{});
       if(!happyHourUserSetRef.current)setHappyHourActive((r.config||{}).happy_hour_active==="true");
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
@@ -1143,6 +1150,20 @@ function App(){
   // quantité chacun) pour que le stock de CHAQUE produit soit décompté à la vente,
   // même si le combo lui-même n'existe pas dans le tableau Produits.
   const addComboToCart=async combo=>{
+    // Portions déjà préparées d'avance (voir Stock → Préparer menus) : consommées en
+    // PRIORITÉ, sans re-décompter les ingrédients (déjà fait à la préparation). Une
+    // fois épuisées, on repasse sur l'assemblage à la volée habituel.
+    const ready=readyStockFor(readyCombos,siteId,combo.id);
+    const alreadyReadyInCart=cart.filter(i=>i.pid===combo.id&&i.isCombo&&i.fromReadyStock).reduce((s,i)=>s+i.qty,0);
+    if(ready>alreadyReadyInCart){
+      setCart(prev=>{
+        const ex=prev.find(i=>i.pid===combo.id&&i.isCombo&&i.fromReadyStock);
+        if(ex)return prev.map(i=>i===ex?{...i,qty:i.qty+1}:i);
+        return[...prev,{id:combo.id+"-ready-"+Date.now(),pid:combo.id,isCombo:true,fromReadyStock:true,
+          comboItems:[],name:combo.name+" (prêt)",price:combo.price,emoji:"🍽",photo:combo.photo,drink:false,qty:1,free:false,unit:"menu"}];
+      });
+      return;
+    }
     const flatItems=flattenComboItems(combo,combos);
     const items=flatItems.map(ci=>{
       const prod=products.find(p=>p.id.toString()===ci.productId.toString());
@@ -1169,7 +1190,7 @@ function App(){
     // devient alors offrable.
     const containsDrink=items.some(it=>it.prod.drink);
     setCart(prev=>{
-      const ex=prev.find(i=>i.pid===combo.id&&i.isCombo);
+      const ex=prev.find(i=>i.pid===combo.id&&i.isCombo&&!i.fromReadyStock);
       if(ex)return prev.map(i=>i===ex?{...i,qty:i.qty+1}:i);
       return[...prev,{id:combo.id+"-"+Date.now(),pid:combo.id,isCombo:true,
         comboItems:items.map(it=>({pid:it.pid,qty:it.qty})),
@@ -1227,9 +1248,15 @@ function App(){
     // stock de CHAQUE produit inclus, pas le combo lui-même (qui n'existe pas dans
     // le tableau Produits) — comboItems.qty × le nombre de combos commandés.
     const stockEntries=[];
+    const readyComboDeltas={}; // comboId -> nombre vendu depuis le stock déjà préparé (à décompter après la vente)
     cart.forEach(item=>{
       if(item.noStock)return; // reçu virtuel de la part offerte (voir FreeDrinksModal) : déjà compté par la ligne d'origine
-      if(item.comboItems){
+      if(item.fromReadyStock){
+        // Vendu depuis une portion de menu déjà préparée d'avance : les ingrédients
+        // ont déjà été décomptés à la préparation (voir Stock → Préparer menus) — on
+        // ne décompte ici QUE le compteur "prêts", jamais les ingrédients une 2e fois.
+        readyComboDeltas[item.pid]=(readyComboDeltas[item.pid]||0)+item.qty;
+      }else if(item.comboItems){
         item.comboItems.forEach(ci=>stockEntries.push({id:ci.pid,qty:ci.qty*item.qty}));
       }else{
         const pid=item.pid||item.id;
@@ -1307,6 +1334,19 @@ function App(){
         return next;
       });
     }
+    // Reflet local immédiat du stock de menus "prêts" (décrémenté par la vente).
+    if(Object.keys(readyComboDeltas).length){
+      setReadyCombos(prev=>{
+        let next=prev.slice();
+        Object.entries(readyComboDeltas).forEach(([comboId,sold])=>{
+          if(sold===0)return;
+          const idx=next.findIndex(r=>r.site===siteId&&r.comboId.toString()===comboId.toString());
+          if(idx>=0)next[idx]={...next[idx],count:Math.max(0,next[idx].count-sold)};
+        });
+        LS.set("anf87_ready_combos",next);
+        return next;
+      });
+    }
     if(caisseUrl){
       const member=cart.some(i=>i.free)?(LS.get("anf87_last_member")||""):"";
       const saleResult=await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
@@ -1319,6 +1359,10 @@ function App(){
       for(const[depId,delta]of Object.entries(depositDeltas)){
         if(delta===0)continue;
         await apiWrite(caisseUrl,{action:"adjustDeposit",site:siteId,id:depId,delta});
+      }
+      for(const[comboId,sold]of Object.entries(readyComboDeltas)){
+        if(sold===0)continue;
+        await apiWrite(caisseUrl,{action:"adjustReadyCombo",site:siteId,id:comboId,delta:-sold});
       }
       // Les décomptes normaux passent par "items" ci-dessus, mais les AJOUTS croisés
       // (Retour Consigne -> Consigne, et Consigne -> Retour Consigne) doivent être
@@ -1405,8 +1449,8 @@ function App(){
           cartTotal={cartTotal} cartCount={cartCount} currentUser={currentUser}
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
-          happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour}/>}
-        {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories}/>}
+          happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour} readyCombos={readyCombos}/>}
+        {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager}/>}
         {tab==="admin"&&(isAdmin||isManager)&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
@@ -1588,7 +1632,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl,rese
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve,happyHourActive,onToggleHappyHour}){
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve,happyHourActive,onToggleHappyHour,readyCombos}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
@@ -1828,10 +1872,14 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         };
         const buildComboTile=(combo)=>{
           const cid="combo-"+combo.id;
+          const ready=readyStockFor(readyCombos,siteId,combo.id);
           const flatItems=flattenComboItems(combo,combos);
           const neededByProduct={};
           flatItems.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
-          const stockOk=Object.keys(neededByProduct).every(pid=>{
+          // Des portions déjà préparées d'avance suffisent à rendre le menu
+          // disponible, même si le stock des ingrédients bruts est par ailleurs
+          // insuffisant pour en assembler un de plus à la volée.
+          const stockOk=ready>0||Object.keys(neededByProduct).every(pid=>{
             const prod=products.find(p=>p.id.toString()===pid.toString());
             return prod&&(prod.stock[siteId]||0)>=neededByProduct[pid];
           });
@@ -1852,7 +1900,8 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               <img src={combo.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
               <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0) 38%,rgba(0,0,0,0.8) 100%)"}}/>
               <div style={{position:"absolute",top:6,left:6,background:"#5856D6",color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍽 Menu</div>
-              {!stockOk&&<div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>RUPTURE</div>}
+              {ready>0?<div style={{position:"absolute",top:6,right:6,background:T.green,color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>{ready} prêt{ready>1?"s":""}</div>
+                :!stockOk&&<div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>RUPTURE</div>}
               <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
                 <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{combo.name}</div>
                 <div style={{fontSize:14,fontWeight:900,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)"}}>{fmt(combo.price)}</div>
@@ -1862,7 +1911,7 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               <div style={{fontSize:10,color:"#5856D6",fontWeight:700,marginBottom:2}}>Menu</div>
               <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:3,lineHeight:1.2}}>{combo.name}</div>
               <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(combo.price)}</div>
-              <div style={{fontSize:10,fontWeight:600,color:stockOk?T.green:"#FF3B30",marginTop:3}}>{stockOk?"✓ dispo":"RUPTURE"}</div>
+              <div style={{fontSize:10,fontWeight:600,color:stockOk?T.green:"#FF3B30",marginTop:3}}>{ready>0?`${ready} prêt${ready>1?"s":""}`:stockOk?"✓ dispo":"RUPTURE"}</div>
             </>}
           </button>
           {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
@@ -3023,6 +3072,132 @@ function StockCsvImport({products,sites,caisseUrl,onSave,categories}){
   </div>);
 }
 
+// ═══ PRÉPARER DES MENUS À L'AVANCE (ex: monter 20 Croque Monsieur avant le coup
+// d'envoi) — calcule combien de portions sont réalisables avec le stock actuel des
+// ingrédients, décompte ce stock à la préparation, et crédite un compteur "prêts à
+// vendre" consommé en priorité par la Caisse avant de repasser en assemblage à la
+// volée. ═══
+function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setReadyCombos,onSaveProducts,caisseUrl}){
+  const [qtyInputs,setQtyInputs]=useState({}); // comboId -> quantité à préparer saisie
+  const [busyId,setBusyId]=useState(null);
+
+  const maxPossible=combo=>{
+    const flat=flattenComboItems(combo,combos);
+    const neededByProduct={};
+    flat.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
+    const ids=Object.keys(neededByProduct);
+    if(ids.length===0)return 0;
+    return Math.floor(Math.min(...ids.map(pid=>{
+      const prod=products.find(p=>p.id.toString()===pid.toString());
+      const need=neededByProduct[pid];
+      if(!prod||need<=0)return 0;
+      return (prod.stock[siteId]||0)/need;
+    })));
+  };
+
+  const prepare=async combo=>{
+    const n=+qtyInputs[combo.id]||0;
+    const max=maxPossible(combo);
+    if(n<=0||n>max||busyId)return;
+    setBusyId(combo.id);
+    const flat=flattenComboItems(combo,combos);
+    const neededByProduct={};
+    flat.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
+    let upd=products;
+    for(const pid of Object.keys(neededByProduct)){
+      const qty=neededByProduct[pid]*n;
+      upd=upd.map(p=>p.id.toString()===pid.toString()?{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-qty)}}:p);
+      if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:siteId,qty:-qty,mode:"delta"});
+    }
+    onSaveProducts(upd);
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"adjustReadyCombo",site:siteId,id:combo.id,delta:n});
+    setReadyCombos(prev=>{
+      const idx=prev.findIndex(r=>r.site===siteId&&r.comboId.toString()===combo.id.toString());
+      const next=idx>=0?prev.map((r,i)=>i===idx?{...r,count:r.count+n}:r):[...prev,{site:siteId,comboId:combo.id,count:n}];
+      LS.set("anf87_ready_combos",next);
+      return next;
+    });
+    setQtyInputs(prev=>({...prev,[combo.id]:""}));
+    setBusyId(null);
+  };
+
+  const unprepare=async(combo,amount)=>{
+    // Retour en arrière (erreur de saisie, ou portions finalement pas utilisées) :
+    // remet les ingrédients en stock et retire du compteur "prêts".
+    const current=readyStockFor(readyCombos,siteId,combo.id);
+    const n=Math.min(amount,current);
+    if(n<=0||busyId)return;
+    setBusyId(combo.id);
+    const flat=flattenComboItems(combo,combos);
+    const neededByProduct={};
+    flat.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
+    let upd=products;
+    for(const pid of Object.keys(neededByProduct)){
+      const qty=neededByProduct[pid]*n;
+      upd=upd.map(p=>p.id.toString()===pid.toString()?{...p,stock:{...p.stock,[siteId]:(p.stock[siteId]||0)+qty}}:p);
+      if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:siteId,qty:qty,mode:"delta"});
+    }
+    onSaveProducts(upd);
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"adjustReadyCombo",site:siteId,id:combo.id,delta:-n});
+    setReadyCombos(prev=>{
+      const next=prev.map(r=>(r.site===siteId&&r.comboId.toString()===combo.id.toString())?{...r,count:Math.max(0,r.count-n)}:r);
+      LS.set("anf87_ready_combos",next);
+      return next;
+    });
+    setBusyId(null);
+  };
+
+  return(<div style={{flex:1,overflowY:"auto",padding:14}}>
+    <div style={{display:"flex",gap:7,overflowX:"auto",marginBottom:14}}>
+      {sites.map(s=><button key={s.id} onClick={()=>setSiteId(s.id)} style={{flexShrink:0,padding:"7px 14px",borderRadius:20,
+        border:"none",background:s.id===siteId?s.color:T.card,color:s.id===siteId?"white":T.dark,fontSize:12,fontWeight:600,cursor:"pointer",boxShadow:"0 1px 4px rgba(0,0,0,.08)"}}>
+        {s.name}
+      </button>)}
+    </div>
+    {combos.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Aucun menu créé pour l'instant (Admin → Menus).</div>}
+    {combos.map(combo=>{
+      const max=maxPossible(combo);
+      const ready=readyStockFor(readyCombos,siteId,combo.id);
+      const val=qtyInputs[combo.id]??"";
+      return(<div key={combo.id} style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:12,marginBottom:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+          {combo.photo?<img src={combo.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover"}}/>:<span style={{fontSize:26}}>🍽</span>}
+          <div style={{flex:1}}>
+            <div style={{fontSize:13,fontWeight:700,color:T.dark}}>{combo.name}</div>
+            <div style={{fontSize:11,color:T.mid}}>{combo.items.map(it=>{
+              if(it.type==="combo"){const c=combos.find(cc=>cc.id===it.comboId);return it.qty+"× 🍽 "+(c?.name||"?");}
+              const prod=products.find(p=>p.id.toString()===it.productId.toString());
+              return it.qty+(prod?.sellByVolume?(prod.unit||"cl"):"× ")+(prod?.name||"?");
+            }).join(", ")}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
+          <div style={{flex:1,background:T.bg,borderRadius:8,padding:"7px 10px",textAlign:"center"}}>
+            <div style={{fontSize:9,color:T.mid,fontWeight:600}}>RÉALISABLES AVEC LE STOCK</div>
+            <div style={{fontSize:18,fontWeight:900,color:max>0?T.dark:T.red}}>{max}</div>
+          </div>
+          <div style={{flex:1,background:"#E8F5E9",borderRadius:8,padding:"7px 10px",textAlign:"center"}}>
+            <div style={{fontSize:9,color:"#2E7D32",fontWeight:600}}>DÉJÀ PRÊTS</div>
+            <div style={{fontSize:18,fontWeight:900,color:"#2E7D32"}}>{ready}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:6}}>
+          <input type="number" min="1" max={max} placeholder={max>0?`Jusqu'à ${max}`:"Stock insuffisant"} value={val} disabled={max<=0}
+            onChange={e=>setQtyInputs(prev=>({...prev,[combo.id]:e.target.value}))}
+            style={{flex:1,padding:"9px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,textAlign:"center"}}/>
+          <button onClick={()=>prepare(combo)} disabled={busyId||!(+val>0)||+val>max}
+            style={{flex:1,padding:"9px",background:(busyId||!(+val>0)||+val>max)?"#ccc":T.green,color:"white",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:13}}>
+            {busyId===combo.id?"⏳...":"✅ Préparer"}
+          </button>
+        </div>
+        {ready>0&&<button onClick={()=>unprepare(combo,1)} disabled={busyId} style={{width:"100%",marginTop:6,padding:6,background:"none",border:"none",cursor:"pointer",fontSize:11,color:T.red}}>
+          ↩️ Annuler 1 portion prête (remet les ingrédients en stock)
+        </button>}
+      </div>);
+    })}
+  </div>);
+}
+
 function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,caisseUrl}){
   const site=sites.find(s=>s.id===siteId)||sites[0];
 
@@ -3218,14 +3393,14 @@ function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,cai
   </div>);
 }
 
-function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve,deposits,setDeposits,readOnly,categories}){
-  const [view,setView]=useState("list"); // list | entry | transfer | containers | dashboard
+function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setContainers,reserve,setReserve,deposits,setDeposits,readOnly,categories,combos,readyCombos,setReadyCombos}){
+  const [view,setView]=useState("list"); // list | entry | transfer | containers | dashboard | prepare
   const [sel,setSel]=useState(siteId);
 
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     {/* Tabs */}
     {!readOnly&&<div style={{background:T.card,borderBottom:`1px solid ${T.border}`,display:"flex",flexShrink:0,overflowX:"auto"}}>
-      {[["dashboard","📊 Dashboard"],["list","📋 Stock"],["entry","📥 Entrée rapide"],["csv","📄 Import CSV"],["containers","🧴 Contenants"],["transfer","↔ Transfert"]].map(([v,l])=>(
+      {[["dashboard","📊 Dashboard"],["list","📋 Stock"],["prepare","🧑‍🍳 Préparer menus"],["entry","📥 Entrée rapide"],["csv","📄 Import CSV"],["containers","🧴 Contenants"],["transfer","↔ Transfert"]].map(([v,l])=>(
         <button key={v} onClick={()=>setView(v)} style={{flex:"1 0 auto",padding:"12px 10px",border:"none",background:"none",cursor:"pointer",
           fontSize:12,fontWeight:600,color:view===v?T.red:T.mid,borderBottom:view===v?`2px solid ${T.red}`:"2px solid transparent",whiteSpace:"nowrap"}}>
           {l}
@@ -3234,6 +3409,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
     </div>}
     {readOnly&&<div style={{background:"#FFF8E1",padding:"8px 14px",fontSize:12,color:"#E65100",flexShrink:0}}>👁 Consultation uniquement</div>}
     {!readOnly&&view==="dashboard"&&<StockDashboard products={products} sites={sites} siteId={sel} setSiteId={setSel} containers={containers} deposits={deposits} caisseUrl={caisseUrl}/>}
+    {!readOnly&&view==="prepare"&&<PrepareCombos combos={combos} products={products} sites={sites} siteId={sel} setSiteId={setSel} readyCombos={readyCombos} setReadyCombos={setReadyCombos} onSaveProducts={onSave} caisseUrl={caisseUrl}/>}
     {(view==="list"||readOnly)&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={readOnly}/>}
     {!readOnly&&view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
     {!readOnly&&view==="csv"&&<StockCsvImport products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} categories={categories}/>}

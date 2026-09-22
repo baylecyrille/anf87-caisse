@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit","logHappyHour"];
+  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit","logHappyHour","adjustReadyCombo"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -64,6 +64,7 @@ function doGet(e) {
       case "saveCameraPref":      result = saveCameraPref(e); break;
       case "addToReserve":        result = addToReserve(e); break;
       case "adjustDeposit":       result = adjustDeposit(e); break;
+      case "adjustReadyCombo":    result = adjustReadyCombo(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -206,7 +207,7 @@ function getAllData(){
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
     categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss),
     portions:getPortionsData(ss), combos:getCombosData(ss), accompaniments:getAccompanimentsData(ss),
-    reserve:getReserveData(ss), deposits:getDepositsData(ss), config:getConfig(ss), ts:Date.now()};
+    reserve:getReserveData(ss), deposits:getDepositsData(ss), readyCombos:getReadyCombosData(ss), config:getConfig(ss), ts:Date.now()};
 }
 
 // Réglages globaux du club (clé/valeur) — ex: clé Affiliate SumUp, App ID SumUp.
@@ -267,6 +268,35 @@ function adjustDeposit(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"ConsignesDehors"), p=e.parameter;
   if(sh.getLastRow()<=1){
     sh.getRange(1,1,1,3).setValues([["SiteID","ProduitID","Nombre"]]);
+    sh.getRange(1,1,1,3).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var site=p.site, id=p.id, delta=+p.delta||0;
+  if(!site||!id||delta===0)return{ok:false,error:"Paramètres manquants"};
+  if(sh.getLastRow()>1){
+    var data=sh.getRange(2,1,sh.getLastRow()-1,3).getValues();
+    for(var i=0;i<data.length;i++){
+      if(data[i][0].toString()===site.toString()&&data[i][1].toString()===id.toString()){
+        var newCount=Math.max(0,(+data[i][2]||0)+delta);
+        sh.getRange(i+2,3).setValue(newCount);
+        return{ok:true,count:newCount};
+      }
+    }
+  }
+  sh.appendRow([site,id,Math.max(0,delta)]);
+  return{ok:true,count:Math.max(0,delta)};
+}
+// Portions de MENU déjà préparées d'avance (ex: 20 Croque Monsieur montés avant le
+// coup d'envoi), par site — décrémenté directement à la vente d'un menu tant qu'il
+// en reste, sans re-décompter les ingrédients (déjà fait à la préparation).
+function getReadyCombosData(ss){
+  var sh=ss.getSheetByName("MenusPrets"); if(!sh||sh.getLastRow()<=1)return [];
+  return sh.getRange(2,1,sh.getLastRow()-1,3).getValues().filter(r=>r[0]&&r[1])
+    .map(r=>({site:r[0],comboId:r[1],count:+r[2]||0}));
+}
+function adjustReadyCombo(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"MenusPrets"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,3).setValues([["SiteID","MenuID","Nombre"]]);
     sh.getRange(1,1,1,3).setFontWeight("bold"); sh.setFrozenRows(1);
   }
   var site=p.site, id=p.id, delta=+p.delta||0;
