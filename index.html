@@ -760,6 +760,25 @@ const toggleAvailabilityForSite=(prod,allSites,siteId)=>{
   }
   return newList.length>=allSites.length?"":newList.join(",");
 };
+// Résout un menu jusqu'aux vrais PRODUITS qui le composent, y compris quand il
+// contient lui-même un ou plusieurs autres menus (ex: "Croque Frites" qui inclut le
+// menu "Croque Monsieur") — nécessaire car le stock, lui, ne se décompte qu'au
+// niveau produit. depth limite les boucles accidentelles (menu A qui inclurait B qui
+// inclurait A) sans devoir les détecter explicitement.
+const flattenComboItems=(combo,combos,multiplier,depth)=>{
+  multiplier=multiplier||1; depth=depth||0;
+  if(depth>5||!combo)return[];
+  let result=[];
+  (combo.items||[]).forEach(it=>{
+    if(it.type==="combo"){
+      const sub=combos.find(c=>c.id.toString()===(it.comboId||"").toString());
+      if(sub)result=result.concat(flattenComboItems(sub,combos,multiplier*(+it.qty||1),depth+1));
+    }else{
+      result.push({productId:it.productId,qty:(+it.qty||0)*multiplier,portionId:it.portionId||""});
+    }
+  });
+  return result;
+};
 // Propose des montants remis réalistes (vraies pièces/billets), plutôt que des
 // arrondis arbitraires : pour chaque coupure réelle, le plus petit multiple qui
 // couvre le total — donne les montants qu'on paierait vraiment avec une seule sorte
@@ -1112,14 +1131,27 @@ function App(){
   // quantité chacun) pour que le stock de CHAQUE produit soit décompté à la vente,
   // même si le combo lui-même n'existe pas dans le tableau Produits.
   const addComboToCart=async combo=>{
-    const items=combo.items.map(ci=>{
+    const flatItems=flattenComboItems(combo,combos);
+    const items=flatItems.map(ci=>{
       const prod=products.find(p=>p.id.toString()===ci.productId.toString());
       return{pid:ci.productId,qty:ci.qty,prod};
     });
     const missing=items.find(it=>!it.prod);
     if(missing){await customAlert("⚠️ Ce menu contient un produit qui n'existe plus, il ne peut pas être ajouté.");return;}
-    const insuffisant=items.find(it=>(it.prod.stock[siteId]||0)<it.qty);
-    if(insuffisant){await customAlert("⚠️ Stock insuffisant pour ce menu (\""+insuffisant.prod.name+"\").");return;}
+    // Plusieurs lignes du menu (y compris via un menu imbriqué) peuvent pointer vers
+    // le MÊME produit — on additionne avant de vérifier le stock, sinon un menu
+    // pourrait sembler disponible alors que le total réellement nécessaire dépasse
+    // ce qui reste.
+    const neededByProduct={};
+    items.forEach(it=>{ neededByProduct[it.pid]=(neededByProduct[it.pid]||0)+it.qty; });
+    const insuffisantId=Object.keys(neededByProduct).find(pid=>{
+      const prod=products.find(p=>p.id.toString()===pid.toString());
+      return (prod.stock[siteId]||0)<neededByProduct[pid];
+    });
+    if(insuffisantId){
+      const prodName=products.find(p=>p.id.toString()===insuffisantId.toString())?.name||"?";
+      await customAlert("⚠️ Stock insuffisant pour ce menu (\""+prodName+"\").");return;
+    }
     // Un menu contenant au moins une boisson est éligible à la carte boissons
     // offertes (comme un produit boisson classique) — la valeur totale du menu
     // devient alors offrable.
@@ -1784,9 +1816,12 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         };
         const buildComboTile=(combo)=>{
           const cid="combo-"+combo.id;
-          const stockOk=combo.items.every(it=>{
-            const prod=products.find(p=>p.id.toString()===it.productId.toString());
-            return prod&&(prod.stock[siteId]||0)>=it.qty;
+          const flatItems=flattenComboItems(combo,combos);
+          const neededByProduct={};
+          flatItems.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
+          const stockOk=Object.keys(neededByProduct).every(pid=>{
+            const prod=products.find(p=>p.id.toString()===pid.toString());
+            return prod&&(prod.stock[siteId]||0)>=neededByProduct[pid];
           });
           return(<div key={cid} data-pid={cid} onPointerDown={()=>startDrag(cid)}
             style={{position:"relative",touchAction:reorderMode?"none":"auto",
@@ -1826,7 +1861,7 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         // Fusionne produits ET menus dans le même ordre personnalisé, pour pouvoir
         // aussi déplacer les menus n'importe où dans la grille (pas coincés à la fin).
         const productEntries=filteredRaw.map(p=>({id:p.id.toString(),els:buildProductTile(p)}));
-        const comboEntries=(cat==="Tout"||cat==="Menus")?combos.filter(c=>c.items.every(it=>{
+        const comboEntries=(cat==="Tout"||cat==="Menus")?combos.filter(c=>flattenComboItems(c,combos).every(it=>{
             const prod=products.find(p=>p.id.toString()===it.productId.toString());
             return prod&&isAvailableAtSite(prod,siteId);
           })).map(c=>({id:"combo-"+c.id,els:[buildComboTile(c)]})):[];
@@ -3583,20 +3618,38 @@ function MemberCardPreview({member,boissonsUrl,onClose}){
 function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
   const [edit,setEdit]=useState(null); // combo en cours d'édition, ou {} pour nouveau
   const [busy,setBusy]=useState(false);
+  const [showWeekly,setShowWeekly]=useState(false);
 
   const startNew=()=>setEdit({id:null,name:"",price:"",items:[],photo:""});
   const startEdit=c=>setEdit({id:c.id,name:c.name,price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});
 
   const addItem=()=>{
     if(!products.length)return;
-    setEdit(prev=>({...prev,items:[...prev.items,{productId:products[0].id,qty:1,portionId:""}]}));
+    setEdit(prev=>({...prev,items:[...prev.items,{type:"product",productId:products[0].id,qty:1,portionId:"",alternates:[]}]}));
   };
   const updateItem=(idx,field,val)=>setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i===idx?{...it,[field]:val}:it)}));
+  // Bascule une ligne entre "Produit" et "Menu" (référence à un autre menu déjà
+  // existant, ex: "Croque Frites" qui inclut "Croque Monsieur") — réinitialise les
+  // champs propres à l'autre type pour éviter un mélange incohérent.
+  const setItemType=(idx,type)=>{
+    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>{
+      if(i!==idx)return it;
+      if(type==="combo"){
+        const firstOther=combos.find(c=>c.id!==prev.id);
+        return{type:"combo",comboId:firstOther?.id||"",qty:1};
+      }
+      return{type:"product",productId:products[0]?.id||"",qty:1,portionId:"",alternates:[]};
+    })}));
+  };
+  const selectItemCombo=(idx,comboId)=>{
+    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,comboId})}));
+  };
   // Changer de produit réinitialise qty/portionId (une portion d'un autre produit
-  // n'a pas de sens, et un produit à l'unité n'a pas de portionId).
+  // n'a pas de sens, et un produit à l'unité n'a pas de portionId) — mais PAS les
+  // alternatives, qui restent valables indépendamment du produit actif.
   const selectItemProduct=(idx,prodId)=>{
     const prod=products.find(p=>p.id.toString()===prodId.toString());
-    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{productId:prodId,qty:prod?.sellByVolume?0:1,portionId:""})}));
+    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,productId:prodId,qty:prod?.sellByVolume?0:1,portionId:""})}));
   };
   // Choisir une portion configurée fixe la quantité en cl/g directement (pas un
   // "nombre d'unités") — c'est cette valeur qui sera réellement décomptée du stock.
@@ -3605,15 +3658,41 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
     setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,portionId,qty:po?po.size:it.qty})}));
   };
   const removeItem=idx=>setEdit(prev=>({...prev,items:prev.items.filter((_,i)=>i!==idx)}));
+  // Ajoute/retire un produit interchangeable pour cet ingrédient — ex: 2 jambons
+  // différents, pour pouvoir changer facilement lequel est utilisé chaque semaine
+  // (voir l'écran "🔄 Produits de la semaine") sans reconfigurer tout le menu.
+  const addAlternate=(idx,prodId)=>{
+    if(!prodId)return;
+    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>{
+      if(i!==idx)return it;
+      const current=it.alternates||[];
+      if(prodId===it.productId||current.includes(prodId))return it;
+      return{...it,alternates:[...current,prodId]};
+    })}));
+  };
+  const removeAlternate=(idx,prodId)=>{
+    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,alternates:(it.alternates||[]).filter(a=>a!==prodId)})}));
+  };
 
   const handlePhoto=e=>{const f=e.target.files[0];if(!f)return;
     resizePhotoFile(f).then(url=>setEdit(prev=>({...prev,photo:url})));
+  };
+  // Empêche un menu de s'inclure lui-même, même indirectement (A -> B -> A).
+  const comboDependsOn=(startId,targetId,depth)=>{
+    depth=depth||0; if(depth>6)return false;
+    const combo=combos.find(c=>c.id===startId);
+    if(!combo)return false;
+    return combo.items.some(it=>it.type==="combo"&&(it.comboId===targetId||comboDependsOn(it.comboId,targetId,depth+1)));
   };
 
   const save=async()=>{
     if(!edit.name||!edit.price||edit.items.length===0)return;
     if(edit.items.some(it=>!it.qty||+it.qty<=0)){
       await customAlert("⚠️ Choisissez une portion (ou une quantité) pour chaque produit au volume du menu avant d'enregistrer.");
+      return;
+    }
+    if(edit.id&&edit.items.some(it=>it.type==="combo"&&(it.comboId===edit.id||comboDependsOn(it.comboId,edit.id)))){
+      await customAlert("⚠️ Ce menu ne peut pas s'inclure lui-même, même indirectement — vérifiez les menus imbriqués sélectionnés.");
       return;
     }
     setBusy(true);
@@ -3630,10 +3709,14 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
     }else{
       photoParam="__KEEP__";
     }
-    const itemsStr=edit.items.map(it=>it.productId+":"+it.qty+":"+(it.portionId||"")).join(",");
+    const itemsStr=edit.items.map(it=>{
+      if(it.type==="combo")return(it.comboId||"")+":"+(it.qty||1)+"::"+":combo";
+      return it.productId+":"+it.qty+":"+(it.portionId||"")+":"+((it.alternates||[]).join("|"));
+    }).join(",");
     const r=await apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsStr,photo:photoParam,...extra});
     if(r.ok){
-      const newEntry={id,name:edit.name,price:+edit.price,items:edit.items.map(it=>({productId:it.productId,qty:+it.qty,portionId:it.portionId||""})),
+      const newEntry={id,name:edit.name,price:+edit.price,
+        items:edit.items.map(it=>it.type==="combo"?{type:"combo",comboId:it.comboId,qty:+it.qty}:{type:"product",productId:it.productId,qty:+it.qty,portionId:it.portionId||"",alternates:it.alternates||[]}),
         photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setCombos(prev=>[...prev.filter(c=>c.id!==id),newEntry]);
       setEdit(null);
@@ -3649,6 +3732,10 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
 
   const prodName=pid=>products.find(p=>p.id.toString()===pid.toString())?.name||"(produit supprimé)";
   const itemLabel=it=>{
+    if(it.type==="combo"){
+      const c=combos.find(cc=>cc.id===it.comboId);
+      return it.qty+"× 🍽 "+(c?.name||"(menu supprimé)");
+    }
     const prod=products.find(p=>p.id.toString()===it.productId.toString());
     if(prod?.sellByVolume){
       const po=(portions||[]).find(p=>p.id.toString()===(it.portionId||"").toString());
@@ -3658,9 +3745,14 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
   };
 
   return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
-    <button onClick={startNew} style={{width:"100%",padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,marginBottom:14}}>
-      + Nouveau menu
-    </button>
+    <div style={{display:"flex",gap:8,marginBottom:14}}>
+      <button onClick={startNew} style={{flex:1,padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>
+        + Nouveau menu
+      </button>
+      <button onClick={()=>setShowWeekly(true)} style={{flex:1,padding:"12px",background:"#5856D6",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>
+        🔄 Produits de la semaine
+      </button>
+    </div>
     {combos.map(c=>(
       <div key={c.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
         {c.photo?<img src={c.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:26,flexShrink:0}}>🍽</span>}
@@ -3689,16 +3781,42 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
 
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:6}}>Produits inclus</label>
         {edit.items.map((it,idx)=>{
+          if(it.type==="combo"){
+            const nestedCombo=combos.find(c=>c.id===it.comboId);
+            const otherCombos=combos.filter(c=>c.id!==edit.id&&!comboDependsOn(c.id,edit.id||"__new__"));
+            return(<div key={idx} style={{marginBottom:8}}>
+              <div style={{display:"flex",gap:6,marginBottom:4}}>
+                <button onClick={()=>setItemType(idx,"product")} style={{padding:"5px 9px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,fontSize:10,cursor:"pointer"}}>Produit</button>
+                <button style={{padding:"5px 9px",background:"#EEF0FF",border:"1px solid #5856D6",borderRadius:6,fontSize:10,cursor:"default",fontWeight:700,color:"#5856D6"}}>🍽 Menu</button>
+              </div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <select value={it.comboId||""} onChange={e=>selectItemCombo(idx,e.target.value)}
+                  style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
+                  <option value="">— Choisir un menu —</option>
+                  {otherCombos.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <input type="number" min="1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
+                  style={{width:50,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center"}}/>
+                <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+              </div>
+              {nestedCombo&&<div style={{fontSize:10,color:T.mid,marginTop:4}}>Inclut : {nestedCombo.items.map(itemLabel).join(", ")}</div>}
+            </div>);
+          }
           const prod=products.find(p=>p.id.toString()===it.productId.toString());
           const itemPortions=prod?(portions||[]).filter(po=>po.productId.toString()===prod.id.toString()):[];
           return(<div key={idx} style={{marginBottom:8}}>
+            {combos.length>0&&<div style={{display:"flex",gap:6,marginBottom:4}}>
+              <button style={{padding:"5px 9px",background:"#EEF0FF",border:"1px solid #5856D6",borderRadius:6,fontSize:10,cursor:"default",fontWeight:700,color:"#5856D6"}}>Produit</button>
+              <button onClick={()=>setItemType(idx,"combo")} style={{padding:"5px 9px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,fontSize:10,cursor:"pointer"}}>🍽 Menu</button>
+            </div>}
             <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:prod?.sellByVolume?6:0}}>
               <select value={it.productId} onChange={e=>selectItemProduct(idx,e.target.value)}
                 style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
                 {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
-              {!prod?.sellByVolume&&<input type="number" min="1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
-                style={{width:50,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center"}}/>}
+              {!prod?.sellByVolume&&<input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
+                title="Quantités décimales acceptées (ex: 0.5 pour une demi-tranche)"
+                style={{width:58,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center"}}/>}
               <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
             </div>
             {prod?.sellByVolume&&(itemPortions.length>0?(
@@ -3709,11 +3827,30 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
               </select>
             ):(
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <input type="number" min="1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)} placeholder="Quantité"
+                <input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)} placeholder="Quantité"
                   style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}/>
                 <span style={{fontSize:11,color:T.mid}}>{prod.unit||"cl"} (aucune portion configurée pour ce produit)</span>
               </div>
             ))}
+            {/* Produits interchangeables : ex. 2 jambons différents selon ce qui est
+                acheté en semaine — voir l'écran "🔄 Produits de la semaine" pour
+                changer rapidement lequel est actif sans revenir ici. */}
+            <div style={{marginTop:6,padding:8,background:T.bg,borderRadius:7}}>
+              <div style={{fontSize:10,fontWeight:600,color:T.mid,marginBottom:5}}>🔄 Autres produits possibles pour cet ingrédient (optionnel)</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:(it.alternates||[]).length?6:0}}>
+                {(it.alternates||[]).map(altId=>{
+                  const altProd=products.find(p=>p.id.toString()===altId.toString());
+                  return(<span key={altId} style={{display:"flex",alignItems:"center",gap:4,background:"white",border:`1px solid ${T.border}`,borderRadius:14,padding:"3px 8px",fontSize:11}}>
+                    {altProd?.name||"(produit supprimé)"}
+                    <button onClick={()=>removeAlternate(idx,altId)} style={{background:"none",border:"none",cursor:"pointer",color:T.red,fontSize:11,padding:0}}>✕</button>
+                  </span>);
+                })}
+              </div>
+              <select value="" onChange={e=>addAlternate(idx,e.target.value)} style={{width:"100%",padding:"6px",border:`1px solid ${T.border}`,borderRadius:6,fontSize:11}}>
+                <option value="">+ Ajouter un produit interchangeable...</option>
+                {products.filter(p=>p.id!==it.productId&&!(it.alternates||[]).includes(p.id)).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
           </div>);
         })}
         <button onClick={addItem} style={{width:"100%",padding:"9px",background:T.bg,border:`1px dashed ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600,color:T.dark,marginBottom:14}}>
@@ -3729,6 +3866,7 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
         </div>
       </div>
     </div>}
+    {showWeekly&&<WeeklyComboIngredients combos={combos} products={products} setCombos={setCombos} caisseUrl={caisseUrl} onClose={()=>setShowWeekly(false)}/>}
   </div>);
 }
 
@@ -4906,6 +5044,72 @@ function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,
         <span style={{fontSize:13,fontWeight:700}}>Total{siteFilter!=="all"?" — "+sites.find(s=>s.id===siteFilter)?.name:""}</span>
         <span style={{fontSize:18,fontWeight:900}}>{fmt(total)}</span>
       </div>
+    </div>
+  </div>);
+}
+
+// ═══ CHANGER RAPIDEMENT LES PRODUITS INTERCHANGEABLES D'UN MENU (ex: quel jambon
+// utiliser cette semaine) — sans repasser par toute la configuration du menu. Les
+// produits actuellement EN STOCK sont mis en avant en premier. ═══
+function WeeklyComboIngredients({combos,products,setCombos,caisseUrl,onClose}){
+  const [busyKey,setBusyKey]=useState(null); // "comboId-itemIdx" en cours de bascule
+
+  const totalStock=p=>Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0);
+
+  const swap=async(combo,itemIdx,newProdId)=>{
+    const item=combo.items[itemIdx];
+    if(newProdId===item.productId)return;
+    const key=combo.id+"-"+itemIdx;
+    setBusyKey(key);
+    const newAlternates=[...(item.alternates||[]).filter(a=>a!==newProdId),item.productId];
+    const newItems=combo.items.map((it,i)=>i!==itemIdx?it:{...it,productId:newProdId,alternates:newAlternates});
+    const itemsStr=newItems.map(it=>it.productId+":"+it.qty+":"+(it.portionId||"")+":"+((it.alternates||[]).join("|"))).join(",");
+    const r=await apiWrite(caisseUrl,{action:"saveCombo",id:combo.id,name:combo.name,price:combo.price,items:itemsStr,photo:"__KEEP__"});
+    if(r.ok)setCombos(prev=>prev.map(c=>c.id===combo.id?{...c,items:newItems}:c));
+    setBusyKey(null);
+  };
+
+  const combosWithAlternates=combos.filter(c=>c.items.some(it=>(it.alternates||[]).length>0));
+
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:225,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
+    <div style={{background:T.card,borderRadius:18,padding:18,width:"100%",maxWidth:440,maxHeight:"88vh",display:"flex",flexDirection:"column"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <div style={{fontWeight:800,fontSize:16,color:T.dark}}>🔄 Produits de la semaine</div>
+        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>
+      </div>
+      <div style={{fontSize:12,color:T.mid,marginBottom:12}}>Changez en un tap quel produit est utilisé cette semaine pour chaque ingrédient interchangeable. Les produits en stock sont mis en avant.</div>
+      <div style={{overflowY:"auto",flex:1}}>
+        {combosWithAlternates.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Aucun menu n'a d'ingrédient interchangeable configuré pour l'instant (à faire dans "✏️ Modifier" un menu).</div>}
+        {combosWithAlternates.map(combo=>(
+          <div key={combo.id} style={{marginBottom:16}}>
+            <div style={{fontWeight:700,fontSize:13,color:T.dark,marginBottom:8}}>{combo.name}</div>
+            {combo.items.map((it,idx)=>{
+              if(!(it.alternates||[]).length)return null;
+              const candidates=[it.productId,...it.alternates]
+                .map(id=>products.find(p=>p.id.toString()===id.toString())).filter(Boolean)
+                .sort((a,b)=>(totalStock(b)>0?1:0)-(totalStock(a)>0?1:0)); // en stock d'abord
+              const key=combo.id+"-"+idx;
+              return(<div key={idx} style={{marginBottom:10,paddingLeft:8,borderLeft:`3px solid ${T.border}`}}>
+                <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                  {candidates.map(p=>{
+                    const active=p.id===it.productId;
+                    const stk=totalStock(p);
+                    return(<button key={p.id} onClick={()=>swap(combo,idx,p.id)} disabled={busyKey===key}
+                      style={{display:"flex",alignItems:"center",gap:6,padding:"6px 10px",borderRadius:16,cursor:busyKey===key?"default":"pointer",
+                        border:`1.5px solid ${active?T.red:T.border}`,background:active?T.red:(stk>0?"#E8F5E9":"white"),
+                        color:active?"white":(stk>0?"#2E7D32":T.mid),fontSize:12,fontWeight:active?700:500}}>
+                      {p.photo?<img src={p.photo} style={{width:18,height:18,borderRadius:4,objectFit:"cover"}}/>:<span>{p.emoji}</span>}
+                      {p.name}
+                      <span style={{fontSize:10,opacity:.8}}>({stk<=0?"rupture":stk+" en stock"})</span>
+                    </button>);
+                  })}
+                </div>
+              </div>);
+            })}
+          </div>
+        ))}
+      </div>
+      <button onClick={onClose} style={{width:"100%",padding:"11px",background:T.dark,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,marginTop:10}}>Terminé</button>
     </div>
   </div>);
 }

@@ -424,8 +424,22 @@ function getCombosData(ss){
   return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0]).map(r=>{
     var items=(r[3]||"").toString().split(",").map(function(pair){
       var parts=pair.split(":");
-      return{productId:(parts[0]||"").trim(),qty:+parts[1]||1,portionId:(parts[2]||"").trim()};
-    }).filter(function(it){return it.productId;});
+      // 4e partie optionnelle : autres produits interchangeables pour cet
+      // ingrédient (séparés par "|"), pour pouvoir changer facilement lequel est
+      // utilisé cette semaine (ex: jambon 140g vs jambon supérieur 240g) sans
+      // rouvrir toute la configuration du menu.
+      var alternates=(parts[3]||"").split("|").map(function(a){return a.trim();}).filter(Boolean);
+      // 5e partie optionnelle : "combo" si cette ligne référence un AUTRE menu
+      // (imbrication, ex: "Croque Frites" qui inclut le menu "Croque Monsieur")
+      // plutôt qu'un produit — dans ce cas le 1er champ contient l'ID du menu
+      // référencé, pas un ID produit.
+      var type=(parts[4]||"").trim();
+      var refId=(parts[0]||"").trim();
+      if(type==="combo"){
+        return{type:"combo",comboId:refId,qty:+parts[1]||1};
+      }
+      return{type:"product",productId:refId,qty:+parts[1]||1,portionId:(parts[2]||"").trim(),alternates:alternates};
+    }).filter(function(it){return it.type==="combo"?it.comboId:it.productId;});
     return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||""};
   });
 }
