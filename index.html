@@ -955,11 +955,17 @@ function App(){
   // archivé (manifestation terminée) reste consultable dans Admin et Rapports, mais
   // disparaît des sélecteurs utilisés pour vendre/gérer du stock au jour le jour.
   const activeSites=sites.filter(s=>s.active!==false);
-  // Si le site actuellement sélectionné vient d'être archivé, on bascule
-  // automatiquement sur le premier site actif pour ne pas rester bloqué dessus.
+  // Parmi les sites actifs, seuls les "points de vente" apparaissent pour choisir OÙ
+  // ENCAISSER (Caisse) — un lieu de stockage pur (ex: local technique) reste pleinement
+  // utilisable dans Stock (transferts, contenants...), mais n'a pas de sens comme
+  // "site où on vend" : il ne doit jamais apparaître dans ce sélecteur-là.
+  const salesSites=activeSites.filter(s=>s.isSalesPoint!==false);
+  // Si le site actuellement sélectionné vient d'être archivé ou repassé en lieu de
+  // stockage pur, on bascule automatiquement sur le premier site de vente disponible
+  // pour ne pas rester bloqué dessus en caisse.
   useEffect(()=>{
-    if(activeSites.length&&!activeSites.some(s=>s.id===siteId)){
-      setSiteId(activeSites[0].id);LS.set("anf87_site",activeSites[0].id);
+    if(salesSites.length&&!salesSites.some(s=>s.id===siteId)){
+      setSiteId(salesSites[0].id);LS.set("anf87_site",salesSites[0].id);
     }
   },[sites]);
   const isAdmin=!users.length||currentUser?.role==="admin"||currentUser?.role==="test";
@@ -1289,7 +1295,7 @@ function App(){
               {currentUser&&<span style={{background:"rgba(255,255,255,0.1)",borderRadius:6,padding:"1px 7px"}}>{currentUser.name}</span>}
             </div>
           </div>
-          <SiteSelector sites={activeSites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}} big align="left"/>
+          <SiteSelector sites={salesSites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}} big align="left"/>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
           <button onClick={toggleHappyHour} title={happyHourActive?"Désactiver le Happy Hour":"Activer le Happy Hour"}
@@ -5215,25 +5221,32 @@ function CatsAdmin({categories,onSave,caisseUrl}){
 }
 
 function SitesAdmin({sites,onSave,caisseUrl}){
-  const [newS,setNewS]=useState({name:"",village:"",color:"#CC0000"});
+  const [newS,setNewS]=useState({name:"",village:"",color:"#CC0000",isSalesPoint:true});
   const [editS,setEditS]=useState(null);
   const [busy,setBusy]=useState(false); // anti double-clic
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const add=async()=>{if(!newS.name||busy)return;setBusy(true);const id="s"+uid().slice(-4);const entry={...newS,id,active:true};const arr=[...sites,entry];
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS,active:true});setNewS({name:"",village:"",color:"#CC0000"});setBusy(false);};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS,active:true});setNewS({name:"",village:"",color:"#CC0000",isSalesPoint:true});setBusy(false);};
   const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=sites.map(s=>s.id===editS.id?editS:s);
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color,active:editS.active!==false});setBusy(false);setEditS(null);};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color,active:editS.active!==false,isSalesPoint:editS.isSalesPoint!==false});setBusy(false);setEditS(null);};
   const del=async(id)=>{if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteSite",id});setBusy(false);};
   const toggleActive=async(s)=>{
     if(busy)return;setBusy(true);
     const updated={...s,active:s.active===false};
     onSave(sites.map(x=>x.id===s.id?updated:x));
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:s.id,name:s.name,village:s.village,color:s.color,active:updated.active});
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:s.id,name:s.name,village:s.village,color:s.color,active:updated.active,isSalesPoint:s.isSalesPoint!==false});
+    setBusy(false);
+  };
+  const toggleSalesPoint=async(s)=>{
+    if(busy)return;setBusy(true);
+    const updated={...s,isSalesPoint:s.isSalesPoint===false};
+    onSave(sites.map(x=>x.id===s.id?updated:x));
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:s.id,name:s.name,village:s.village,color:s.color,active:s.active!==false,isSalesPoint:updated.isSalesPoint});
     setBusy(false);
   };
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:"#E3F2FD",borderRadius:12,padding:12,marginBottom:14,fontSize:12,color:"#1565C0"}}>
-      ℹ️ Un site <strong>archivé</strong> (manifestation terminée) disparaît de la caisse et du stock au quotidien, mais reste visible ici et dans les Rapports — utile pour vos manifestations ponctuelles, sans perdre l'historique.
+      ℹ️ Un site <strong>archivé</strong> (manifestation terminée) disparaît de la caisse et du stock au quotidien, mais reste visible ici et dans les Rapports. Un <strong>lieu de stockage</strong> (ex: local technique) reste actif dans Stock (transferts, contenants...) mais n'apparaît jamais dans le sélecteur de la Caisse.
     </div>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>+ Nouveau site</div>
@@ -5244,16 +5257,29 @@ function SitesAdmin({sites,onSave,caisseUrl}){
         <input type="color" value={newS.color} onChange={e=>setNewS({...newS,color:e.target.value})} style={{width:44,height:32,border:`1px solid ${T.border}`,borderRadius:6,cursor:"pointer"}}/>
         <span style={{fontSize:12,color:T.mid}}>{newS.color}</span>
       </div>
+      <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,cursor:"pointer"}}>
+        <input type="checkbox" checked={newS.isSalesPoint!==false} onChange={e=>setNewS({...newS,isSalesPoint:e.target.checked})} style={{width:18,height:18}}/>
+        <span style={{fontSize:12,color:T.dark}}>Point de vente (décochez pour un lieu de stockage pur, ex: local technique)</span>
+      </label>
       <button onClick={add} disabled={busy} style={{width:"100%",padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Ajouter"}</button>
     </div>
     {[...sites].sort((a,b)=>(a.active===false?1:0)-(b.active===false?1:0)).map(s=>{
       const isArchived=s.active===false;
-      return(<div key={s.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10,opacity:isArchived?.55:1}}>
+      const isStorageOnly=s.isSalesPoint===false;
+      return(<div key={s.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",opacity:isArchived?.55:1}}>
         <span style={{width:14,height:14,borderRadius:"50%",background:s.color,display:"inline-block",flexShrink:0}}/>
-        <div style={{flex:1}}>
-          <div style={{fontSize:13,fontWeight:600,color:T.dark}}>{s.name}{isArchived&&<span style={{marginLeft:6,fontSize:10,color:T.mid,fontWeight:600}}>📦 Archivé</span>}</div>
+        <div style={{flex:1,minWidth:120}}>
+          <div style={{fontSize:13,fontWeight:600,color:T.dark}}>
+            {s.name}
+            {isArchived&&<span style={{marginLeft:6,fontSize:10,color:T.mid,fontWeight:600}}>📦 Archivé</span>}
+            {isStorageOnly&&<span style={{marginLeft:6,fontSize:10,color:"#1565C0",fontWeight:600}}>🏬 Stockage</span>}
+          </div>
           <div style={{fontSize:11,color:T.mid}}>{s.village}</div>
         </div>
+        <button onClick={()=>toggleSalesPoint(s)} disabled={busy} title={isStorageOnly?"En faire à nouveau un point de vente":"En faire un lieu de stockage pur (invisible en Caisse)"}
+          style={{padding:"5px 9px",background:isStorageOnly?"#E3F2FD":T.bg,border:`1px solid ${isStorageOnly?"#90CAF9":T.border}`,borderRadius:7,cursor:busy?"default":"pointer",fontSize:11,color:isStorageOnly?"#1565C0":T.dark}}>
+          {isStorageOnly?"🛒 Rendre vendable":"🏬 Stockage seul"}
+        </button>
         <button onClick={()=>toggleActive(s)} disabled={busy} title={isArchived?"Réactiver ce site":"Archiver ce site (le cacher du quotidien sans perdre l'historique)"}
           style={{padding:"5px 9px",background:isArchived?"#E8F5E9":T.bg,border:`1px solid ${isArchived?"#A5D6A7":T.border}`,borderRadius:7,cursor:busy?"default":"pointer",fontSize:11,color:isArchived?"#2E7D32":T.dark}}>
           {isArchived?"↩️ Réactiver":"📦 Archiver"}
@@ -5271,6 +5297,10 @@ function SitesAdmin({sites,onSave,caisseUrl}){
           <label style={{fontSize:12,fontWeight:600}}>Couleur</label>
           <input type="color" value={editS.color} onChange={e=>setEditS({...editS,color:e.target.value})} style={{width:44,height:32,border:`1px solid ${T.border}`,borderRadius:6,cursor:"pointer"}}/>
         </div>
+        <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,cursor:"pointer"}}>
+          <input type="checkbox" checked={editS.isSalesPoint!==false} onChange={e=>setEditS({...editS,isSalesPoint:e.target.checked})} style={{width:18,height:18}}/>
+          <span style={{fontSize:12,color:T.dark}}>Point de vente (décochez pour un lieu de stockage pur)</span>
+        </label>
         <div style={{display:"flex",gap:8}}>
           <button onClick={()=>setEditS(null)} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
           <button onClick={saveEdit} disabled={busy} style={{flex:2,padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Enregistrer"}</button>
