@@ -2965,6 +2965,13 @@ function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,cai
     });
     return map;
   })();
+  // Popularité tous sites confondus (mêmes 30 jours) — pour trier la comparaison
+  // multi-sites, qui n'est pas rattachée à un seul site en particulier.
+  const salesQtyTotal={};
+  Object.entries(salesQtyBySite).forEach(([key,qty])=>{
+    const pid=key.split("|")[1];
+    salesQtyTotal[pid]=(salesQtyTotal[pid]||0)+qty;
+  });
 
   // ── A. Alertes pour le site sélectionné ──
   const availableHere=products.filter(p=>isAvailableAtSite(p,siteId));
@@ -3050,7 +3057,13 @@ function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,cai
     <div style={{fontWeight:700,fontSize:13,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Comparaison entre sites</div>
     {catsB.map(cat=>{
       const isCollapsed=collapsedCatsB.has(cat);
-      const catProducts=products.filter(p=>p.cat===cat).sort((a,b)=>a.name.localeCompare(b.name,"fr"));
+      const catProducts=products.filter(p=>p.cat===cat).sort((a,b)=>{
+        const priceA=+a.price>0?1:0, priceB=+b.price>0?1:0;
+        if(priceB!==priceA)return priceB-priceA; // produits avec un prix de vente d'abord
+        const qa=salesQtyTotal[a.id]||0, qb=salesQtyTotal[b.id]||0;
+        if(qb!==qa)return qb-qa; // puis par popularité (30 derniers jours, tous sites)
+        return a.name.localeCompare(b.name,"fr"); // puis alphabétique
+      });
       return(<div key={cat} style={{marginBottom:10}}>
         <button onClick={()=>setCollapsedCatsB(prev=>{const next=new Set(prev);if(next.has(cat))next.delete(cat);else next.add(cat);return next;})}
           style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"9px 12px",background:"#8E8E93",color:"white",
@@ -3065,7 +3078,7 @@ function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,cai
               {sites.map(s=><td key={s.id} style={{textAlign:"center",color:T.mid,fontWeight:600,padding:"0 4px 6px"}}>{s.name}</td>)}
             </tr></thead>
             <tbody>
-              {catProducts.map(p=>(<tr key={p.id}>
+              {catProducts.map((p,pi)=>(<tr key={p.id} style={{background:pi%2===1?"#00000006":"transparent"}}>
                 <td style={{padding:"3px 6px 3px 0",whiteSpace:"nowrap"}}>
                   <div style={{display:"flex",alignItems:"center",gap:6}}>
                     {p.photo?<img src={p.photo} style={{width:20,height:20,borderRadius:4,objectFit:"cover",flexShrink:0}}/>:<div style={{width:20,height:20,borderRadius:4,background:T.bg,border:`1px solid ${T.border}`,flexShrink:0}}/>}
