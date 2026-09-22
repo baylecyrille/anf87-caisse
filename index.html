@@ -2943,18 +2943,45 @@ function StockCsvImport({products,sites,caisseUrl,onSave,categories}){
   </div>);
 }
 
-function StockDashboard({products,sites,siteId,setSiteId,containers,deposits}){
+function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,caisseUrl}){
   const site=sites.find(s=>s.id===siteId)||sites[0];
+
+  // Ventes des 30 derniers jours, pour classer "À réapprovisionner" par popularité
+  // réelle sur CE site plutôt que dans un ordre arbitraire.
+  const [recentSales,setRecentSales]=useState([]);
+  useEffect(()=>{
+    if(!caisseUrl)return;
+    api(caisseUrl,{action:"getSales"}).then(r=>{ if(r.ok)setRecentSales(r.sales||[]); });
+  },[caisseUrl]);
+  const salesQtyBySite=(()=>{
+    const cutoff=new Date(); cutoff.setDate(cutoff.getDate()-30);
+    const map={}; // "siteId|productId" -> quantité vendue (30 derniers jours)
+    recentSales.forEach(s=>{
+      const[d,m,y]=(s.date||"").split("/").map(Number);
+      if(!d||!m||!y)return;
+      if(new Date(y,m-1,d)<cutoff)return;
+      let items=[]; try{items=JSON.parse(s.items||"[]");}catch{}
+      items.forEach(it=>{ const key=s.siteId+"|"+it.id; map[key]=(map[key]||0)+(+it.qty||0); });
+    });
+    return map;
+  })();
 
   // ── A. Alertes pour le site sélectionné ──
   const availableHere=products.filter(p=>isAvailableAtSite(p,siteId));
   const ruptures=availableHere.filter(p=>(p.stock[siteId]||0)<=0);
   const low=availableHere.filter(p=>{const s=p.stock[siteId]||0;return s>0&&s<=5;});
-  const priorityList=[...ruptures,...low].slice(0,8);
+  const priorityList=[...ruptures,...low]
+    .sort((a,b)=>{
+      const qa=salesQtyBySite[siteId+"|"+a.id]||0, qb=salesQtyBySite[siteId+"|"+b.id]||0;
+      if(qb!==qa)return qb-qa; // le plus vendu (30 derniers jours, ce site) en premier
+      return a.name.localeCompare(b.name,"fr"); // puis ordre alphabétique
+    })
+    .slice(0,8);
   const openContainersHere=containers.filter(c=>c.site===siteId);
 
-  // ── B. Comparaison multi-sites, produit par produit ──
-  const comparedProducts=[...products].sort((a,b)=>a.name.localeCompare(b.name,"fr"));
+  // ── B. Comparaison multi-sites, produit par produit, groupée par catégorie repliable ──
+  const [collapsedCatsB,setCollapsedCatsB]=useState(new Set());
+  const catsB=[...new Set(products.map(p=>p.cat))].sort((a,b)=>a.localeCompare(b,"fr"));
   const cellColor=(p,sId)=>{
     if(!isAvailableAtSite(p,sId))return null; // pas vendu sur ce site
     const s=p.stock[sId]||0;
@@ -3021,31 +3048,43 @@ function StockDashboard({products,sites,siteId,setSiteId,containers,deposits}){
 
     {/* ── B. Comparaison multi-sites, produit par produit ── */}
     <div style={{fontWeight:700,fontSize:13,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Comparaison entre sites</div>
-    <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:12,marginBottom:16,overflowX:"auto"}}>
-      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-        <thead><tr>
-          <td></td>
-          {sites.map(s=><td key={s.id} style={{textAlign:"center",color:T.mid,fontWeight:600,padding:"0 4px 6px"}}>{s.name}</td>)}
-        </tr></thead>
-        <tbody>
-          {comparedProducts.map(p=>(<tr key={p.id}>
-            <td style={{padding:"3px 6px 3px 0",whiteSpace:"nowrap"}}>
-              <div style={{display:"flex",alignItems:"center",gap:6}}>
-                {p.photo?<img src={p.photo} style={{width:20,height:20,borderRadius:4,objectFit:"cover",flexShrink:0}}/>:<div style={{width:20,height:20,borderRadius:4,background:T.bg,border:`1px solid ${T.border}`,flexShrink:0}}/>}
-                <span style={{fontWeight:600,color:T.dark}}>{p.name}</span>
-              </div>
-            </td>
-            {sites.map(s=>{
-              const style=cellColor(p,s.id);
-              return(<td key={s.id} style={{padding:"3px 4px",textAlign:"center"}}>
-                {style?<span style={{display:"inline-block",minWidth:28,padding:"3px 0",borderRadius:6,background:style.bg,color:style.color,fontWeight:700}}>{p.stock[s.id]||0}</span>
-                  :<span style={{color:T.border}}>—</span>}
-              </td>);
-            })}
-          </tr>))}
-        </tbody>
-      </table>
-    </div>
+    {catsB.map(cat=>{
+      const isCollapsed=collapsedCatsB.has(cat);
+      const catProducts=products.filter(p=>p.cat===cat).sort((a,b)=>a.name.localeCompare(b.name,"fr"));
+      return(<div key={cat} style={{marginBottom:10}}>
+        <button onClick={()=>setCollapsedCatsB(prev=>{const next=new Set(prev);if(next.has(cat))next.delete(cat);else next.add(cat);return next;})}
+          style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",padding:"9px 12px",background:"#8E8E93",color:"white",
+            border:"none",borderRadius:10,cursor:"pointer",marginBottom:isCollapsed?0:8}}>
+          <span style={{fontWeight:700,fontSize:13}}>{cat} <span style={{opacity:.65,fontWeight:600}}>({catProducts.length})</span></span>
+          <span style={{fontSize:12,transform:isCollapsed?"rotate(-90deg)":"none",display:"inline-block",transition:"transform .15s"}}>▾</span>
+        </button>
+        {!isCollapsed&&<div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:12,overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+            <thead><tr>
+              <td></td>
+              {sites.map(s=><td key={s.id} style={{textAlign:"center",color:T.mid,fontWeight:600,padding:"0 4px 6px"}}>{s.name}</td>)}
+            </tr></thead>
+            <tbody>
+              {catProducts.map(p=>(<tr key={p.id}>
+                <td style={{padding:"3px 6px 3px 0",whiteSpace:"nowrap"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    {p.photo?<img src={p.photo} style={{width:20,height:20,borderRadius:4,objectFit:"cover",flexShrink:0}}/>:<div style={{width:20,height:20,borderRadius:4,background:T.bg,border:`1px solid ${T.border}`,flexShrink:0}}/>}
+                    <span style={{fontWeight:600,color:T.dark}}>{p.name}</span>
+                  </div>
+                </td>
+                {sites.map(s=>{
+                  const style=cellColor(p,s.id);
+                  return(<td key={s.id} style={{padding:"3px 4px",textAlign:"center"}}>
+                    {style?<span style={{display:"inline-block",minWidth:28,padding:"3px 0",borderRadius:6,background:style.bg,color:style.color,fontWeight:700}}>{p.stock[s.id]||0}</span>
+                      :<span style={{color:T.border}}>—</span>}
+                  </td>);
+                })}
+              </tr>))}
+            </tbody>
+          </table>
+        </div>}
+      </div>);
+    })}
 
     {/* ── C. Valeur & rentabilité ── */}
     <div style={{fontWeight:700,fontSize:13,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:8}}>Valeur & rentabilité (tous sites)</div>
@@ -3095,7 +3134,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
       ))}
     </div>}
     {readOnly&&<div style={{background:"#FFF8E1",padding:"8px 14px",fontSize:12,color:"#E65100",flexShrink:0}}>👁 Consultation uniquement</div>}
-    {!readOnly&&view==="dashboard"&&<StockDashboard products={products} sites={sites} siteId={sel} setSiteId={setSel} containers={containers} deposits={deposits}/>}
+    {!readOnly&&view==="dashboard"&&<StockDashboard products={products} sites={sites} siteId={sel} setSiteId={setSel} containers={containers} deposits={deposits} caisseUrl={caisseUrl}/>}
     {(view==="list"||readOnly)&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={readOnly}/>}
     {!readOnly&&view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
     {!readOnly&&view==="csv"&&<StockCsvImport products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} categories={categories}/>}
