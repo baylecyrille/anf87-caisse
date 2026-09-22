@@ -779,6 +779,18 @@ const flattenComboItems=(combo,combos,multiplier,depth)=>{
   });
   return result;
 };
+// Convertit les lignes d'un menu (produit OU menu imbriqué) dans le format texte
+// envoyé au serveur — UNE SEULE fonction utilisée partout (édition du menu, bascule
+// "Produits de la semaine"...) pour ne jamais avoir deux logiques de sérialisation
+// qui divergent et corrompent les données (c'était le bug : la fenêtre "Produits de
+// la semaine" utilisait un format incomplet, oubliant le marqueur des menus imbriqués).
+const serializeComboItems=items=>items.map(it=>{
+  if(it.type==="combo")return(it.comboId||"")+":"+(it.qty||1)+"::"+":combo";
+  // Set() en sécurité : élimine tout doublon éventuel dans les alternatives, même
+  // si les données stockées en contenaient déjà par accident.
+  const alts=[...new Set((it.alternates||[]).filter(a=>a&&a!==it.productId))];
+  return it.productId+":"+it.qty+":"+(it.portionId||"")+":"+alts.join("|");
+}).join(",");
 // Propose des montants remis réalistes (vraies pièces/billets), plutôt que des
 // arrondis arbitraires : pour chaque coupure réelle, le plus petit multiple qui
 // couvre le total — donne les montants qu'on paierait vraiment avec une seule sorte
@@ -3728,10 +3740,7 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
     }else{
       photoParam="__KEEP__";
     }
-    const itemsStr=edit.items.map(it=>{
-      if(it.type==="combo")return(it.comboId||"")+":"+(it.qty||1)+"::"+":combo";
-      return it.productId+":"+it.qty+":"+(it.portionId||"")+":"+((it.alternates||[]).join("|"));
-    }).join(",");
+    const itemsStr=serializeComboItems(edit.items);
     const r=await apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsStr,photo:photoParam,...extra});
     if(r.ok){
       const newEntry={id,name:edit.name,price:+edit.price,
@@ -5114,9 +5123,12 @@ function WeeklyComboIngredients({combos,products,setCombos,caisseUrl,onClose}){
     if(newProdId===item.productId)return;
     const key=combo.id+"-"+itemIdx;
     setBusyKey(key);
-    const newAlternates=[...(item.alternates||[]).filter(a=>a!==newProdId),item.productId];
+    // Set() en sécurité : garantit qu'aucun produit ne se retrouve listé deux fois
+    // dans les alternatives, même en cas de bascules répétées ou de données
+    // existantes déjà en doublon.
+    const newAlternates=[...new Set([...(item.alternates||[]).filter(a=>a!==newProdId&&a!==item.productId),item.productId])];
     const newItems=combo.items.map((it,i)=>i!==itemIdx?it:{...it,productId:newProdId,alternates:newAlternates});
-    const itemsStr=newItems.map(it=>it.productId+":"+it.qty+":"+(it.portionId||"")+":"+((it.alternates||[]).join("|"))).join(",");
+    const itemsStr=serializeComboItems(newItems);
     const r=await apiWrite(caisseUrl,{action:"saveCombo",id:combo.id,name:combo.name,price:combo.price,items:itemsStr,photo:"__KEEP__"});
     if(r.ok)setCombos(prev=>prev.map(c=>c.id===combo.id?{...c,items:newItems}:c));
     setBusyKey(null);
@@ -5138,7 +5150,7 @@ function WeeklyComboIngredients({combos,products,setCombos,caisseUrl,onClose}){
             <div style={{fontWeight:700,fontSize:13,color:T.dark,marginBottom:8}}>{combo.name}</div>
             {combo.items.map((it,idx)=>{
               if(!(it.alternates||[]).length)return null;
-              const candidates=[it.productId,...it.alternates]
+              const candidates=[...new Set([it.productId,...it.alternates])]
                 .map(id=>products.find(p=>p.id.toString()===id.toString())).filter(Boolean)
                 .sort((a,b)=>(totalStock(b)>0?1:0)-(totalStock(a)>0?1:0)); // en stock d'abord
               const key=combo.id+"-"+idx;
