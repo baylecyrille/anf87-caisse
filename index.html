@@ -3619,6 +3619,15 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
   const [edit,setEdit]=useState(null); // combo en cours d'édition, ou {} pour nouveau
   const [busy,setBusy]=useState(false);
   const [showWeekly,setShowWeekly]=useState(false);
+  const [expandedAlt,setExpandedAlt]=useState(new Set()); // index des lignes dont le bloc "alternatives" est déplié
+
+  // Prix de revient d'un menu : somme du prix d'achat des vrais produits qui le
+  // composent, résolu jusqu'au bout même à travers des menus imbriqués (ex: le
+  // jambon/pain/fromage de "Croque Monsieur" comptent aussi dans "Croque Frites").
+  const comboCost=items=>flattenComboItems({items},combos).reduce((s,it)=>{
+    const prod=products.find(p=>p.id.toString()===it.productId.toString());
+    return s+(prod?unitCost(prod)*it.qty:0);
+  },0);
 
   const startNew=()=>setEdit({id:null,name:"",price:"",items:[],photo:""});
   const startEdit=c=>setEdit({id:c.id,name:c.name,price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});
@@ -3753,19 +3762,24 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
         🔄 Produits de la semaine
       </button>
     </div>
-    {combos.map(c=>(
-      <div key={c.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
+    {combos.map(c=>{
+      const cost=comboCost(c.items);
+      const margin=(c.price||0)-cost;
+      return(<div key={c.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
         {c.photo?<img src={c.photo} style={{width:36,height:36,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:26,flexShrink:0}}>🍽</span>}
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:13,fontWeight:600,color:T.dark}}>{c.name}</div>
           <div style={{fontSize:11,color:T.mid,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
             {fmt(c.price)} • {c.items.map(itemLabel).join(", ")}
           </div>
+          <div style={{fontSize:10,fontWeight:600,color:margin>=0?"#2E7D32":T.red,marginTop:2}}>
+            💰 Revient {fmt(cost)} • Marge {fmt(margin)}{cost>0?` (${(margin/cost*100).toFixed(0)}%)`:""}
+          </div>
         </div>
         <button onClick={()=>startEdit(c)} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
         <button onClick={()=>del(c.id)} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
-      </div>
-    ))}
+      </div>);
+    })}
 
     {edit&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:420,maxHeight:"90vh",overflowY:"auto"}}>
@@ -3774,6 +3788,13 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
           style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:7}}/>
         <input placeholder="Prix du menu" type="number" step="0.50" value={edit.price} onChange={e=>setEdit({...edit,price:e.target.value})}
           style={{width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,marginBottom:7}}/>
+        {edit.items.length>0&&(()=>{
+          const cost=comboCost(edit.items);
+          const margin=(+edit.price||0)-cost;
+          return(<div style={{background:margin>=0?"#E8F5E9":"#FFF0F0",borderRadius:8,padding:"8px 10px",marginBottom:10,fontSize:11,fontWeight:600,color:margin>=0?"#2E7D32":T.red}}>
+            💰 Prix de revient : {fmt(cost)} — Marge : {fmt(margin)}{cost>0?` (${(margin/cost*100).toFixed(0)}%)`:""}
+          </div>);
+        })()}
 
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Photo du menu</label>
         {edit.photo&&<img src={edit.photo} style={{width:50,height:50,borderRadius:8,objectFit:"cover",marginBottom:6,display:"block"}}/>}
@@ -3784,63 +3805,75 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
           if(it.type==="combo"){
             const nestedCombo=combos.find(c=>c.id===it.comboId);
             const otherCombos=combos.filter(c=>c.id!==edit.id&&!comboDependsOn(c.id,edit.id||"__new__"));
-            return(<div key={idx} style={{marginBottom:8}}>
-              <div style={{display:"flex",gap:6,marginBottom:4}}>
-                <button onClick={()=>setItemType(idx,"product")} style={{padding:"5px 9px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,fontSize:10,cursor:"pointer"}}>Produit</button>
-                <button style={{padding:"5px 9px",background:"#EEF0FF",border:"1px solid #5856D6",borderRadius:6,fontSize:10,cursor:"default",fontWeight:700,color:"#5856D6"}}>🍽 Menu</button>
+            return(<div key={idx} style={{background:T.bg,borderRadius:10,border:`1px solid ${T.border}`,padding:10,marginBottom:8}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                <span style={{fontSize:10,fontWeight:700,color:T.mid}}>INGRÉDIENT {idx+1}</span>
+                <div style={{display:"flex",background:"white",borderRadius:7,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+                  <button onClick={()=>setItemType(idx,"product")} style={{padding:"4px 10px",background:"white",border:"none",fontSize:10,cursor:"pointer",color:T.mid}}>Produit</button>
+                  <button style={{padding:"4px 10px",background:"#5856D6",border:"none",fontSize:10,cursor:"default",fontWeight:700,color:"white"}}>🍽 Menu</button>
+                </div>
               </div>
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
                 <select value={it.comboId||""} onChange={e=>selectItemCombo(idx,e.target.value)}
-                  style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
+                  style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white"}}>
                   <option value="">— Choisir un menu —</option>
                   {otherCombos.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
                 <input type="number" min="1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
-                  style={{width:50,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center"}}/>
-                <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+                  style={{width:50,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center",background:"white"}}/>
+                <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red,flexShrink:0}}>🗑</button>
               </div>
-              {nestedCombo&&<div style={{fontSize:10,color:T.mid,marginTop:4}}>Inclut : {nestedCombo.items.map(itemLabel).join(", ")}</div>}
+              {nestedCombo&&<div style={{fontSize:10,color:T.mid,marginTop:6}}>Inclut : {nestedCombo.items.map(itemLabel).join(", ")}</div>}
             </div>);
           }
           const prod=products.find(p=>p.id.toString()===it.productId.toString());
           const itemPortions=prod?(portions||[]).filter(po=>po.productId.toString()===prod.id.toString()):[];
-          return(<div key={idx} style={{marginBottom:8}}>
-            {combos.length>0&&<div style={{display:"flex",gap:6,marginBottom:4}}>
-              <button style={{padding:"5px 9px",background:"#EEF0FF",border:"1px solid #5856D6",borderRadius:6,fontSize:10,cursor:"default",fontWeight:700,color:"#5856D6"}}>Produit</button>
-              <button onClick={()=>setItemType(idx,"combo")} style={{padding:"5px 9px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,fontSize:10,cursor:"pointer"}}>🍽 Menu</button>
-            </div>}
+          const altOpen=expandedAlt.has(idx);
+          const altCount=(it.alternates||[]).length;
+          return(<div key={idx} style={{background:T.bg,borderRadius:10,border:`1px solid ${T.border}`,padding:10,marginBottom:8}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+              <span style={{fontSize:10,fontWeight:700,color:T.mid}}>INGRÉDIENT {idx+1}</span>
+              {combos.length>0&&<div style={{display:"flex",background:"white",borderRadius:7,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+                <button style={{padding:"4px 10px",background:"#5856D6",border:"none",fontSize:10,cursor:"default",fontWeight:700,color:"white"}}>Produit</button>
+                <button onClick={()=>setItemType(idx,"combo")} style={{padding:"4px 10px",background:"white",border:"none",fontSize:10,cursor:"pointer",color:T.mid}}>🍽 Menu</button>
+              </div>}
+            </div>
             <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:prod?.sellByVolume?6:0}}>
               <select value={it.productId} onChange={e=>selectItemProduct(idx,e.target.value)}
-                style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
+                style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white"}}>
                 {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               {!prod?.sellByVolume&&<input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
                 title="Quantités décimales acceptées (ex: 0.5 pour une demi-tranche)"
-                style={{width:58,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center"}}/>}
-              <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+                style={{width:58,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center",background:"white"}}/>}
+              <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red,flexShrink:0}}>🗑</button>
             </div>
             {prod?.sellByVolume&&(itemPortions.length>0?(
               <select value={it.portionId||""} onChange={e=>selectItemPortion(idx,e.target.value)}
-                style={{width:"100%",padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
+                style={{width:"100%",padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white",marginBottom:6}}>
                 <option value="">— Choisir une portion —</option>
                 {itemPortions.map(po=><option key={po.id} value={po.id}>{po.name} ({po.size}{prod.unit})</option>)}
               </select>
             ):(
-              <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
                 <input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)} placeholder="Quantité"
-                  style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}/>
-                <span style={{fontSize:11,color:T.mid}}>{prod.unit||"cl"} (aucune portion configurée pour ce produit)</span>
+                  style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white"}}/>
+                <span style={{fontSize:11,color:T.mid}}>{prod.unit||"cl"} (aucune portion configurée)</span>
               </div>
             ))}
-            {/* Produits interchangeables : ex. 2 jambons différents selon ce qui est
-                acheté en semaine — voir l'écran "🔄 Produits de la semaine" pour
-                changer rapidement lequel est actif sans revenir ici. */}
-            <div style={{marginTop:6,padding:8,background:T.bg,borderRadius:7}}>
-              <div style={{fontSize:10,fontWeight:600,color:T.mid,marginBottom:5}}>🔄 Autres produits possibles pour cet ingrédient (optionnel)</div>
-              <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:(it.alternates||[]).length?6:0}}>
+            {/* Alternatives repliées par défaut — évite de surcharger l'écran pour
+                les ingrédients qui n'en ont pas besoin ; un badge indique combien
+                sont déjà enregistrées quand la section est fermée. */}
+            <button onClick={()=>setExpandedAlt(prev=>{const next=new Set(prev);if(next.has(idx))next.delete(idx);else next.add(idx);return next;})}
+              style={{display:"flex",alignItems:"center",gap:6,background:"none",border:"none",cursor:"pointer",fontSize:11,color:"#5856D6",fontWeight:600,padding:0}}>
+              🔄 Produits interchangeables{altCount>0?` (${altCount})`:""}
+              <span style={{fontSize:9,transform:altOpen?"rotate(90deg)":"none",display:"inline-block"}}>▸</span>
+            </button>
+            {altOpen&&<div style={{marginTop:8,padding:8,background:"white",borderRadius:7,border:`1px solid ${T.border}`}}>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:altCount?6:0}}>
                 {(it.alternates||[]).map(altId=>{
                   const altProd=products.find(p=>p.id.toString()===altId.toString());
-                  return(<span key={altId} style={{display:"flex",alignItems:"center",gap:4,background:"white",border:`1px solid ${T.border}`,borderRadius:14,padding:"3px 8px",fontSize:11}}>
+                  return(<span key={altId} style={{display:"flex",alignItems:"center",gap:4,background:T.bg,border:`1px solid ${T.border}`,borderRadius:14,padding:"3px 8px",fontSize:11}}>
                     {altProd?.name||"(produit supprimé)"}
                     <button onClick={()=>removeAlternate(idx,altId)} style={{background:"none",border:"none",cursor:"pointer",color:T.red,fontSize:11,padding:0}}>✕</button>
                   </span>);
@@ -3850,7 +3883,7 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
                 <option value="">+ Ajouter un produit interchangeable...</option>
                 {products.filter(p=>p.id!==it.productId&&!(it.alternates||[]).includes(p.id)).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
-            </div>
+            </div>}
           </div>);
         })}
         <button onClick={addItem} style={{width:"100%",padding:"9px",background:T.bg,border:`1px dashed ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600,color:T.dark,marginBottom:14}}>
