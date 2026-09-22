@@ -951,6 +951,17 @@ function App(){
     }
   };
   const site=sites.find(s=>s.id===siteId)||sites[0]||{id:"s1",name:"Buvette",color:T.red};
+  // Sites "actifs" uniquement pour les écrans du quotidien (caisse, stock) — un site
+  // archivé (manifestation terminée) reste consultable dans Admin et Rapports, mais
+  // disparaît des sélecteurs utilisés pour vendre/gérer du stock au jour le jour.
+  const activeSites=sites.filter(s=>s.active!==false);
+  // Si le site actuellement sélectionné vient d'être archivé, on bascule
+  // automatiquement sur le premier site actif pour ne pas rester bloqué dessus.
+  useEffect(()=>{
+    if(activeSites.length&&!activeSites.some(s=>s.id===siteId)){
+      setSiteId(activeSites[0].id);LS.set("anf87_site",activeSites[0].id);
+    }
+  },[sites]);
   const isAdmin=!users.length||currentUser?.role==="admin"||currentUser?.role==="test";
 
   useEffect(()=>{ if(caisseUrl)syncAll(); },[caisseUrl]);
@@ -1278,7 +1289,7 @@ function App(){
               {currentUser&&<span style={{background:"rgba(255,255,255,0.1)",borderRadius:6,padding:"1px 7px"}}>{currentUser.name}</span>}
             </div>
           </div>
-          <SiteSelector sites={sites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}} big align="left"/>
+          <SiteSelector sites={activeSites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}} big align="left"/>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
           <button onClick={toggleHappyHour} title={happyHourActive?"Désactiver le Happy Hour":"Activer le Happy Hour"}
@@ -1329,7 +1340,7 @@ function App(){
           openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
           happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour}/>}
-        {tab==="stock"&&<StockScreen products={products} sites={sites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories}/>}
+        {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager}/>}
         {tab==="admin"&&(isAdmin||isManager)&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
@@ -5208,12 +5219,22 @@ function SitesAdmin({sites,onSave,caisseUrl}){
   const [editS,setEditS]=useState(null);
   const [busy,setBusy]=useState(false); // anti double-clic
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
-  const add=async()=>{if(!newS.name||busy)return;setBusy(true);const id="s"+uid().slice(-4);const arr=[...sites,{...newS,id}];
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS});setNewS({name:"",village:"",color:"#CC0000"});setBusy(false);};
+  const add=async()=>{if(!newS.name||busy)return;setBusy(true);const id="s"+uid().slice(-4);const entry={...newS,id,active:true};const arr=[...sites,entry];
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS,active:true});setNewS({name:"",village:"",color:"#CC0000"});setBusy(false);};
   const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=sites.map(s=>s.id===editS.id?editS:s);
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color});setBusy(false);setEditS(null);};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color,active:editS.active!==false});setBusy(false);setEditS(null);};
   const del=async(id)=>{if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteSite",id});setBusy(false);};
+  const toggleActive=async(s)=>{
+    if(busy)return;setBusy(true);
+    const updated={...s,active:s.active===false};
+    onSave(sites.map(x=>x.id===s.id?updated:x));
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:s.id,name:s.name,village:s.village,color:s.color,active:updated.active});
+    setBusy(false);
+  };
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
+    <div style={{background:"#E3F2FD",borderRadius:12,padding:12,marginBottom:14,fontSize:12,color:"#1565C0"}}>
+      ℹ️ Un site <strong>archivé</strong> (manifestation terminée) disparaît de la caisse et du stock au quotidien, mais reste visible ici et dans les Rapports — utile pour vos manifestations ponctuelles, sans perdre l'historique.
+    </div>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>+ Nouveau site</div>
       <input style={inp} placeholder="Nom de la buvette" value={newS.name} onChange={e=>setNewS({...newS,name:e.target.value})}/>
@@ -5225,12 +5246,22 @@ function SitesAdmin({sites,onSave,caisseUrl}){
       </div>
       <button onClick={add} disabled={busy} style={{width:"100%",padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Ajouter"}</button>
     </div>
-    {sites.map(s=><div key={s.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
-      <span style={{width:14,height:14,borderRadius:"50%",background:s.color,display:"inline-block",flexShrink:0}}/>
-      <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:T.dark}}>{s.name}</div><div style={{fontSize:11,color:T.mid}}>{s.village}</div></div>
-      <button onClick={()=>setEditS({...s})} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
-      <button onClick={()=>del(s.id)} disabled={busy} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:busy?"default":"pointer",color:T.red}}>🗑</button>
-    </div>)}
+    {[...sites].sort((a,b)=>(a.active===false?1:0)-(b.active===false?1:0)).map(s=>{
+      const isArchived=s.active===false;
+      return(<div key={s.id} style={{background:T.card,borderRadius:10,padding:"11px 14px",marginBottom:7,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10,opacity:isArchived?.55:1}}>
+        <span style={{width:14,height:14,borderRadius:"50%",background:s.color,display:"inline-block",flexShrink:0}}/>
+        <div style={{flex:1}}>
+          <div style={{fontSize:13,fontWeight:600,color:T.dark}}>{s.name}{isArchived&&<span style={{marginLeft:6,fontSize:10,color:T.mid,fontWeight:600}}>📦 Archivé</span>}</div>
+          <div style={{fontSize:11,color:T.mid}}>{s.village}</div>
+        </div>
+        <button onClick={()=>toggleActive(s)} disabled={busy} title={isArchived?"Réactiver ce site":"Archiver ce site (le cacher du quotidien sans perdre l'historique)"}
+          style={{padding:"5px 9px",background:isArchived?"#E8F5E9":T.bg,border:`1px solid ${isArchived?"#A5D6A7":T.border}`,borderRadius:7,cursor:busy?"default":"pointer",fontSize:11,color:isArchived?"#2E7D32":T.dark}}>
+          {isArchived?"↩️ Réactiver":"📦 Archiver"}
+        </button>
+        <button onClick={()=>setEditS({...s})} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
+        <button onClick={()=>del(s.id)} disabled={busy} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:busy?"default":"pointer",color:T.red}}>🗑</button>
+      </div>);
+    })}
     {editS&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:340}}>
         <div style={{fontWeight:800,fontSize:16,marginBottom:14}}>✏️ {editS.name}</div>

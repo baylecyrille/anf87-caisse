@@ -84,13 +84,13 @@ function initSheets() {
   // Sites
   var sites = getOrCreate(ss,"Sites");
   if(sites.getLastRow()<=1){
-    sites.getRange(1,1,1,4).setValues([["ID","Nom","Village","Couleur"]]);
-    sites.getRange(1,1,1,4).setFontWeight("bold");
-    sites.getRange(2,1,4,4).setValues([
-      ["s1","Buvette Nord","Village 1","#CC0000"],
-      ["s2","Buvette Est","Village 2","#1565C0"],
-      ["s3","Buvette Sud","Village 3","#2E7D32"],
-      ["s4","Buvette Ouest","Village 4","#E65100"]
+    sites.getRange(1,1,1,5).setValues([["ID","Nom","Village","Couleur","Actif"]]);
+    sites.getRange(1,1,1,5).setFontWeight("bold");
+    sites.getRange(2,1,4,5).setValues([
+      ["s1","Buvette Nord","Village 1","#CC0000",true],
+      ["s2","Buvette Est","Village 2","#1565C0",true],
+      ["s3","Buvette Sud","Village 3","#2E7D32",true],
+      ["s4","Buvette Ouest","Village 4","#E65100",true]
     ]);
   }
   // Categories
@@ -534,8 +534,8 @@ function getProductsData(ss){
 }
 function getSitesData(ss){
   var sh=ss.getSheetByName("Sites"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,4).getValues().filter(r=>r[0])
-    .map(r=>({id:r[0],name:r[1],village:r[2],color:r[3]}));
+  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0])
+    .map(r=>({id:r[0],name:r[1],village:r[2],color:r[3],active:r[4]!==false&&r[4]!=="FALSE"&&r[4]!=="false"}));
 }
 function getCategoriesData(ss){
   var sh=ss.getSheetByName("Categories"); if(!sh||sh.getLastRow()<=1)return [];
@@ -771,9 +771,10 @@ function deleteProduct(e){
 }
 function saveSite(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Sites"), p=e.parameter;
-  var row=[p.id,p.name,p.village||"",p.color||"#CC0000"];
+  var active=p.active===undefined?true:(p.active==="true"||p.active===true);
+  var row=[p.id,p.name,p.village||"",p.color||"#CC0000",active];
   if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){sh.getRange(i+2,1,1,4).setValues([row]);return{ok:true,action:"updated"};}}}
+    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){sh.getRange(i+2,1,1,5).setValues([row]);return{ok:true,action:"updated"};}}}
   sh.appendRow(row); return{ok:true,action:"created"};
 }
 function deleteSite(e){
