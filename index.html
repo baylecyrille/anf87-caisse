@@ -3660,11 +3660,21 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
     const prod=products.find(p=>p.id.toString()===prodId.toString());
     setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,productId:prodId,qty:prod?.sellByVolume?0:1,portionId:""})}));
   };
-  // Choisir une portion configurée fixe la quantité en cl/g directement (pas un
-  // "nombre d'unités") — c'est cette valeur qui sera réellement décomptée du stock.
+  // Choisir une portion fixe la TAILLE d'une unité (ex: 1 Tranche) ; le nombre de
+  // fois qu'on l'utilise se règle séparément via portionMult (ex: ×2 tranches de
+  // pain, ×0.5 tranche de jambon) — qty = taille de la portion × ce multiplicateur,
+  // c'est cette valeur finale qui sera réellement décomptée du stock.
   const selectItemPortion=(idx,portionId)=>{
     const po=(portions||[]).find(p=>p.id.toString()===portionId.toString());
-    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,portionId,qty:po?po.size:it.qty})}));
+    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,portionId,qty:po?po.size*(it.portionMult||1):it.qty})}));
+  };
+  const setPortionMult=(idx,mult)=>{
+    const m=Math.max(0,parseFloat(mult)||0);
+    setEdit(prev=>({...prev,items:prev.items.map((it,i)=>{
+      if(i!==idx)return it;
+      const po=(portions||[]).find(p=>p.id.toString()===(it.portionId||"").toString());
+      return{...it,portionMult:m,qty:po?po.size*m:it.qty};
+    })}));
   };
   const removeItem=idx=>setEdit(prev=>({...prev,items:prev.items.filter((_,i)=>i!==idx)}));
   // Ajoute/retire un produit interchangeable pour cet ingrédient — ex: 2 jambons
@@ -3747,8 +3757,10 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
     }
     const prod=products.find(p=>p.id.toString()===it.productId.toString());
     if(prod?.sellByVolume){
-      const po=(portions||[]).find(p=>p.id.toString()===(it.portionId||"").toString());
-      return(po?po.name+" ":"")+it.qty+(prod.unit||"cl")+" "+prod.name;
+      // Ne montre QUE la quantité + le nom du produit (pas aussi le nom de la
+      // portion séparément, qui faisait doublon — ex: "2cl Bière pression", pas
+      // "Demi 2cl Bière pression").
+      return it.qty+(prod.unit||"cl")+" "+prod.name;
     }
     return it.qty+"× "+(prod?.name||"(produit supprimé)");
   };
@@ -3849,11 +3861,19 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
               <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red,flexShrink:0}}>🗑</button>
             </div>
             {prod?.sellByVolume&&(itemPortions.length>0?(
-              <select value={it.portionId||""} onChange={e=>selectItemPortion(idx,e.target.value)}
-                style={{width:"100%",padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white",marginBottom:6}}>
-                <option value="">— Choisir une portion —</option>
-                {itemPortions.map(po=><option key={po.id} value={po.id}>{po.name} ({po.size}{prod.unit})</option>)}
-              </select>
+              <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6}}>
+                <select value={it.portionId||""} onChange={e=>selectItemPortion(idx,e.target.value)}
+                  style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white"}}>
+                  <option value="">— Choisir une portion —</option>
+                  {itemPortions.map(po=><option key={po.id} value={po.id}>{po.name} ({po.size}{prod.unit})</option>)}
+                </select>
+                {it.portionId&&<>
+                  <span style={{fontSize:13,color:T.mid,flexShrink:0}}>×</span>
+                  <input type="number" min="0.1" step="0.1" value={it.portionMult||1} onChange={e=>setPortionMult(idx,e.target.value)}
+                    title="Combien de fois cette portion (ex: 2 pour 2 tranches, 0.5 pour une demi-tranche)"
+                    style={{width:54,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center",background:"white",flexShrink:0}}/>
+                </>}
+              </div>
             ):(
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
                 <input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)} placeholder="Quantité"
