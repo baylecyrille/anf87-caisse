@@ -3089,18 +3089,27 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
   const [qtyInputs,setQtyInputs]=useState({}); // comboId -> quantité à préparer saisie
   const [busyId,setBusyId]=useState(null);
 
-  const maxPossible=combo=>{
+  // Détail ingrédient par ingrédient : stock actuel, quantité nécessaire par
+  // portion, et combien de portions CET ingrédient permettrait à lui seul — pour
+  // repérer d'un coup d'œil lequel limite (le(s) plus bas déterminent le max
+  // réalisable). Sert à la fois au calcul et à l'affichage "ce qui manque".
+  const ingredientBreakdown=combo=>{
     const flat=flattenComboItems(combo,combos);
     const neededByProduct={};
     flat.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
-    const ids=Object.keys(neededByProduct);
-    if(ids.length===0)return 0;
-    return Math.floor(Math.min(...ids.map(pid=>{
+    const rows=Object.keys(neededByProduct).map(pid=>{
       const prod=products.find(p=>p.id.toString()===pid.toString());
       const need=neededByProduct[pid];
-      if(!prod||need<=0)return 0;
-      return (prod.stock[siteId]||0)/need;
-    })));
+      const stock=prod?.stock[siteId]||0;
+      const possible=need>0?Math.floor(stock/need):0;
+      return{pid,name:prod?.name||"(produit supprimé)",stock,need,possible,unit:prod?.sellByVolume?(prod.unit||"cl"):""};
+    });
+    const min=rows.length?Math.min(...rows.map(r=>r.possible)):0;
+    return rows.map(r=>({...r,isBottleneck:r.possible===min})).sort((a,b)=>a.possible-b.possible);
+  };
+  const maxPossible=combo=>{
+    const rows=ingredientBreakdown(combo);
+    return rows.length?Math.min(...rows.map(r=>r.possible)):0;
   };
 
   // Décompte (delta négatif) ou recrédite (delta positif) le stock d'UN ingrédient —
@@ -3110,7 +3119,21 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
   const applyIngredientDelta=async(upd,pid,delta)=>{
     const prod=upd.find(p=>p.id.toString()===pid.toString());
     if(!prod)return upd;
-    const cont=(containers||[]).find(c=>c.site===siteId&&c.productId.toString()===pid.toString());
+    let cont=(containers||[]).find(c=>c.site===siteId&&c.productId.toString()===pid.toString());
+    // Si on CONSOMME (delta négatif) un produit qui a un système de contenant
+    // configuré, mais qu'aucun n'est actuellement ouvert, on en ouvre un
+    // automatiquement (comme si on venait de sortir un nouveau paquet/fût) — sinon
+    // la jauge restait figée en attendant une ouverture manuelle qu'on oublie
+    // facilement. On garde le remplissage complet fourni par l'ouverture (pas de
+    // correction supplémentaire ici, qui ajusterait le stock une 2e fois par erreur).
+    if(!cont&&delta<0){
+      const presets=parseContainers(prod.containers);
+      if(presets.length>0){
+        const choice=presets[0];
+        const openRes=await openContainerApi(caisseUrl,siteId,prod,choice,setContainers);
+        if(openRes.ok)cont={site:siteId,productId:pid,label:choice.label,size:choice.size,remaining:choice.size};
+      }
+    }
     if(cont){
       const newRemaining=Math.max(0,cont.remaining+delta);
       await adjustContainerApi(caisseUrl,siteId,prod,newRemaining,setContainers);
@@ -3202,6 +3225,22 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
             <div style={{fontSize:9,color:"#2E7D32",fontWeight:600}}>DÉJÀ PRÊTS</div>
             <div style={{fontSize:18,fontWeight:900,color:"#2E7D32"}}>{ready}</div>
           </div>
+        </div>
+        {/* Détail par ingrédient : lequel limite le nombre de portions réalisables,
+            et ce qu'il manque pour en faire plus — les lignes à égalité avec le
+            minimum (le goulot d'étranglement) sont mises en évidence en orange. */}
+        <div style={{marginBottom:8}}>
+          {ingredientBreakdown(combo).map(r=>(
+            <div key={r.pid} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+              padding:"4px 8px",borderRadius:6,marginBottom:2,background:r.isBottleneck&&max<=5?"#FFF3E0":"transparent"}}>
+              <span style={{fontSize:11,color:r.isBottleneck&&max<=5?"#E65100":T.mid,fontWeight:r.isBottleneck&&max<=5?700:400}}>
+                {r.isBottleneck&&max<=5?"⚠️ ":""}{r.name}
+              </span>
+              <span style={{fontSize:11,color:r.isBottleneck&&max<=5?"#E65100":T.mid,fontWeight:r.isBottleneck&&max<=5?700:400}}>
+                {r.stock}{r.unit} dispo · {r.need}{r.unit}/portion → <b>{r.possible}</b> possibles
+              </span>
+            </div>
+          ))}
         </div>
         <div style={{display:"flex",gap:6}}>
           <input type="number" min="1" max={max} placeholder={max>0?`Jusqu'à ${max}`:"Stock insuffisant"} value={val} disabled={max<=0}
