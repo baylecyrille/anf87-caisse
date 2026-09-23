@@ -3093,24 +3093,53 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
   // portion, et combien de portions CET ingrédient permettrait à lui seul — pour
   // repérer d'un coup d'œil lequel limite (le(s) plus bas déterminent le max
   // réalisable). Sert à la fois au calcul et à l'affichage "ce qui manque".
+  // Combien de CE menu sont réellement disponibles MAINTENANT : ce qui est déjà prêt
+  // + ce qu'on pourrait encore assembler avec les ingrédients bruts restants — de
+  // façon RÉCURSIVE, pour qu'un menu imbriqué (ex: Croque Monsieur dans Croque
+  // Frites) compte bien ses propres portions déjà préparées, pas seulement ses
+  // ingrédients bruts (c'était le bug : 36 Croque Monsieur déjà faits + de quoi en
+  // faire 12 de plus ne donnaient que "12" possibles pour Croque Frites, au lieu du
+  // vrai total de 48).
+  const freshlyAssemblable=(combo,depth)=>{
+    depth=depth||0; if(depth>5||!combo?.items?.length)return 0;
+    return Math.floor(Math.min(...combo.items.map(it=>{
+      if(it.type==="combo"){
+        const sub=combos.find(c=>c.id.toString()===(it.comboId||"").toString());
+        if(!sub)return 0;
+        const supply=readyStockFor(readyCombos,siteId,sub.id)+freshlyAssemblable(sub,depth+1);
+        return Math.floor(supply/(+it.qty||1));
+      }
+      const prod=products.find(p=>p.id.toString()===it.productId.toString());
+      const need=+it.qty||0;
+      if(!prod||need<=0)return 0;
+      return Math.floor((prod.stock[siteId]||0)/need);
+    })));
+  };
+  // Détail par ingrédient DIRECT du menu (pas entièrement à plat) : pour un
+  // ingrédient "produit", stock/besoin classiques ; pour un menu imbriqué, sa
+  // réserve totale (déjà prêts + réalisables) — pour repérer d'un coup d'œil lequel
+  // limite le nombre de portions réalisables.
   const ingredientBreakdown=combo=>{
-    const flat=flattenComboItems(combo,combos);
-    const neededByProduct={};
-    flat.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
-    const rows=Object.keys(neededByProduct).map(pid=>{
-      const prod=products.find(p=>p.id.toString()===pid.toString());
-      const need=neededByProduct[pid];
+    const rows=(combo.items||[]).map(it=>{
+      if(it.type==="combo"){
+        const sub=combos.find(c=>c.id.toString()===(it.comboId||"").toString());
+        if(!sub)return{pid:it.comboId,name:"(menu supprimé)",stock:0,need:+it.qty||1,possible:0,unit:"",isCombo:true};
+        const ready=readyStockFor(readyCombos,siteId,sub.id);
+        const assemblable=freshlyAssemblable(sub,1);
+        const supply=ready+assemblable;
+        const need=+it.qty||1;
+        return{pid:sub.id,name:sub.name,stock:supply,need,possible:Math.floor(supply/need),unit:"",isCombo:true,ready,assemblable};
+      }
+      const prod=products.find(p=>p.id.toString()===it.productId.toString());
+      const need=+it.qty||0;
       const stock=prod?.stock[siteId]||0;
       const possible=need>0?Math.floor(stock/need):0;
-      return{pid,name:prod?.name||"(produit supprimé)",stock,need,possible,unit:prod?.sellByVolume?(prod.unit||"cl"):""};
+      return{pid:it.productId,name:prod?.name||"(produit supprimé)",stock,need,possible,unit:prod?.sellByVolume?(prod.unit||"cl"):"",isCombo:false};
     });
     const min=rows.length?Math.min(...rows.map(r=>r.possible)):0;
     return rows.map(r=>({...r,isBottleneck:r.possible===min})).sort((a,b)=>a.possible-b.possible);
   };
-  const maxPossible=combo=>{
-    const rows=ingredientBreakdown(combo);
-    return rows.length?Math.min(...rows.map(r=>r.possible)):0;
-  };
+  const maxPossible=combo=>freshlyAssemblable(combo,0);
 
   // Décompte (delta négatif) ou recrédite (delta positif) le stock d'UN ingrédient —
   // si un contenant est actuellement ouvert pour ce produit sur ce site, on corrige
@@ -3143,18 +3172,43 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
     return upd.map(p=>p.id.toString()===pid.toString()?{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)+delta)}}:p);
   };
 
+  // Consomme ce qu'il faut pour préparer N unités d'UN menu, récursivement : un
+  // ingrédient "menu imbriqué" pioche D'ABORD dans son propre stock déjà prêt
+  // (retiré du compteur), et seulement pour le reste, assemble à partir de SES
+  // PROPRES ingrédients (qui peuvent eux-mêmes être des menus imbriqués...).
+  const consumeForCombo=async(upd,combo,n)=>{
+    for(const it of combo.items||[]){
+      const neededTotal=(+it.qty||0)*n;
+      if(neededTotal<=0)continue;
+      if(it.type==="combo"){
+        const sub=combos.find(c=>c.id.toString()===(it.comboId||"").toString());
+        if(!sub)continue;
+        const ready=readyStockFor(readyCombos,siteId,sub.id);
+        const fromReady=Math.min(ready,neededTotal);
+        const fromFresh=neededTotal-fromReady;
+        if(fromReady>0){
+          if(caisseUrl)await apiWrite(caisseUrl,{action:"adjustReadyCombo",site:siteId,id:sub.id,delta:-fromReady});
+          setReadyCombos(prev=>{
+            const next=prev.map(r=>(r.site===siteId&&r.comboId.toString()===sub.id.toString())?{...r,count:Math.max(0,r.count-fromReady)}:r);
+            LS.set("anf87_ready_combos",next);
+            return next;
+          });
+        }
+        if(fromFresh>0)upd=await consumeForCombo(upd,sub,fromFresh);
+      }else{
+        upd=await applyIngredientDelta(upd,it.productId,-neededTotal);
+      }
+    }
+    return upd;
+  };
+
   const prepare=async combo=>{
     const n=+qtyInputs[combo.id]||0;
     const max=maxPossible(combo);
     if(n<=0||n>max||busyId)return;
     setBusyId(combo.id);
-    const flat=flattenComboItems(combo,combos);
-    const neededByProduct={};
-    flat.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
     let upd=products;
-    for(const pid of Object.keys(neededByProduct)){
-      upd=await applyIngredientDelta(upd,pid,-(neededByProduct[pid]*n));
-    }
+    upd=await consumeForCombo(upd,combo,n);
     onSaveProducts(upd);
     if(caisseUrl)await apiWrite(caisseUrl,{action:"adjustReadyCombo",site:siteId,id:combo.id,delta:n});
     setReadyCombos(prev=>{
@@ -3234,10 +3288,10 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
             <div key={r.pid} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
               padding:"4px 8px",borderRadius:6,marginBottom:2,background:r.isBottleneck&&max<=5?"#FFF3E0":"transparent"}}>
               <span style={{fontSize:11,color:r.isBottleneck&&max<=5?"#E65100":T.mid,fontWeight:r.isBottleneck&&max<=5?700:400}}>
-                {r.isBottleneck&&max<=5?"⚠️ ":""}{r.name}
+                {r.isBottleneck&&max<=5?"⚠️ ":""}{r.isCombo?"🍽 ":""}{r.name}
               </span>
               <span style={{fontSize:11,color:r.isBottleneck&&max<=5?"#E65100":T.mid,fontWeight:r.isBottleneck&&max<=5?700:400}}>
-                {r.stock}{r.unit} dispo · {r.need}{r.unit}/portion → <b>{r.possible}</b> possibles
+                {r.isCombo?`${r.ready} prêt${r.ready>1?"s":""} + ${r.assemblable} réalisable${r.assemblable>1?"s":""} = ${r.stock} dispo`:`${r.stock}${r.unit} dispo`} · {r.need}{r.unit}/portion → <b>{r.possible}</b> possibles
               </span>
             </div>
           ))}
