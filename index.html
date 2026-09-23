@@ -3085,7 +3085,7 @@ function StockCsvImport({products,sites,caisseUrl,onSave,categories}){
 // ingrédients, décompte ce stock à la préparation, et crédite un compteur "prêts à
 // vendre" consommé en priorité par la Caisse avant de repasser en assemblage à la
 // volée. ═══
-function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setReadyCombos,onSaveProducts,caisseUrl}){
+function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setReadyCombos,onSaveProducts,caisseUrl,containers,setContainers}){
   const [qtyInputs,setQtyInputs]=useState({}); // comboId -> quantité à préparer saisie
   const [busyId,setBusyId]=useState(null);
 
@@ -3103,6 +3103,23 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
     })));
   };
 
+  // Décompte (delta négatif) ou recrédite (delta positif) le stock d'UN ingrédient —
+  // si un contenant est actuellement ouvert pour ce produit sur ce site, on corrige
+  // SA jauge en même temps (via adjustContainer, qui ajuste le stock ET la jauge
+  // ensemble côté serveur), sinon un simple ajustement de stock classique.
+  const applyIngredientDelta=async(upd,pid,delta)=>{
+    const prod=upd.find(p=>p.id.toString()===pid.toString());
+    if(!prod)return upd;
+    const cont=(containers||[]).find(c=>c.site===siteId&&c.productId.toString()===pid.toString());
+    if(cont){
+      const newRemaining=Math.max(0,cont.remaining+delta);
+      await adjustContainerApi(caisseUrl,siteId,prod,newRemaining,setContainers);
+      return upd.map(p=>p.id.toString()===pid.toString()?{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)+delta)}}:p);
+    }
+    if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:siteId,qty:delta,mode:"delta"});
+    return upd.map(p=>p.id.toString()===pid.toString()?{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)+delta)}}:p);
+  };
+
   const prepare=async combo=>{
     const n=+qtyInputs[combo.id]||0;
     const max=maxPossible(combo);
@@ -3113,9 +3130,7 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
     flat.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
     let upd=products;
     for(const pid of Object.keys(neededByProduct)){
-      const qty=neededByProduct[pid]*n;
-      upd=upd.map(p=>p.id.toString()===pid.toString()?{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-qty)}}:p);
-      if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:siteId,qty:-qty,mode:"delta"});
+      upd=await applyIngredientDelta(upd,pid,-(neededByProduct[pid]*n));
     }
     onSaveProducts(upd);
     if(caisseUrl)await apiWrite(caisseUrl,{action:"adjustReadyCombo",site:siteId,id:combo.id,delta:n});
@@ -3131,7 +3146,8 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
 
   const unprepare=async(combo,amount)=>{
     // Retour en arrière (erreur de saisie, ou portions finalement pas utilisées) :
-    // remet les ingrédients en stock et retire du compteur "prêts".
+    // remet les ingrédients en stock (et la jauge du contenant ouvert, le cas
+    // échéant) et retire du compteur "prêts".
     const current=readyStockFor(readyCombos,siteId,combo.id);
     const n=Math.min(amount,current);
     if(n<=0||busyId)return;
@@ -3141,9 +3157,7 @@ function PrepareCombos({combos,products,sites,siteId,setSiteId,readyCombos,setRe
     flat.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
     let upd=products;
     for(const pid of Object.keys(neededByProduct)){
-      const qty=neededByProduct[pid]*n;
-      upd=upd.map(p=>p.id.toString()===pid.toString()?{...p,stock:{...p.stock,[siteId]:(p.stock[siteId]||0)+qty}}:p);
-      if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:siteId,qty:qty,mode:"delta"});
+      upd=await applyIngredientDelta(upd,pid,neededByProduct[pid]*n);
     }
     onSaveProducts(upd);
     if(caisseUrl)await apiWrite(caisseUrl,{action:"adjustReadyCombo",site:siteId,id:combo.id,delta:-n});
@@ -3417,7 +3431,7 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
     </div>}
     {readOnly&&<div style={{background:"#FFF8E1",padding:"8px 14px",fontSize:12,color:"#E65100",flexShrink:0}}>👁 Consultation uniquement</div>}
     {!readOnly&&view==="dashboard"&&<StockDashboard products={products} sites={sites} siteId={sel} setSiteId={setSel} containers={containers} deposits={deposits} caisseUrl={caisseUrl}/>}
-    {!readOnly&&view==="prepare"&&<PrepareCombos combos={combos} products={products} sites={sites} siteId={sel} setSiteId={setSel} readyCombos={readyCombos} setReadyCombos={setReadyCombos} onSaveProducts={onSave} caisseUrl={caisseUrl}/>}
+    {!readOnly&&view==="prepare"&&<PrepareCombos combos={combos} products={products} sites={sites} siteId={sel} setSiteId={setSel} readyCombos={readyCombos} setReadyCombos={setReadyCombos} onSaveProducts={onSave} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers}/>}
     {(view==="list"||readOnly)&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={readOnly}/>}
     {!readOnly&&view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
     {!readOnly&&view==="csv"&&<StockCsvImport products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} categories={categories}/>}
