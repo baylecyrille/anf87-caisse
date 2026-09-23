@@ -1405,9 +1405,14 @@ function App(){
     }
     if(caisseUrl){
       const member=cart.some(i=>i.free)?(LS.get("anf87_last_member")||""):"";
+      // Trace du stock de menus "prêts" consommé par cette vente (directement ou via
+      // un menu imbriqué) — indispensable pour pouvoir le restituer correctement si
+      // la vente est supprimée ou recommencée plus tard (sinon ce stock ne pouvait
+      // jamais être crédité en retour, faute de savoir qu'il avait été utilisé).
+      const readyCombosStr=JSON.stringify(Object.entries(readyComboDeltas).filter(([,q])=>q>0).map(([comboId,qty])=>({comboId,qty})));
       const saleResult=await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
         total:total.toFixed(2),payment:JSON.stringify(payment),
-        items:JSON.stringify(stockEntries),
+        items:JSON.stringify(stockEntries),readyCombos:readyCombosStr,
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
       if(saleResult?.stockWarning){
         await customAlert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
@@ -1507,7 +1512,7 @@ function App(){
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
           happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour} readyCombos={readyCombos}/>}
         {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos}/>}
-        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager} portions={portions}/>}
+        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos}/>}
         {tab==="admin"&&(isAdmin||isManager)&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
@@ -4787,7 +4792,7 @@ function StockTransfer({products,sites,caisseUrl,onSave,reserve,setReserve}){
 }
 
 // ═══ REPORTS ═══
-function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,isAdmin,isManager,portions}){
+function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,isAdmin,isManager,portions,combos,readyCombos,setReadyCombos}){
   const canSeeAllPeriods=isAdmin||isManager; // Caissier : uniquement "Aujourd'hui"
   const [sales,setSales]=useState([]);const [loading,setLoading]=useState(false);const [period,setPeriod]=useState("today");
   const [viewMonth,setViewMonth]=useState(()=>{const d=new Date();return{y:d.getFullYear(),m:d.getMonth()};});
@@ -4937,7 +4942,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
     </>}
 
     {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} caisseUrl={caisseUrl} onSaveProducts={onSaveProducts}
-      isAdmin={isAdmin} isManager={isManager} today={today} portions={portions}
+      isAdmin={isAdmin} isManager={isManager} today={today} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos}
       onClose={()=>setOpenSale(null)} onReorder={reorder}
       onSaleUpdated={updated=>{ setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s)); setOpenSale(updated); }}
       onSaleDeleted={id=>{ setSales(prev=>prev.filter(s=>s.id!==id)); setOpenSale(null); }}/>}
@@ -4988,12 +4993,15 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
 }
 
 // ═══ DÉTAIL D'UNE VENTE (avec photos des produits, et reprise en panier) ═══
-function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,isManager,today,portions,onClose,onReorder,onSaleUpdated,onSaleDeleted}){
+function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,isManager,today,portions,combos,readyCombos,setReadyCombos,onClose,onReorder,onSaleUpdated,onSaleDeleted}){
   const isToday=sale.date===today;
   const canModify=isToday?(isAdmin||isManager):isAdmin; // aujourd'hui : Admin+Manager ; passé : Admin seul
   const [editMode,setEditMode]=useState(false);
   const [saving,setSaving]=useState(false);
   let items=[]; try{items=JSON.parse(sale.items||"[]");}catch{}
+  // Menus "prêts" consommés par cette vente (directement ou via un menu imbriqué) —
+  // à restituer si la vente est supprimée ou recommencée (voir deleteSale/restartToday).
+  let readyCombosConsumed=[]; try{readyCombosConsumed=JSON.parse(sale.readyCombos||"[]");}catch{}
   const lines=items.map(it=>({...it,prod:products.find(p=>p.id.toString()===it.id.toString())}));
   const [editedQtys,setEditedQtys]=useState(()=>Object.fromEntries(lines.map((l,i)=>[i,l.qty])));
   let payType=null,payDetail=null; try{const pj=JSON.parse(sale.payment||"{}");payType=pj.type;payDetail=pj;}catch{}
@@ -5050,6 +5058,29 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
     onSaleUpdated&&onSaleUpdated({id:sale.id,total:newTotal,items:JSON.stringify(newItems),payment:JSON.stringify(editedPayment==="matchOffert"?{type:"matchOffert"}:{type:editedPayment})});
   };
 
+  // Restitue le stock de menus "prêts" consommé par cette vente (directement ou via
+  // un menu imbriqué) — sans ça, supprimer une vente qui avait puisé dans du stock
+  // déjà préparé ne rendait JAMAIS ce stock, puisque cette consommation n'était
+  // auparavant nulle part enregistrée dans la vente elle-même.
+  const restoreReadyCombos=async()=>{
+    for(const rc of readyCombosConsumed){
+      if(!rc.comboId||!rc.qty)continue;
+      if(caisseUrl)await apiWrite(caisseUrl,{action:"adjustReadyCombo",site:sale.siteId,id:rc.comboId,delta:+rc.qty});
+    }
+    if(readyCombosConsumed.length&&setReadyCombos){
+      setReadyCombos(prev=>{
+        let next=prev.slice();
+        readyCombosConsumed.forEach(rc=>{
+          const idx=next.findIndex(r=>r.site===sale.siteId&&r.comboId.toString()===rc.comboId.toString());
+          if(idx>=0)next[idx]={...next[idx],count:next[idx].count+(+rc.qty||0)};
+          else next.push({site:sale.siteId,comboId:rc.comboId,count:+rc.qty||0});
+        });
+        LS.set("anf87_ready_combos",next);
+        return next;
+      });
+    }
+  };
+
   // Suppression complète de la vente : tous les articles qu'elle contenait sont
   // remis en stock (site d'origine) avant de supprimer la ligne — sinon le stock
   // resterait décompté pour une vente qui n'existe plus.
@@ -5062,6 +5093,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
         if(!it.id||!it.qty)continue;
         await apiWrite(caisseUrl,{action:"updateStock",id:it.id,site:sale.siteId,qty:+it.qty,mode:"delta"});
       }
+      await restoreReadyCombos();
       const r=await apiWrite(caisseUrl,{action:"deleteSale",id:sale.id});
       if(!r.ok){await customAlert("⚠️ Échec de la suppression : "+(r.error||"connexion"));setSaving(false);return;}
     }
@@ -5093,6 +5125,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
         if(!it.id||!it.qty)continue;
         await apiWrite(caisseUrl,{action:"updateStock",id:it.id,site:sale.siteId,qty:+it.qty,mode:"delta"});
       }
+      await restoreReadyCombos();
       const r=await apiWrite(caisseUrl,{action:"deleteSale",id:sale.id});
       if(!r.ok){await customAlert("⚠️ Échec : "+(r.error||"connexion")+". Rien n'a été modifié.");setSaving(false);return;}
     }
