@@ -125,8 +125,8 @@ function initSheets() {
   // Ventes
   var ventes = getOrCreate(ss,"Ventes");
   if(ventes.getLastRow()<=1){
-    ventes.getRange(1,1,1,13).setValues([["ID","Date","Heure","SiteID","SiteNom","Total","Paiement","Articles","Membre","NbArticles","Caissier","PartFacture","MenusPretsConsommes"]]);
-    ventes.getRange(1,1,1,13).setFontWeight("bold"); ventes.setFrozenRows(1);
+    ventes.getRange(1,1,1,14).setValues([["ID","Date","Heure","SiteID","SiteNom","Total","Paiement","Articles","Membre","NbArticles","Caissier","PartFacture","MenusPretsConsommes","MenusVendus"]]);
+    ventes.getRange(1,1,1,14).setFontWeight("bold"); ventes.setFrozenRows(1);
   }
   // Utilisateurs
   var users = getOrCreate(ss,"Utilisateurs");
@@ -887,7 +887,7 @@ function saveSale(e){
   var tz=Session.getScriptTimeZone(), now=new Date(), saleId=now.getTime().toString();
   var dateStr=Utilities.formatDate(now,tz,"dd/MM/yyyy"), heureStr=Utilities.formatDate(now,tz,"HH:mm:ss");
   sh.appendRow([saleId,dateStr,heureStr,
-    p.site,p.siteName,+p.total,p.payment,p.items,p.member||"",+p.nbItems,p.caissier||"",p.splitPart||"",p.readyCombos||""]);
+    p.site,p.siteName,+p.total,p.payment,p.items,p.member||"",+p.nbItems,p.caissier||"",p.splitPart||"",p.readyCombos||"",p.comboLines||""]);
   // Empêche Google Sheets de convertir les colonnes Date/Heure en vraies dates (ce qui
   // cassait le filtre "Aujourd'hui" et les totaux dans les Rapports : la date revenait
   // au format ISO complet au lieu du "dd/MM/yyyy" attendu par l'appli, donc plus rien
@@ -982,12 +982,12 @@ function getSales(e){
   // seulement les nouvelles.
   var fmtDate=function(v){ return v instanceof Date ? Utilities.formatDate(v,tz,"dd/MM/yyyy") : v; };
   var fmtTime=function(v){ return v instanceof Date ? Utilities.formatDate(v,tz,"HH:mm:ss") : v; };
-  var data=sh.getRange(2,1,sh.getLastRow()-1,13).getValues();
+  var data=sh.getRange(2,1,sh.getLastRow()-1,14).getValues();
   var sales=data.filter(function(r){
     if(!r[0])return false;
     if(p.site&&p.site!=="all"&&r[3]!==p.site)return false;
     if(p.date&&fmtDate(r[1])!==p.date)return false;
     return true;
-  }).map(function(r){return{id:r[0],date:fmtDate(r[1]),time:fmtTime(r[2]),siteId:r[3],siteName:r[4],total:r[5],payment:r[6],items:r[7],member:r[8],caissier:r[10],readyCombos:r[12]||""};});
+  }).map(function(r){return{id:r[0],date:fmtDate(r[1]),time:fmtTime(r[2]),siteId:r[3],siteName:r[4],total:r[5],payment:r[6],items:r[7],member:r[8],caissier:r[10],readyCombos:r[12]||"",comboLines:r[13]||""};});
   return{ok:true,sales:sales};
 }

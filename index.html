@@ -1410,9 +1410,15 @@ function App(){
       // la vente est supprimée ou recommencée plus tard (sinon ce stock ne pouvait
       // jamais être crédité en retour, faute de savoir qu'il avait été utilisé).
       const readyCombosStr=JSON.stringify(Object.entries(readyComboDeltas).filter(([,q])=>q>0).map(([comboId,qty])=>({comboId,qty})));
+      // Trace des MENUS effectivement vendus (nom/photo/qté/prix au moment de la
+      // vente) — séparée du détail "articles" (qui reste la liste à PLAT des
+      // produits réellement décomptés du stock) : sans ça, "Croque Frites" n'était
+      // identifiable nulle part dans le détail d'une vente passée, seuls ses
+      // ingrédients bruts apparaissaient.
+      const comboLinesStr=JSON.stringify(cart.filter(i=>i.isCombo).map(i=>({comboId:i.pid,name:i.name,qty:i.qty,price:i.price,photo:i.photo||""})));
       const saleResult=await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
         total:total.toFixed(2),payment:JSON.stringify(payment),
-        items:JSON.stringify(stockEntries),readyCombos:readyCombosStr,
+        items:JSON.stringify(stockEntries),readyCombos:readyCombosStr,comboLines:comboLinesStr,
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
       if(saleResult?.stockWarning){
         await customAlert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
@@ -2241,8 +2247,34 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
           <div style={{fontSize:38,fontWeight:900,fontVariantNumeric:"tabular-nums"}}>{fmt(paidTotal)}</div>
           <div style={{fontSize:12,opacity:.65,marginTop:2}}>{site.name} • {cart.reduce((s,i)=>s+i.qty,0)} article(s)</div>
         </div>
-        <PaymentOptionButton e="💵" l="Espèces" s="Calcul automatique de la monnaie" c={T.green} onClick={()=>setStep("cash")}/>
-        <PaymentOptionButton e="💳" l={submitting?"⏳ Validation...":"Carte Bleue — SumUp"} s="Lance directement le TPE SumUp" c="#5856D6" onClick={handleSumUp} disabled={submitting}/>
+        {/* 3 boutons principaux : Espèces (le plus utilisé, en grand), Carte Bleue,
+            et "Autres" qui regroupe les moyens moins fréquents — pensé pour rester
+            confortable même sur un petit écran de smartphone (colonne unique,
+            wrap automatique si la largeur manque). */}
+        <button onClick={()=>setStep("cash")} style={{width:"100%",padding:"22px 18px",background:T.green,color:"white",border:"none",
+            borderRadius:16,cursor:"pointer",marginBottom:10,textAlign:"left",display:"flex",alignItems:"center",gap:14}}>
+          <div style={{fontSize:32,flexShrink:0}}>💵</div>
+          <div style={{minWidth:0}}>
+            <div style={{fontWeight:800,fontSize:19}}>Espèces</div>
+            <div style={{fontSize:12,opacity:.85}}>Calcul automatique de la monnaie</div>
+          </div>
+        </button>
+        <div style={{display:"flex",flexWrap:"wrap",gap:10,marginBottom:12}}>
+          <button onClick={handleSumUp} disabled={submitting} style={{flex:"1 1 130px",padding:"16px 12px",background:submitting?"#9997d6":"#5856D6",color:"white",
+              border:"none",borderRadius:14,cursor:submitting?"default":"pointer",textAlign:"center"}}>
+            <div style={{fontSize:24,marginBottom:4}}>💳</div>
+            <div style={{fontWeight:700,fontSize:14}}>{submitting?"⏳ Validation...":"Carte Bleue"}</div>
+          </button>
+          <button onClick={()=>setStep("others")} style={{flex:"1 1 130px",padding:"16px 12px",background:T.bg,border:`1px solid ${T.border}`,
+              borderRadius:14,cursor:"pointer",textAlign:"center"}}>
+            <div style={{fontSize:24,marginBottom:4}}>⋯</div>
+            <div style={{fontWeight:700,fontSize:14,color:T.dark}}>Autres</div>
+          </button>
+        </div>
+      </>}
+      {step==="others"&&<>
+        <button onClick={()=>setStep("select")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
+        <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:14}}>Autres moyens de paiement</div>
         {/* Consos offertes match (joueurs/dirigeants/arbitres) */}
         <button onClick={()=>setStep("matchOffert")} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",
           background:"#E8F5E9",border:`2px dashed ${T.green}`,borderRadius:13,cursor:"pointer",marginBottom:12,textAlign:"left"}}>
@@ -2268,7 +2300,7 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
         </button>
       </>}
       {step==="matchOffert"&&<>
-        <button onClick={()=>setStep("select")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
+        <button onClick={()=>setStep("others")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
         <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:4}}>⚽ Consos offertes match</div>
         <div style={{fontSize:13,color:T.mid,marginBottom:14}}>Pour les joueurs, dirigeants et arbitres ayant participé au match.</div>
         <div style={{background:"#E8F5E9",borderRadius:12,padding:14,marginBottom:16,border:"1px solid #A5D6A7"}}>
@@ -2306,7 +2338,7 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
         </button>
       </>}
       {step==="check"&&<>
-        <button onClick={()=>setStep("select")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
+        <button onClick={()=>setStep("others")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
         <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:14}}>📝 Paiement par chèque</div>
         <div style={{background:T.bg,borderRadius:12,padding:14,marginBottom:14}}>
           <div style={{fontSize:12,color:T.mid}}>MONTANT</div>
@@ -5002,6 +5034,9 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
   // Menus "prêts" consommés par cette vente (directement ou via un menu imbriqué) —
   // à restituer si la vente est supprimée ou recommencée (voir deleteSale/restartToday).
   let readyCombosConsumed=[]; try{readyCombosConsumed=JSON.parse(sale.readyCombos||"[]");}catch{}
+  // Menus effectivement vendus (affichage) — séparé du détail "articles" ci-dessous,
+  // qui reste la liste à PLAT des produits réellement décomptés du stock.
+  let comboLines=[]; try{comboLines=JSON.parse(sale.comboLines||"[]");}catch{}
   const lines=items.map(it=>({...it,prod:products.find(p=>p.id.toString()===it.id.toString())}));
   const [editedQtys,setEditedQtys]=useState(()=>Object.fromEntries(lines.map((l,i)=>[i,l.qty])));
   let payType=null,payDetail=null; try{const pj=JSON.parse(sale.payment||"{}");payType=pj.type;payDetail=pj;}catch{}
@@ -5173,6 +5208,17 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
       </div>}
 
       <div style={{marginTop:12,marginBottom:12}}>
+        {comboLines.length>0&&<div style={{marginBottom:10}}>
+          <div style={{fontSize:10,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>🍽 Menus</div>
+          {comboLines.map((c,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
+              {c.photo?<img src={c.photo} style={{width:38,height:38,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:24,flexShrink:0}}>🍽</span>}
+              <div style={{flex:1,fontSize:13,color:T.dark,fontWeight:600}}>{c.name}</div>
+              <div style={{fontSize:13,fontWeight:700,color:T.dark}}>×{c.qty}</div>
+            </div>
+          ))}
+          <div style={{fontSize:10,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:.5,margin:"10px 0 6px"}}>📦 Articles décomptés du stock</div>
+        </div>}
         {lines.length===0&&<div style={{fontSize:12,color:T.mid,fontStyle:"italic"}}>Détail des articles non disponible pour cette vente.</div>}
         {lines.map((l,i)=>(
           <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
