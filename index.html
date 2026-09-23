@@ -2005,37 +2005,37 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
       </div>
 
       {/* ── Barre mobile bas ── */}
-      {!isLandscape&&<div style={{padding:"8px 12px 10px",background:T.card,borderTop:`1px solid ${T.border}`,flexShrink:0}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-          <span style={{fontSize:13,fontWeight:600,color:T.mid}}>{cart.length>0?fmt(cartTotal):"Panier vide"}</span>
+      {!isLandscape&&<div style={{padding:"8px 10px 10px",background:T.card,borderTop:`1px solid ${T.border}`,flexShrink:0}}>
+        {/* 3 boutons directs (Espèces/CB/Options) + l'icône panier, tous sur une
+            seule ligne pour gagner de la place en portrait. "Options" reprend le
+            même gris "désactivé" que les deux autres quand le panier est vide, et
+            passe dans sa propre couleur (orange) dès qu'il y a quelque chose à
+            payer, pour rester bien visible sans se confondre avec un bouton inactif. */}
+        <div style={{display:"flex",gap:5,alignItems:"stretch"}}>
+          <button onClick={()=>openPayment("cash")} disabled={cart.length===0}
+            style={{flex:"1.6",padding:"12px 4px",background:cart.length>0?T.green:"#ccc",color:"white",
+              border:"none",borderRadius:12,fontSize:12,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
+            💵 Espèces
+          </button>
+          <button onClick={()=>openPayment("cb")} disabled={cart.length===0}
+            style={{flex:"1.6",padding:"12px 4px",background:cart.length>0?"#5856D6":"#ccc",color:"white",
+              border:"none",borderRadius:12,fontSize:12,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
+            💳 CB
+          </button>
+          <button onClick={()=>openPayment("others")} disabled={cart.length===0}
+            style={{flex:"1.3",padding:"12px 2px",background:cart.length>0?T.orange:"#ccc",color:"white",
+              border:"none",borderRadius:12,fontSize:12,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
+            Options
+          </button>
           {/* Icône panier avec badge — pour revoir/modifier le détail avant de payer */}
-          <button onClick={openCart} style={{position:"relative",padding:"7px 12px",background:T.bg,
-            border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontSize:16}}>
+          <button onClick={openCart} style={{position:"relative",flexShrink:0,width:44,background:T.bg,
+            border:`1px solid ${T.border}`,borderRadius:12,cursor:"pointer",fontSize:17}}>
             🛒
-            {cartCount>0&&<span style={{position:"absolute",top:-6,right:-6,background:T.red,color:"white",
+            {cartCount>0&&<span style={{position:"absolute",top:-5,right:-5,background:T.red,color:"white",
               borderRadius:"50%",width:18,height:18,fontSize:10,fontWeight:900,
               display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>
               {cartCount>9?"9+":cartCount}
             </span>}
-          </button>
-        </div>
-        {/* 3 boutons directs (Espèces/CB/Autres) — mêmes raccourcis que sur bureau,
-            juste plus compacts pour rester confortables sur un écran étroit. */}
-        <div style={{display:"flex",gap:6}}>
-          <button onClick={()=>openPayment("cash")} disabled={cart.length===0}
-            style={{flex:2,padding:"13px 6px",background:cart.length>0?T.green:"#ccc",color:"white",
-              border:"none",borderRadius:13,fontSize:13,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
-            💵 Espèces
-          </button>
-          <button onClick={()=>openPayment("cb")} disabled={cart.length===0}
-            style={{flex:2,padding:"13px 6px",background:cart.length>0?"#5856D6":"#ccc",color:"white",
-              border:"none",borderRadius:13,fontSize:13,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
-            💳 CB
-          </button>
-          <button onClick={()=>openPayment("others")} disabled={cart.length===0}
-            style={{flex:1,padding:"13px 2px",background:T.bg,border:`1px solid ${T.border}`,
-              borderRadius:13,fontSize:18,fontWeight:700,color:T.dark,cursor:cart.length>0?"pointer":"not-allowed",opacity:cart.length>0?1:.5}}>
-            🧾
           </button>
         </div>
       </div>}
