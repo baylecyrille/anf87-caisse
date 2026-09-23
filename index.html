@@ -1008,6 +1008,7 @@ function App(){
   const [tab,setTab]=useState("pos");
   const [cart,setCart]=useState(()=>LS.get("anf87_cart")||[]);
   const [modal,setModal]=useState(null);
+  const [paymentInitialStep,setPaymentInitialStep]=useState("select"); // permet d'ouvrir directement sur Espèces/CB depuis la caisse, en économisant un clic
   const [currentUser,setCU]=useState(SS.get("anf87_user")||null);
   const [syncing,setSyncing]=useState(false);
   const [loggingOut,setLoggingOut]=useState(false); // bloque l'écran le temps de resynchroniser avant de revenir au code PIN
@@ -1514,7 +1515,7 @@ function App(){
           addToCart={addToCart} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
           addVolumeToCart={addVolumeToCart} portions={portions} combos={combos} addComboToCart={addComboToCart}
           cartTotal={cartTotal} cartCount={cartCount} currentUser={currentUser}
-          openPayment={()=>setModal("payment")} openScanner={()=>setModal("scanner")}
+          openPayment={step=>{setPaymentInitialStep(step||"select");setModal("payment");}} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
           happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour} readyCombos={readyCombos}/>}
         {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos}/>}
@@ -1543,13 +1544,14 @@ function App(){
       {/* ── MODALS ── */}
       {modal==="payment"&&<PaymentModal cart={cart} total={cartTotal} site={site} boissonsUrl={boissonsUrl}
         onClose={()=>setModal(null)} onDone={finalizeSale} setCart={setCart} sumupKey={sumupKey} sumupAppId={sumupAppId}
+        initialStep={paymentInitialStep}
         openBoissons={()=>setModal("boissons")} openSplit={()=>setModal("split")}/>}
       {modal==="scanner"&&<ScannerModal products={products} siteId={siteId} onFound={addToCart} onClose={()=>setModal(null)}/>}
       {modal==="boissons"&&<FreeDrinksModal cart={cart} setCart={setCart} boissonsUrl={boissonsUrl}
         onClose={()=>setModal("payment")} onFinalize={finalizeSale}/>}
       {modal==="split"&&<SplitModal total={cartTotal} boissonsUrl={boissonsUrl} onClose={()=>setModal("payment")} onComplete={(payments)=>{finalizeSale({type:"split",parts:payments});}}/>}
       {modal==="cart"&&<CartModal cart={cart} cartTotal={cartTotal} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
-        onClose={()=>setModal(null)} onEncaisser={()=>{setModal("payment");}}/>}
+        onClose={()=>setModal(null)} onEncaisser={step=>{setPaymentInitialStep(step||"select");setModal("payment");}}/>}
       {volumeProd&&<VolumeModal prod={volumeProd} onClose={()=>setVolumeProd(null)} onAdd={addVolumeToCart} portions={portions} happyHourActive={happyHourActive}/>}
     </div>
   );
@@ -2059,11 +2061,26 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           <span style={{fontSize:16,fontWeight:600,color:T.dark}}>Total</span>
           <span style={{fontSize:24,fontWeight:900,color:T.red,fontVariantNumeric:"tabular-nums"}}>{fmt(cartTotal)}</span>
         </div>
-        <button onClick={openPayment} disabled={cart.length===0}
-          style={{width:"100%",padding:"16px",background:cart.length>0?T.red:"#ccc",color:"white",
-            border:"none",borderRadius:14,fontSize:16,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
-          💳 Encaisser {cart.length>0&&fmt(cartTotal)}
-        </button>
+        {/* 3 boutons directs (Espèces/CB/Autres) au lieu d'un simple "Encaisser" —
+            économise le clic intermédiaire pour les 2 moyens de paiement les plus
+            fréquents, en ouvrant l'écran de paiement directement sur la bonne étape. */}
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>openPayment("cash")} disabled={cart.length===0}
+            style={{flex:2,padding:"14px 8px",background:cart.length>0?T.green:"#ccc",color:"white",
+              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
+            💵 Espèces
+          </button>
+          <button onClick={()=>openPayment("cb")} disabled={cart.length===0}
+            style={{flex:2,padding:"14px 8px",background:cart.length>0?"#5856D6":"#ccc",color:"white",
+              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
+            💳 CB
+          </button>
+          <button onClick={()=>openPayment("others")} disabled={cart.length===0}
+            style={{flex:1,padding:"14px 4px",background:T.bg,border:`1px solid ${T.border}`,
+              borderRadius:14,fontSize:14,fontWeight:700,color:T.dark,cursor:cart.length>0?"pointer":"not-allowed",opacity:cart.length>0?1:.5}}>
+            ⋯
+          </button>
+        </div>
       </div>
     </div>}
   </div>);
@@ -2107,11 +2124,23 @@ function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose
           <span style={{fontSize:16,fontWeight:600}}>Total</span>
           <span style={{fontSize:24,fontWeight:900,color:T.red}}>{fmt(cartTotal)}</span>
         </div>
-        <button onClick={onEncaisser} disabled={cart.length===0}
-          style={{width:"100%",padding:"16px",background:cart.length>0?T.red:"#ccc",color:"white",
-            border:"none",borderRadius:14,fontSize:16,fontWeight:700,cursor:"pointer"}}>
-          💳 Encaisser {cart.length>0&&fmt(cartTotal)}
-        </button>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>onEncaisser("cash")} disabled={cart.length===0}
+            style={{flex:2,padding:"14px 8px",background:cart.length>0?T.green:"#ccc",color:"white",
+              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
+            💵 Espèces
+          </button>
+          <button onClick={()=>onEncaisser("cb")} disabled={cart.length===0}
+            style={{flex:2,padding:"14px 8px",background:cart.length>0?"#5856D6":"#ccc",color:"white",
+              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
+            💳 CB
+          </button>
+          <button onClick={()=>onEncaisser("others")} disabled={cart.length===0}
+            style={{flex:1,padding:"14px 4px",background:"rgba(255,255,255,0.08)",border:`1px solid ${T.border}`,
+              borderRadius:14,fontSize:14,fontWeight:700,color:T.dark,cursor:cart.length>0?"pointer":"not-allowed",opacity:cart.length>0?1:.5}}>
+            ⋯
+          </button>
+        </div>
       </div>
     </div>
   </div>);
@@ -2183,8 +2212,8 @@ function PaymentOptionButton({e,l,s,c,onClick,disabled}){
 }
 
 // ═══ PAYMENT MODAL ═══
-function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupKey,sumupAppId,openBoissons,openSplit}){
-  const [step,setStep]=useState("select");
+function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupKey,sumupAppId,initialStep,openBoissons,openSplit}){
+  const [step,setStep]=useState(initialStep==="cb"?"select":(initialStep||"select")); // "cb" déclenche SumUp directement (voir plus bas), pas un vrai écran
   const drinkItems=cart.filter(i=>i.drink);const freeItems=cart.filter(i=>i.free);
   const paidTotal=cart.reduce((s,i)=>s+(i.free?0:i.price*i.qty),0);
   // Montant remis pré-rempli avec le total exact (cas le plus fréquent) — modifiable
@@ -2231,6 +2260,10 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
       if(confirmed)onDone({type:"cb"});else setSubmitting(false);
     },2000);
   };
+  // Ouverture directe depuis la caisse sur "Carte Bleue" (bouton dédié, sans passer
+  // par l'écran de choix) : déclenche SumUp automatiquement dès le montage, comme un
+  // clic immédiat sur le bouton — économise le clic intermédiaire.
+  useEffect(()=>{ if(initialStep==="cb")handleSumUp(); },[]);
   const doCashPayment=g=>{if(submitting)return;if(isNaN(g)||g<paidTotal)return;setSubmitting(true);onDone({type:"cash",given:g,change:+(g-paidTotal).toFixed(2)});};
   const handleCash=()=>{doCashPayment(parseFloat(given.replace(",",".")));};
 
