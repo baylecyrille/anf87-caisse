@@ -743,6 +743,18 @@ const effectivePrice=(p,happyHourActive)=>(happyHourActive&&p.happyPrice>0)?p.ha
 // est saisi PAR PORTION DE BASE (ex: 0,90€ le fût de 25cl), donc il faut le ramener
 // au cl avant de comparer/multiplier avec des quantités elles aussi en cl.
 const unitCost=p=>p.sellByVolume?(p.costPrice||0)/(p.baseQty||1):(p.costPrice||0);
+// Estime un "nombre d'articles" à partir d'une quantité totale (cl/g) vendue d'un
+// produit au volume, pour l'affichage dans les rapports. Utilise la plus PETITE
+// portion configurée pour ce produit comme taille de référence (ex: 100g pour des
+// frites vendues en 100g ou 200g) plutôt que la "Quantité de base" du produit, qui
+// sert à un tout autre calcul (le prix/coût unitaire) et peut représenter un
+// conditionnement d'achat bien plus gros (ex: un sac de 2,5kg) — la diviser
+// donnait un nombre d'articles qui arrondissait à 0 et n'avait pas de sens.
+const estimateArticleCount=(qty,prod,portions)=>{
+  const myPortions=(portions||[]).filter(po=>po.productId.toString()===prod.id.toString());
+  const ref=myPortions.length?Math.min(...myPortions.map(po=>po.size)):(prod.baseQty||1);
+  return Math.round(qty/(ref||1));
+};
 // Un produit est vendu sur un site si sa liste "siteAvailability" est vide (par
 // défaut : vendu partout) ou si elle contient explicitement ce site.
 const isAvailableAtSite=(p,siteId)=>{
@@ -770,22 +782,14 @@ const toggleAvailabilityForSite=(prod,allSites,siteId)=>{
 // menu "Croque Monsieur") — nécessaire car le stock, lui, ne se décompte qu'au
 // niveau produit. depth limite les boucles accidentelles (menu A qui inclurait B qui
 // inclurait A) sans devoir les détecter explicitement.
-const flattenComboItems=(combo,combos,multiplier,depth,readyCtx)=>{
+const flattenComboItems=(combo,combos,multiplier,depth)=>{
   multiplier=multiplier||1; depth=depth||0;
   if(depth>5||!combo)return[];
   let result=[];
   (combo.items||[]).forEach(it=>{
     if(it.type==="combo"){
       const sub=combos.find(c=>c.id.toString()===(it.comboId||"").toString());
-      if(!sub)return;
-      const neededMult=multiplier*(+it.qty||1);
-      // readyCtx (optionnel) : si le SOUS-menu a lui-même assez de portions déjà
-      // préparées d'avance (ex: des Croque Monsieur tout prêts), on considère cette
-      // partie satisfaite sans aller chercher ses ingrédients bruts — sinon "Croque
-      // Frites" semblait en rupture dès que le pain/jambon/fromage manquait, même
-      // avec des Croque Monsieur déjà montés en réserve.
-      if(readyCtx&&readyStockFor(readyCtx.readyCombos,readyCtx.siteId,sub.id)>=neededMult)return;
-      result=result.concat(flattenComboItems(sub,combos,neededMult,depth+1,readyCtx));
+      if(sub)result=result.concat(flattenComboItems(sub,combos,multiplier*(+it.qty||1),depth+1));
     }else{
       result.push({productId:it.productId,qty:(+it.qty||0)*multiplier,portionId:it.portionId||""});
     }
@@ -804,6 +808,36 @@ const serializeComboItems=items=>items.map(it=>{
   const alts=[...new Set((it.alternates||[]).filter(a=>a&&a!==it.productId))];
   return it.productId+":"+it.qty+":"+(it.portionId||"")+":"+alts.join("|");
 }).join(",");
+// Comme flattenComboItems, mais en tenant compte du stock de menu DÉJÀ PRÉPARÉ pour
+// les menus imbriqués : sépare ce qui doit être décompté du stock "prêt" d'un
+// sous-menu (comboConsumption) de ce qu'il faut réellement assembler à partir des
+// ingrédients bruts pour le reste (productItems) — contrairement à un simple "tout
+// ou rien", une portion PARTIELLEMENT couverte par du stock prêt assemble
+// correctement le complément à partir des ingrédients.
+const resolveComboConsumption=(combo,combos,multiplier,depth,readyCombos,siteId)=>{
+  multiplier=multiplier||1; depth=depth||0;
+  const out={productItems:[],comboConsumption:[]};
+  if(depth>5||!combo)return out;
+  (combo.items||[]).forEach(it=>{
+    if(it.type==="combo"){
+      const sub=combos.find(c=>c.id.toString()===(it.comboId||"").toString());
+      if(!sub)return;
+      const neededMult=multiplier*(+it.qty||1);
+      const ready=readyStockFor(readyCombos,siteId,sub.id);
+      const fromReady=Math.min(ready,neededMult);
+      const fromFresh=neededMult-fromReady;
+      if(fromReady>0)out.comboConsumption.push({comboId:sub.id,qty:fromReady});
+      if(fromFresh>0){
+        const sr=resolveComboConsumption(sub,combos,fromFresh,depth+1,readyCombos,siteId);
+        out.productItems=out.productItems.concat(sr.productItems);
+        out.comboConsumption=out.comboConsumption.concat(sr.comboConsumption);
+      }
+    }else{
+      out.productItems.push({productId:it.productId,qty:(+it.qty||0)*multiplier,portionId:it.portionId||""});
+    }
+  });
+  return out;
+};
 // Propose des montants remis réalistes (vraies pièces/billets), plutôt que des
 // arrondis arbitraires : pour chaque coupure réelle, le plus petit multiple qui
 // couvre le total — donne les montants qu'on paierait vraiment avec une seule sorte
@@ -1172,8 +1206,8 @@ function App(){
       });
       return;
     }
-    const flatItems=flattenComboItems(combo,combos,1,0,{readyCombos,siteId});
-    const items=flatItems.map(ci=>{
+    const resolved=resolveComboConsumption(combo,combos,1,0,readyCombos,siteId);
+    const items=resolved.productItems.map(ci=>{
       const prod=products.find(p=>p.id.toString()===ci.productId.toString());
       return{pid:ci.productId,qty:ci.qty,prod};
     });
@@ -1193,6 +1227,12 @@ function App(){
       const prodName=products.find(p=>p.id.toString()===insuffisantId.toString())?.name||"?";
       await customAlert("⚠️ Stock insuffisant pour ce menu (\""+prodName+"\").");return;
     }
+    // Regroupe par sous-menu (au cas où le même menu imbriqué apparaîtrait plusieurs
+    // fois, ex: nesting profond) — c'est cette liste qui décomptera le stock "prêt"
+    // des sous-menus au moment de l'encaissement (voir finalizeSale).
+    const comboConsumptionByCombo={};
+    resolved.comboConsumption.forEach(cc=>{ comboConsumptionByCombo[cc.comboId]=(comboConsumptionByCombo[cc.comboId]||0)+cc.qty; });
+    const nestedReadyConsumption=Object.entries(comboConsumptionByCombo).map(([comboId,qty])=>({comboId,qty}));
     // Un menu contenant au moins une boisson est éligible à la carte boissons
     // offertes (comme un produit boisson classique) — la valeur totale du menu
     // devient alors offrable.
@@ -1201,7 +1241,7 @@ function App(){
       const ex=prev.find(i=>i.pid===combo.id&&i.isCombo&&!i.fromReadyStock);
       if(ex)return prev.map(i=>i===ex?{...i,qty:i.qty+1}:i);
       return[...prev,{id:combo.id+"-"+Date.now(),pid:combo.id,isCombo:true,
-        comboItems:items.map(it=>({pid:it.pid,qty:it.qty})),
+        comboItems:items.map(it=>({pid:it.pid,qty:it.qty})),nestedReadyConsumption,
         name:combo.name,price:combo.price,emoji:"🍽",photo:combo.photo,drink:containsDrink,qty:1,free:false,unit:"menu"}];
     });
   };
@@ -1266,6 +1306,14 @@ function App(){
         readyComboDeltas[item.pid]=(readyComboDeltas[item.pid]||0)+item.qty;
       }else if(item.comboItems){
         item.comboItems.forEach(ci=>stockEntries.push({id:ci.pid,qty:ci.qty*item.qty}));
+        // Un menu fraîchement assemblé peut lui-même contenir un AUTRE menu
+        // couvert (en tout ou partie) par du stock déjà préparé (ex: des Croque
+        // Monsieur tout prêts utilisés pour un Croque Frites) — ça se décompte ici,
+        // pas via les ingrédients bruts, sinon rien n'était jamais retiré du
+        // compteur "prêts" du sous-menu.
+        (item.nestedReadyConsumption||[]).forEach(nc=>{
+          readyComboDeltas[nc.comboId]=(readyComboDeltas[nc.comboId]||0)+nc.qty*item.qty;
+        });
       }else{
         const pid=item.pid||item.id;
         stockEntries.push({id:pid,qty:stockAmount(item)});
@@ -1459,7 +1507,7 @@ function App(){
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
           happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour} readyCombos={readyCombos}/>}
         {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos}/>}
-        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager}/>}
+        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager} portions={portions}/>}
         {tab==="admin"&&(isAdmin||isManager)&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
@@ -1881,9 +1929,9 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         const buildComboTile=(combo)=>{
           const cid="combo-"+combo.id;
           const ready=readyStockFor(readyCombos,siteId,combo.id);
-          const flatItems=flattenComboItems(combo,combos,1,0,{readyCombos,siteId});
+          const resolved=resolveComboConsumption(combo,combos,1,0,readyCombos,siteId);
           const neededByProduct={};
-          flatItems.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
+          resolved.productItems.forEach(it=>{ neededByProduct[it.productId]=(neededByProduct[it.productId]||0)+it.qty; });
           // Des portions déjà préparées d'avance suffisent à rendre le menu
           // disponible, même si le stock des ingrédients bruts est par ailleurs
           // insuffisant pour en assembler un de plus à la volée.
@@ -4739,7 +4787,7 @@ function StockTransfer({products,sites,caisseUrl,onSave,reserve,setReserve}){
 }
 
 // ═══ REPORTS ═══
-function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,isAdmin,isManager}){
+function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,isAdmin,isManager,portions}){
   const canSeeAllPeriods=isAdmin||isManager; // Caissier : uniquement "Aujourd'hui"
   const [sales,setSales]=useState([]);const [loading,setLoading]=useState(false);const [period,setPeriod]=useState("today");
   const [viewMonth,setViewMonth]=useState(()=>{const d=new Date();return{y:d.getFullYear(),m:d.getMonth()};});
@@ -4889,7 +4937,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
     </>}
 
     {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} caisseUrl={caisseUrl} onSaveProducts={onSaveProducts}
-      isAdmin={isAdmin} isManager={isManager} today={today}
+      isAdmin={isAdmin} isManager={isManager} today={today} portions={portions}
       onClose={()=>setOpenSale(null)} onReorder={reorder}
       onSaleUpdated={updated=>{ setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s)); setOpenSale(updated); }}
       onSaleDeleted={id=>{ setSales(prev=>prev.filter(s=>s.id!==id)); setOpenSale(null); }}/>}
@@ -4910,7 +4958,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
               <div style={{flex:1,fontSize:13,color:T.dark,fontWeight:600}}>{prod?.name||"(produit supprimé, ID "+id+")"}</div>
               <div style={{fontSize:14,fontWeight:800,color:T.dark}}>
                 {prod?.sellByVolume
-                  ?`×${Math.round(qty/(prod.baseQty||1))} (${qty}${prod.unit||"cl"})`
+                  ?`×${estimateArticleCount(qty,prod,portions)} (${qty}${prod.unit||"cl"})`
                   :`×${qty}`}
               </div>
             </div>
@@ -4940,7 +4988,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
 }
 
 // ═══ DÉTAIL D'UNE VENTE (avec photos des produits, et reprise en panier) ═══
-function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,isManager,today,onClose,onReorder,onSaleUpdated,onSaleDeleted}){
+function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,isManager,today,portions,onClose,onReorder,onSaleUpdated,onSaleDeleted}){
   const isToday=sale.date===today;
   const canModify=isToday?(isAdmin||isManager):isAdmin; // aujourd'hui : Admin+Manager ; passé : Admin seul
   const [editMode,setEditMode]=useState(false);
@@ -5107,7 +5155,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
               </div>
               :<div style={{fontSize:13,fontWeight:700,color:T.dark}}>
                 {l.prod?.sellByVolume
-                  ?`×${Math.round(l.qty/(l.prod.baseQty||1))} (${l.qty}${l.prod.unit||"cl"})`
+                  ?`×${estimateArticleCount(l.qty,l.prod,portions)} (${l.qty}${l.prod.unit||"cl"})`
                   :`×${l.qty}`}
               </div>}
           </div>
