@@ -5667,6 +5667,16 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   const [collapsedCats,setCollapsedCats]=useState(new Set()); // catégories repliées — dépliées par défaut
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
 
+  // Pré-remplit le formulaire "+ Nouveau produit" (en haut de l'écran) avec une
+  // copie du produit — pratique pour une variante "prix différent pour tel
+  // événement, vendu sur tel site uniquement" sans tout ressaisir à la main. Le
+  // stock démarre à 0 sur tous les sites (c'est un nouveau produit, pas le même).
+  const duplicateProduct=p=>{
+    setNewP({name:p.name+" (copie)",price:p.price,costPrice:p.costPrice||"",cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:"",
+      drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",
+      color:p.color||"#FF9F0A",siteAvailability:p.siteAvailability||""});
+  };
+
   const handlePhoto=(e,setter)=>{const f=e.target.files[0];if(!f)return;
     resizePhotoFile(f).then(url=>setter(prev=>({...prev,photo:url})));
   };
@@ -5763,6 +5773,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
               </div>}
               <div style={{display:"flex",gap:5,width:"100%",marginTop:2}}>
                 <button onClick={()=>setEdit({...p})} style={{flex:1,padding:"5px 0",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,cursor:"pointer",fontSize:11}}>✏️</button>
+                <button onClick={()=>duplicateProduct(p)} title="Dupliquer ce produit (pré-remplit le formulaire en haut)" style={{flex:1,padding:"5px 0",background:"#F0F4FF",border:`1px solid ${T.blue}`,borderRadius:6,cursor:"pointer",fontSize:11}}>📋</button>
                 <button onClick={()=>delProd(p.id)} style={{flex:1,padding:"5px 0",background:"#FFF0F0",border:"none",borderRadius:6,cursor:"pointer",color:T.red,fontSize:11}}>🗑</button>
               </div>
             </div>);
