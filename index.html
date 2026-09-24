@@ -4945,7 +4945,31 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
 
   const reorder=async sale=>{
     let items=[]; try{items=JSON.parse(sale.items||"[]");}catch{}
-    const newCart=items.map(it=>{
+    let comboLinesData=[]; try{comboLinesData=JSON.parse(sale.comboLines||"[]");}catch{}
+
+    // Les menus achetés doivent revenir au panier à LEUR propre prix (celui du
+    // menu), pas à la somme de leurs ingrédients bruts pris séparément — sinon le
+    // total recalculé n'a plus rien à voir avec ce qui a été vendu (c'était le bug :
+    // un Croque Frites à 3,50€ redevenait "pain + jambon + fromage + frites +
+    // serviette", dont la somme des prix individuels n'a aucune raison de valoir
+    // 3,50€). On calcule donc d'abord ce que ces menus auraient consommé comme
+    // ingrédients, pour l'isoler du reste (les achats VRAIMENT indépendants).
+    const consumedByProduct={};
+    const comboCartLines=comboLinesData.map(cl=>{
+      const combo=combos.find(c=>c.id.toString()===cl.comboId.toString());
+      if(!combo)return null; // menu supprimé depuis : ignoré, ses ingrédients restent dans "items" et seront donc traités comme des achats indépendants (repli raisonnable)
+      flattenComboItems(combo,combos,cl.qty).forEach(f=>{ consumedByProduct[f.productId]=(consumedByProduct[f.productId]||0)+f.qty; });
+      return{id:combo.id+"-reorder-"+Date.now()+"-"+Math.random().toString(36).slice(2),pid:combo.id,isCombo:true,
+        name:cl.name||combo.name,price:cl.price!=null?cl.price:combo.price,photo:cl.photo||combo.photo,emoji:"🍽",qty:cl.qty,free:false,unit:"menu",
+        comboItems:flattenComboItems(combo,combos,1).map(f=>({pid:f.productId,qty:f.qty})),nestedReadyConsumption:[]};
+    }).filter(Boolean);
+
+    const standaloneItems=items.map(it=>{
+      const consumed=consumedByProduct[it.id]||0;
+      return{id:it.id,qty:(+it.qty||0)-consumed};
+    }).filter(it=>it.qty>0.001);
+
+    const standaloneCartLines=standaloneItems.map(it=>{
       const prod=products.find(p=>p.id.toString()===it.id.toString());
       if(!prod)return null;
       // Pour un produit vendu au volume, it.qty stocké dans la vente est le total de
@@ -4962,6 +4986,8 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
       }
       return{id:prod.id,pid:prod.id,name:prod.name,price:prod.price,qty:it.qty,emoji:prod.emoji,photo:prod.photo,drink:prod.drink,free:false,unit:"unité"};
     }).filter(Boolean);
+
+    const newCart=[...comboCartLines,...standaloneCartLines];
     if(newCart.length===0){await customAlert("⚠️ Aucun des produits de cette commande n'existe encore dans le catalogue.");return;}
     setCart(newCart);setTab("pos");setOpenSale(null);
   };
@@ -5316,9 +5342,20 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
         </div>
         <div style={{fontSize:10,color:T.mid,textAlign:"center"}}>Le stock est ajusté automatiquement selon l'écart avec la vente d'origine.</div>
       </>:<>
-        {canModify&&<button onClick={startEdit} style={{width:"100%",padding:"12px",background:"#FF9F0A",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
-          ✏️ Modifier cette vente (même date)
-        </button>}
+        {canModify&&(comboLines.length===0?(
+          <button onClick={startEdit} style={{width:"100%",padding:"12px",background:"#FF9F0A",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
+            ✏️ Modifier cette vente (même date)
+          </button>
+        ):(
+          // Modifier les quantités ligne à ligne n'est pas fiable sur une vente
+          // contenant un menu (les ingrédients bruts ne représentent plus fidèlement
+          // le menu affiché, et le stock "prêt" éventuellement utilisé ne serait pas
+          // restitué correctement) — on oriente vers "Supprimer" + recommencer, qui
+          // gère ça proprement dans les deux sens.
+          <div style={{background:"#FFF8E1",borderRadius:10,padding:"10px 12px",marginBottom:8,fontSize:11,color:"#E65100"}}>
+            ℹ️ Cette vente contient un menu — utilisez "Supprimer" puis recommencez la commande pour la corriger, plutôt que "Modifier" (qui ne serait pas fiable ici).
+          </div>
+        ))}
         {isToday&&<button onClick={restartToday} disabled={lines.length===0||saving}
           style={{width:"100%",padding:"12px",background:(lines.length===0||saving)?"#ccc":T.blue,color:"white",border:"none",borderRadius:10,cursor:(lines.length===0||saving)?"default":"pointer",fontWeight:700,fontSize:14,marginBottom:8}}>
           {saving?"⏳...":"🔄 Recommencer cette commande"}
