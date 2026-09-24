@@ -6139,34 +6139,20 @@ function SitesAdmin({sites,onSave,caisseUrl,products,onSaveProducts}){
 // ═══ CHOIX DES PRODUITS DISPONIBLES SUR UN SITE (proposé à la création d'un site,
 // et accessible à tout moment via le bouton "🏷 Produits") ═══
 function SiteProductsAvailability({site,sites,products,onSaveProducts,caisseUrl,onClose}){
-  const [busyId,setBusyId]=useState(null);
+  // Choix faits en LOCAL, sans rien enregistrer tant qu'on n'a pas cliqué sur
+  // "Enregistrer" — évite un appel réseau (et son temps d'attente) à chaque case
+  // cochée, surtout gênant avec beaucoup de produits.
+  const [local,setLocal]=useState(products);
+  const [saving,setSaving]=useState(false);
   const [collapsedCats,setCollapsedCats]=useState(new Set());
-  const cats=[...new Set(products.map(p=>p.cat))].sort((a,b)=>a.localeCompare(b,"fr"));
+  const cats=[...new Set(local.map(p=>p.cat))].sort((a,b)=>a.localeCompare(b,"fr"));
+  const dirtyCount=local.filter((p,i)=>p.siteAvailability!==products[i].siteAvailability).length;
 
-  const toggle=async prod=>{
-    setBusyId(prod.id);
-    const newAvail=toggleAvailabilityForSite(prod,sites,site.id);
-    const updated=products.map(p=>p.id===prod.id?{...p,siteAvailability:newAvail}:p);
-    onSaveProducts(updated);
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveProduct",id:prod.id,name:prod.name,price:prod.price,costPrice:prod.costPrice||0,cat:prod.cat,emoji:prod.emoji,
-      barcode:prod.barcode||"",drink:prod.drink,sellByVolume:prod.sellByVolume,unit:prod.unit||"",baseQty:prod.baseQty||1,
-      presets:prod.presets||"",containers:prod.containers||"",color:prod.color||"",returnFor:prod.returnFor||"",happyPrice:prod.happyPrice||0,
-      siteAvailability:newAvail,photo:"__KEEP__"});
-    setBusyId(null);
+  const toggle=prod=>{
+    setLocal(prev=>prev.map(p=>p.id===prod.id?{...p,siteAvailability:toggleAvailabilityForSite(p,sites,site.id)}:p));
   };
-  const bulkSet=async available=>{
-    setBusyId("all");
-    let updated=products;
-    for(const p of products){
-      const newAvail=available?toEveryone(p,sites):toNoOne(p,sites,site.id);
-      updated=updated.map(x=>x.id===p.id?{...x,siteAvailability:newAvail}:x);
-      if(caisseUrl)await apiWrite(caisseUrl,{action:"saveProduct",id:p.id,name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,
-        barcode:p.barcode||"",drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,
-        presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,
-        siteAvailability:newAvail,photo:"__KEEP__"});
-    }
-    onSaveProducts(updated);
-    setBusyId(null);
+  const bulkSet=available=>{
+    setLocal(prev=>prev.map(p=>({...p,siteAvailability:available?toEveryone(p,sites):toNoOne(p,sites,site.id)})));
   };
   // Rend le produit disponible PARTOUT (simplifie en liste vide).
   function toEveryone(){ return ""; }
@@ -6175,24 +6161,42 @@ function SiteProductsAvailability({site,sites,products,onSaveProducts,caisseUrl,
     return allSites.filter(s=>s.id!==siteId).map(s=>s.id).join(",");
   }
 
+  // Envoie tout d'un coup à la fin, un seul appel réseau par produit RÉELLEMENT
+  // modifié (pas de renvoi inutile pour ceux qui n'ont pas changé).
+  const saveAll=async()=>{
+    if(saving)return;
+    const changed=local.filter((p,i)=>p.siteAvailability!==products[i].siteAvailability);
+    if(changed.length===0){onClose();return;}
+    setSaving(true);
+    for(const prod of changed){
+      if(caisseUrl)await apiWrite(caisseUrl,{action:"saveProduct",id:prod.id,name:prod.name,price:prod.price,costPrice:prod.costPrice||0,cat:prod.cat,emoji:prod.emoji,
+        barcode:prod.barcode||"",drink:prod.drink,sellByVolume:prod.sellByVolume,unit:prod.unit||"",baseQty:prod.baseQty||1,
+        presets:prod.presets||"",containers:prod.containers||"",color:prod.color||"",returnFor:prod.returnFor||"",happyPrice:prod.happyPrice||0,
+        siteAvailability:prod.siteAvailability,photo:"__KEEP__"});
+    }
+    onSaveProducts(local);
+    setSaving(false);
+    onClose();
+  };
+
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
     <div style={{background:T.card,borderRadius:18,padding:18,width:"100%",maxWidth:440,maxHeight:"88vh",display:"flex",flexDirection:"column"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <div style={{fontWeight:800,fontSize:16,color:T.dark}}>🏷 Produits disponibles — {site.name}</div>
         <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>
       </div>
-      <div style={{fontSize:12,color:T.mid,marginBottom:10}}>Cochez uniquement les produits réellement vendus sur ce site — les autres n'apparaîtront ni en Caisse ni dans Stock pour {site.name}.</div>
+      <div style={{fontSize:12,color:T.mid,marginBottom:10}}>Cochez uniquement les produits réellement vendus sur ce site — les autres n'apparaîtront ni en Caisse ni dans Stock pour {site.name}. Rien n'est enregistré avant "💾 Enregistrer".</div>
       <div style={{display:"flex",gap:8,marginBottom:12}}>
-        <button onClick={()=>bulkSet(false)} disabled={busyId} style={{flex:1,padding:"9px",background:"#FFF0F0",border:"1px solid #FFCDD2",borderRadius:9,cursor:busyId?"default":"pointer",fontSize:12,fontWeight:600,color:T.red}}>
+        <button onClick={()=>bulkSet(false)} disabled={saving} style={{flex:1,padding:"9px",background:"#FFF0F0",border:"1px solid #FFCDD2",borderRadius:9,cursor:saving?"default":"pointer",fontSize:12,fontWeight:600,color:T.red}}>
           🚫 Tout désactiver
         </button>
-        <button onClick={()=>bulkSet(true)} disabled={busyId} style={{flex:1,padding:"9px",background:"#E8F5E9",border:"1px solid #A5D6A7",borderRadius:9,cursor:busyId?"default":"pointer",fontSize:12,fontWeight:600,color:"#2E7D32"}}>
+        <button onClick={()=>bulkSet(true)} disabled={saving} style={{flex:1,padding:"9px",background:"#E8F5E9",border:"1px solid #A5D6A7",borderRadius:9,cursor:saving?"default":"pointer",fontSize:12,fontWeight:600,color:"#2E7D32"}}>
           ✅ Tout activer
         </button>
       </div>
       <div style={{overflowY:"auto",flex:1}}>
         {cats.map(cat=>{
-          const catProducts=products.filter(p=>p.cat===cat).sort((a,b)=>a.name.localeCompare(b.name,"fr"));
+          const catProducts=local.filter(p=>p.cat===cat).sort((a,b)=>a.name.localeCompare(b.name,"fr"));
           const isCollapsed=collapsedCats.has(cat);
           return(<div key={cat} style={{marginBottom:8}}>
             <button onClick={()=>setCollapsedCats(prev=>{const next=new Set(prev);if(next.has(cat))next.delete(cat);else next.add(cat);return next;})}
@@ -6203,11 +6207,11 @@ function SiteProductsAvailability({site,sites,products,onSaveProducts,caisseUrl,
             </button>
             {!isCollapsed&&catProducts.map(p=>{
               const available=isAvailableAtSite(p,site.id);
-              return(<div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 4px",opacity:busyId===p.id?.5:1}}>
+              return(<div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 4px"}}>
                 {p.photo?<img src={p.photo} style={{width:24,height:24,borderRadius:5,objectFit:"cover"}}/>:<span style={{fontSize:18}}>{p.emoji}</span>}
                 <span style={{flex:1,fontSize:12,color:T.dark}}>{p.name}</span>
-                <button onClick={()=>toggle(p)} disabled={!!busyId}
-                  style={{padding:"5px 10px",borderRadius:16,border:"none",cursor:busyId?"default":"pointer",fontSize:11,fontWeight:700,
+                <button onClick={()=>toggle(p)} disabled={saving}
+                  style={{padding:"5px 10px",borderRadius:16,border:"none",cursor:saving?"default":"pointer",fontSize:11,fontWeight:700,
                     background:available?"#E8F5E9":"#FFF0F0",color:available?"#2E7D32":T.red}}>
                   {available?"✅ Disponible":"🚫 Indisponible"}
                 </button>
@@ -6216,7 +6220,14 @@ function SiteProductsAvailability({site,sites,products,onSaveProducts,caisseUrl,
           </div>);
         })}
       </div>
-      <button onClick={onClose} style={{width:"100%",padding:"11px",background:T.dark,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,marginTop:12}}>Terminé</button>
+      <div style={{display:"flex",gap:8,marginTop:12}}>
+        <button onClick={onClose} disabled={saving} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:saving?"default":"pointer",fontWeight:600}}>
+          Annuler
+        </button>
+        <button onClick={saveAll} disabled={saving} style={{flex:2,padding:"11px",background:saving?"#ccc":T.dark,color:"white",border:"none",borderRadius:10,cursor:saving?"default":"pointer",fontWeight:700}}>
+          {saving?"⏳ Enregistrement...":`💾 Enregistrer${dirtyCount>0?` (${dirtyCount})`:""}`}
+        </button>
+      </div>
     </div>
   </div>);
 }
