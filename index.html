@@ -2119,7 +2119,7 @@ function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose
         <div style={{width:40,height:4,background:T.border,borderRadius:2,position:"absolute",left:"50%",top:12,transform:"translateX(-50%)"}}/> 
         <div style={{display:"flex",alignItems:"center",gap:14}}>
           <div style={{fontWeight:700,fontSize:16}}>🛒 Panier</div>
-          {cart.length>0&&<button onClick={clearCart} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,fontSize:12}}>🗑 Vider</button>}
+          {cart.length>0&&<button onClick={()=>{clearCart();onClose();}} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,fontSize:12}}>🗑 Vider</button>}
         </div>
         <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid,marginLeft:16}}>✕</button>
       </div>
@@ -4075,6 +4075,10 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
 
   const startNew=()=>setEdit({id:null,name:"",price:"",items:[],photo:""});
   const startEdit=c=>setEdit({id:c.id,name:c.name,price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});
+  // Pré-remplit "+ Nouveau menu" avec une copie de ce menu (ingrédients, portions,
+  // alternatives, quantités et photo compris) — évite de reconstruire un menu
+  // similaire ingrédient par ingrédient, ex: une variante à prix différent.
+  const duplicateCombo=c=>setEdit({id:null,name:c.name+" (copie)",price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});
 
   const addItem=()=>{
     if(!products.length)return;
@@ -4230,6 +4234,7 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
           </div>
         </div>
         <button onClick={()=>startEdit(c)} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
+        <button onClick={()=>duplicateCombo(c)} title="Dupliquer ce menu (pré-remplit le formulaire de création)" style={{padding:"5px 10px",background:"#F0F4FF",border:`1px solid ${T.blue}`,borderRadius:7,cursor:"pointer",fontSize:11}}>📋</button>
         <button onClick={()=>del(c.id)} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
       </div>);
     })}
@@ -5788,7 +5793,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
         <button onClick={()=>setEdit(null)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:6}}>Annuler</button>
       </div>
     </div>}
-    {portionsFor&&<PortionsManager product={portionsFor} portions={portions} setPortions={setPortions} caisseUrl={caisseUrl} onClose={()=>setPortionsFor(null)}/>}
+    {portionsFor&&<PortionsManager product={portionsFor} products={products} portions={portions} setPortions={setPortions} caisseUrl={caisseUrl} onClose={()=>setPortionsFor(null)}/>}
     {accompFor&&<AccompanimentsManager product={accompFor} products={products} portions={portions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} caisseUrl={caisseUrl} onClose={()=>setAccompFor(null)}/>}
   </div>);
 }
@@ -5872,11 +5877,37 @@ function AccompanimentsManager({product,products,portions,accompaniments,setAcco
   </div>);
 }
 
-function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
+function PortionsManager({product,products,portions,setPortions,caisseUrl,onClose}){
   const myPortions=portions.filter(po=>po.productId.toString()===product.id.toString());
   const [form,setForm]=useState({name:"",size:"",price:"",photo:"",happyPrice:""});
   const [editingId,setEditingId]=useState(null);
   const [busy,setBusy]=useState(false);
+  const [copyFrom,setCopyFrom]=useState("");
+  // Autres produits ayant déjà des portions configurées, pour pouvoir copier leur
+  // jeu de portions (noms, tailles, prix, photos) plutôt que tout ressaisir un par
+  // un — pratique quand plusieurs boissons partagent la même structure (Demi,
+  // Pichet 1L, Pichet 1,5L...).
+  const sourceProducts=[...new Set(portions.filter(po=>po.productId.toString()!==product.id.toString()).map(po=>po.productId.toString()))]
+    .map(pid=>products.find(p=>p.id.toString()===pid)).filter(Boolean);
+
+  const copyPortionsFrom=async()=>{
+    if(!copyFrom||busy)return;
+    const sourcePortions=portions.filter(po=>po.productId.toString()===copyFrom.toString());
+    if(sourcePortions.length===0)return;
+    setBusy(true);
+    const newOnes=[];
+    for(const sp of sourcePortions){
+      const id=uid();
+      // La photo est déjà hébergée côté serveur pour la portion source — on
+      // réutilise directement cette référence plutôt que de la re-uploader (les
+      // octets n'ont pas changé).
+      const r=await apiWrite(caisseUrl,{action:"savePortion",id,productId:product.id,name:sp.name,size:sp.size,price:sp.price,happyPrice:sp.happyPrice||0,photo:sp.photo||""});
+      if(r.ok)newOnes.push({id,productId:product.id,name:sp.name,size:sp.size,price:sp.price,happyPrice:sp.happyPrice||0,photo:sp.photo||""});
+    }
+    setPortions(prev=>[...prev,...newOnes]);
+    setCopyFrom("");
+    setBusy(false);
+  };
 
   const handlePortionPhoto=e=>{const f=e.target.files[0];if(!f)return;
     resizePhotoFile(f).then(url=>setForm(prev=>({...prev,photo:url})));
@@ -5921,6 +5952,19 @@ function PortionsManager({product,portions,setPortions,caisseUrl,onClose}){
     <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:420,maxHeight:"90vh",overflowY:"auto"}}>
       <div style={{fontWeight:800,fontSize:17,marginBottom:4}}>🍺 Portions — {product.name}</div>
       <div style={{fontSize:12,color:T.mid,marginBottom:14}}>Ex : Demi 25cl, Pichet 1L, Pichet 1,5L — chacune avec sa propre photo.</div>
+
+      {sourceProducts.length>0&&<div style={{background:"#F0F4FF",borderRadius:10,padding:10,marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:700,color:T.blue,marginBottom:6}}>📋 Copier les portions d'un autre produit</div>
+        <div style={{display:"flex",gap:6}}>
+          <select value={copyFrom} onChange={e=>setCopyFrom(e.target.value)} style={{flex:1,padding:8,border:`1px solid ${T.border}`,borderRadius:7,fontSize:12}}>
+            <option value="">— Choisir un produit —</option>
+            {sourceProducts.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <button onClick={copyPortionsFrom} disabled={!copyFrom||busy} style={{padding:"8px 14px",background:(!copyFrom||busy)?"#ccc":T.blue,color:"white",border:"none",borderRadius:7,cursor:(!copyFrom||busy)?"default":"pointer",fontWeight:700,fontSize:12}}>
+            {busy?"⏳...":"Copier"}
+          </button>
+        </div>
+      </div>}
 
       {myPortions.map(po=>(
         <div key={po.id} style={{display:"flex",alignItems:"center",gap:10,background:T.bg,borderRadius:10,padding:"9px 12px",marginBottom:7}}>
