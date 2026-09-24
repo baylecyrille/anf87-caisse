@@ -1612,7 +1612,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl,rese
   const [pickerFor,setPickerFor]=useState(null); // produit dont on choisit la taille à ouvrir
   const [closeConfirm,setCloseConfirm]=useState(null); // {prod,cont}
 
-  const volProducts=products.filter(p=>p.sellByVolume&&parseContainers(p.containers).length>0);
+  const volProducts=products.filter(p=>p.sellByVolume&&parseContainers(p.containers).length>0&&p.showInContainerBar!==false);
   if(volProducts.length===0)return null;
   const findCont=pid=>containers.find(c=>c.site===siteId&&c.productId.toString()===pid.toString());
 
@@ -5481,6 +5481,10 @@ function ProdForm({data,setData,onSubmit,label,categories,products,sites,handleP
         <div style={{fontSize:11,color:T.mid,marginTop:-3,marginBottom:7}}>
           Ex pour le vin : Bouteille 75cl:75,Cubi 3L:300,Cubi 5L:500. Sert à l'écran "🧴 Contenants" (jauge du fût/bouteille/cubi actuellement entamé). Laissez vide si non concerné.
         </div>
+        <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:9,cursor:"pointer"}}>
+          <input type="checkbox" checked={data.showInContainerBar!==false} onChange={e=>setData({...data,showInContainerBar:e.target.checked})} style={{width:18,height:18}}/>
+          <span style={{fontSize:12,color:T.dark}}>Afficher dans la barre de contenants en haut de l'écran Caisse</span>
+        </label>
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>
           Couleur de la jauge (contenant)
         </label>
@@ -5703,7 +5707,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   const delProd=async(id)=>{if(!(await customConfirm("Supprimer ?"))||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
     if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});setSaving(false);};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
-    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,siteAvailability:p.siteAvailability||"",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
+    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,siteAvailability:p.siteAvailability||"",showInContainerBar:p.showInContainerBar!==false,...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
   // Le prix d'achat/vente d'un produit au volume est saisi PAR PORTION (ex: 0,90€
   // l'achat d'un verre de 25cl), mais son stock est compté en cl (ex: 3000cl pour un
