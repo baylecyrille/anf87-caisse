@@ -1704,7 +1704,14 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl,rese
 function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve,happyHourActive,onToggleHappyHour,readyCombos}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
+  // Un smartphone en paysage est "large" (isLandscape=true) mais reste très BAS en
+  // hauteur — contrairement à une tablette/un bureau. On détecte ce cas précis pour
+  // compacter les boutons de paiement du panier (icône seule, moins de hauteur), afin
+  // de laisser un peu de place pour voir le contenu du panier au-dessus.
+  const [isShortScreen,setShortScreen]=useState(window.innerHeight<430);
   useEffect(()=>{const h=()=>setLandscape(window.innerWidth>600&&window.screen.orientation?.type?.includes("landscape")||window.innerWidth>window.innerHeight);
+    window.addEventListener("resize",h);window.addEventListener("orientationchange",()=>setTimeout(h,100));return()=>{window.removeEventListener("resize",h);window.removeEventListener("orientationchange",h);};},[]);
+  useEffect(()=>{const h=()=>setShortScreen(window.innerHeight<430);
     window.addEventListener("resize",h);window.addEventListener("orientationchange",()=>setTimeout(h,100));return()=>{window.removeEventListener("resize",h);window.removeEventListener("orientationchange",h);};},[]);
   const cats=["Tout",...categories.map(c=>c.name),...(combos&&combos.length?["Menus"]:[])];
   const [reorderMode,setReorderMode]=useState(false);
@@ -2053,7 +2060,7 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
       <div style={{flex:1,overflowY:"auto"}}>
         {cart.length===0
           ?<div style={{padding:28,textAlign:"center",color:T.light,fontSize:14}}>Panier vide</div>
-          :cart.map(item=><div key={item.id} style={{display:"flex",alignItems:"center",padding:"10px 14px",
+          :cart.map(item=><div key={item.id} style={{display:"flex",alignItems:"center",padding:isShortScreen?"6px 14px":"10px 14px",
             borderBottom:`1px solid ${T.border}`,gap:8}}>
             {item.photo?<img src={item.photo} style={{width:28,height:28,borderRadius:6,objectFit:"cover",flexShrink:0}}/>
               :<span style={{fontSize:22,flexShrink:0}}>{item.emoji}</span>}
@@ -2069,29 +2076,32 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           </div>)
         }
       </div>
-      <div style={{padding:"14px 16px",borderTop:`1px solid ${T.border}`}}>
-        <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
-          <span style={{fontSize:16,fontWeight:600,color:T.dark}}>Total</span>
-          <span style={{fontSize:24,fontWeight:900,color:T.red,fontVariantNumeric:"tabular-nums"}}>{fmt(cartTotal)}</span>
+      <div style={{padding:isShortScreen?"8px 16px":"14px 16px",borderTop:`1px solid ${T.border}`}}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:isShortScreen?6:12}}>
+          <span style={{fontSize:isShortScreen?13:16,fontWeight:600,color:T.dark}}>Total</span>
+          <span style={{fontSize:isShortScreen?18:24,fontWeight:900,color:T.red,fontVariantNumeric:"tabular-nums"}}>{fmt(cartTotal)}</span>
         </div>
-        {/* 3 boutons directs (Espèces/CB/Autres) au lieu d'un simple "Encaisser" —
+        {/* 3 boutons directs (Espèces/CB/Options) au lieu d'un simple "Encaisser" —
             économise le clic intermédiaire pour les 2 moyens de paiement les plus
-            fréquents, en ouvrant l'écran de paiement directement sur la bonne étape. */}
+            fréquents, en ouvrant l'écran de paiement directement sur la bonne étape.
+            Sur un smartphone en paysage (peu de hauteur disponible), les boutons se
+            compactent : padding réduit, et "Options" perd son texte (icône seule)
+            pour ne jamais passer sur 2 lignes et forcer la hauteur à grandir. */}
         <div style={{display:"flex",gap:8}}>
           <button onClick={()=>openPayment("cash")} disabled={cart.length===0}
-            style={{flex:2,padding:"14px 8px",background:cart.length>0?T.green:"#ccc",color:"white",
-              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
+            style={{flex:2,padding:isShortScreen?"9px 8px":"14px 8px",background:cart.length>0?T.green:"#ccc",color:"white",
+              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed",whiteSpace:"nowrap"}}>
             💵 Espèces
           </button>
           <button onClick={()=>openPayment("cb")} disabled={cart.length===0}
-            style={{flex:2,padding:"14px 8px",background:cart.length>0?"#5856D6":"#ccc",color:"white",
-              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
+            style={{flex:2,padding:isShortScreen?"9px 8px":"14px 8px",background:cart.length>0?"#5856D6":"#ccc",color:"white",
+              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed",whiteSpace:"nowrap"}}>
             💳 CB
           </button>
           <button onClick={()=>openPayment("others")} disabled={cart.length===0}
-            style={{flex:1,padding:"14px 4px",background:cart.length>0?T.orange:"#ccc",color:"white",
-              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed"}}>
-            🧾 Options
+            style={{flex:1,padding:isShortScreen?"9px 4px":"14px 4px",background:cart.length>0?T.orange:"#ccc",color:"white",
+              border:"none",borderRadius:14,fontSize:14,fontWeight:700,cursor:cart.length>0?"pointer":"not-allowed",whiteSpace:"nowrap"}}>
+            {isShortScreen?"🧾":"🧾 Options"}
           </button>
         </div>
       </div>
