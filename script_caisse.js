@@ -409,7 +409,7 @@ function savePortion(e){
     sh.getRange(1,1,1,7).setValues([["ID","ProduitID","Nom","TailleCl","Prix","Photo","PrixHappyHour"]]);
     sh.getRange(1,1,1,7).setFontWeight("bold"); sh.setFrozenRows(1);
   }
-  var photo=p.photo||"";
+  var photo=(p.photo||"").toString().trim();
   if(photo==="__CHUNKED__"){
     var total=+p.photoChunks||0;
     var cache=CacheService.getScriptCache(), parts=[];
@@ -426,6 +426,7 @@ function savePortion(e){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
       if(photo==="__KEEP__")row[5]=sh.getRange(i+2,6).getValue(); // photo inchangée, non renvoyée
+      if(row[5]==="__KEEP__")row[5]=sh.getRange(i+2,6).getValue(); // garde-fou : jamais la valeur littérale
       sh.getRange(i+2,1,1,7).setValues([row]);
       return{ok:true,action:"updated"};
     }}
@@ -482,7 +483,7 @@ function saveCombo(e){
     sh.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
     sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
   }
-  var photo=p.photo||"";
+  var photo=(p.photo||"").toString().trim();
   if(photo==="__CHUNKED__"){
     var total=+p.photoChunks||0;
     var cache=CacheService.getScriptCache(), parts=[];
@@ -515,6 +516,7 @@ function saveCombo(e){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
       if(photo==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // photo inchangée, non renvoyée
+      if(row[4]==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // garde-fou : jamais la valeur littérale
       sh.getRange(i+2,1,1,5).setValues([row]);
       return{ok:true,action:"updated"};
     }}
@@ -755,7 +757,10 @@ function adjustContainer(e){
 
 function saveProduct(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), p=e.parameter;
-  var photo=p.photo||"";
+  // .trim() en sécurité : un espace ou un caractère invisible ajouté quelque part en
+  // route (encodage d'URL, copier-coller...) ferait échouer une comparaison stricte
+  // avec "__KEEP__" sans que ce soit visible autrement.
+  var photo=(p.photo||"").toString().trim();
   if(photo==="__CHUNKED__"){
     // La photo a été envoyée en plusieurs morceaux via uploadPhotoChunk (POST ne
     // fonctionne pas de façon fiable sur ce déploiement, et une photo en un seul
@@ -784,6 +789,10 @@ function saveProduct(e){
       // "__KEEP__" : la photo n'a pas changé côté appli, on ne l'a donc pas renvoyée
       // (gain de temps important) — on garde simplement celle déjà enregistrée.
       var finalPhoto = photo==="__KEEP__" ? sh.getRange(i+2,6).getValue() : photo;
+      // Garde-fou : quelle qu'en soit la cause, la valeur littérale "__KEEP__" ne
+      // doit JAMAIS finir stockée comme si c'était une vraie photo — dans ce cas on
+      // garde la valeur déjà en place plutôt que d'écraser une bonne photo.
+      if(finalPhoto==="__KEEP__")finalPhoto=sh.getRange(i+2,6).getValue();
       var meta=[p.id,p.name,+p.price,p.cat,p.emoji,finalPhoto,p.barcode||"",
         p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
       // Mise à jour : on NE touche PAS aux colonnes de stock (L:O), pour ne jamais écraser
