@@ -8,7 +8,7 @@
 var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","saveCategory",
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
-  "saveCombo","deleteCombo","uploadComboPhotoChunk","uploadComboItemsChunk","saveAccompaniment","deleteAccompaniment",
+  "saveCombo","deleteCombo","uploadComboPhotoChunk","uploadComboItemsChunk","uploadSaleItemsChunk","saveAccompaniment","deleteAccompaniment",
   "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit","logHappyHour","adjustReadyCombo"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
@@ -59,6 +59,7 @@ function doGet(e) {
       case "deleteCombo":     result = deleteCombo(e); break;
       case "uploadComboPhotoChunk": result = uploadComboPhotoChunk(e); break;
       case "uploadComboItemsChunk": result = uploadComboItemsChunk(e); break;
+      case "uploadSaleItemsChunk": result = uploadSaleItemsChunk(e); break;
       case "saveAccompaniment":   result = saveAccompaniment(e); break;
       case "deleteAccompaniment": result = deleteAccompaniment(e); break;
       case "saveProductOrder":    result = saveProductOrder(e); break;
@@ -544,6 +545,12 @@ function uploadComboItemsChunk(e){
   CacheService.getScriptCache().put("comboitems_"+p.id+"_"+p.idx, p.chunk, 600);
   return{ok:true};
 }
+function uploadSaleItemsChunk(e){
+  var p=e.parameter;
+  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
+  CacheService.getScriptCache().put("saleitems_"+p.id+"_"+p.idx, p.chunk, 600);
+  return{ok:true};
+}
 
 // Les 4 colonnes de stock (L à O) correspondent aux 4 premiers sites de l'onglet
 // "Sites", DANS L'ORDRE où ils y sont — pas à un identifiant fixe "s1/s2/s3/s4".
@@ -922,10 +929,26 @@ function transferStock(e){
 }
 function saveSale(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), p=e.parameter;
+  // Le détail des articles ("items") peut devenir long pour un panier chargé
+  // (beaucoup de produits différents) — au-delà d'un certain seuil, envoyé en
+  // plusieurs morceaux (même mécanisme que les photos et les menus) plutôt que de
+  // risquer un échec de la requête (URL trop longue).
+  var itemsRaw=p.items||"";
+  if(itemsRaw==="__CHUNKED__"){
+    var totalIt=+p.itemsChunks||0;
+    var cacheIt=CacheService.getScriptCache(), partsIt=[];
+    for(var ii=0;ii<totalIt;ii++){
+      var partIt=cacheIt.get("saleitems_"+p.id+"_"+ii);
+      if(partIt===null)return{ok:false,error:"Détail de la vente incomplet (morceau "+(ii+1)+"/"+totalIt+" manquant ou expiré), réessayez."};
+      partsIt.push(partIt);
+    }
+    itemsRaw=partsIt.join("");
+    for(var ii2=0;ii2<totalIt;ii2++)cacheIt.remove("saleitems_"+p.id+"_"+ii2);
+  }
   var tz=Session.getScriptTimeZone(), now=new Date(), saleId=now.getTime().toString();
   var dateStr=Utilities.formatDate(now,tz,"dd/MM/yyyy"), heureStr=Utilities.formatDate(now,tz,"HH:mm:ss");
   sh.appendRow([saleId,dateStr,heureStr,
-    p.site,p.siteName,+p.total,p.payment,p.items,p.member||"",+p.nbItems,p.caissier||"",p.splitPart||"",p.readyCombos||"",p.comboLines||""]);
+    p.site,p.siteName,+p.total,p.payment,itemsRaw,p.member||"",+p.nbItems,p.caissier||"",p.splitPart||"",p.readyCombos||"",p.comboLines||""]);
   // Empêche Google Sheets de convertir les colonnes Date/Heure en vraies dates (ce qui
   // cassait le filtre "Aujourd'hui" et les totaux dans les Rapports : la date revenait
   // au format ISO complet au lieu du "dd/MM/yyyy" attendu par l'appli, donc plus rien
@@ -936,7 +959,7 @@ function saveSale(e){
   sh.getRange(lastRow,3).setNumberFormat("@").setValue(heureStr);
   // Décrémenter stock
   var prodSh=ss.getSheetByName("Produits"), col=siteColumn(ss,p.site);
-  var items; try{items=JSON.parse(safeDecodeItems(p.items));}catch(err){items=[];}
+  var items; try{items=JSON.parse(safeDecodeItems(itemsRaw));}catch(err){items=[];}
   // Diagnostic : avant, un article non trouvé (mauvais ID, site invalide...) était
   // ignoré en silence et la vente répondait quand même "ok" — impossible de savoir
   // pourquoi un stock ne bougeait pas. On renvoie maintenant explicitement ce qui a

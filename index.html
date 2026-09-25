@@ -1459,15 +1459,26 @@ function App(){
       // la vente est supprimée ou recommencée plus tard (sinon ce stock ne pouvait
       // jamais être crédité en retour, faute de savoir qu'il avait été utilisé).
       const readyCombosStr=JSON.stringify(Object.entries(readyComboDeltas).filter(([,q])=>q>0).map(([comboId,qty])=>({comboId,qty})));
-      // Trace des MENUS effectivement vendus (nom/photo/qté/prix au moment de la
-      // vente) — séparée du détail "articles" (qui reste la liste à PLAT des
-      // produits réellement décomptés du stock) : sans ça, "Croque Frites" n'était
+      // Trace des MENUS effectivement vendus (nom/qté/prix au moment de la vente) —
+      // séparée du détail "articles" (qui reste la liste à PLAT des produits
+      // réellement décomptés du stock) : sans ça, "Croque Frites" n'était
       // identifiable nulle part dans le détail d'une vente passée, seuls ses
-      // ingrédients bruts apparaissaient.
-      const comboLinesStr=JSON.stringify(cart.filter(i=>i.isCombo).map(i=>({comboId:i.pid,name:i.name,qty:i.qty,price:i.price,photo:i.photo||""})));
-      const saleResult=await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,
+      // ingrédients bruts apparaissaient. PAS de photo ici : elle peut peser
+      // plusieurs Ko, et tout passe par une URL (GET) à taille limitée — la photo
+      // du menu au moment de l'affichage suffit largement, pas la peine de la
+      // dupliquer dans CHAQUE vente.
+      const comboLinesStr=JSON.stringify(cart.filter(i=>i.isCombo).map(i=>({comboId:i.pid,name:i.name,qty:i.qty,price:i.price})));
+      // Découpage en plusieurs morceaux si le panier est chargé (beaucoup de
+      // produits différents) — mêmes principe et fonction que pour les menus, avec
+      // un identifiant temporaire juste pour relier les morceaux entre eux (la
+      // vente reçoit de toute façon son propre identifiant définitif côté serveur).
+      const itemsJson=JSON.stringify(stockEntries);
+      const tempSaleId=uid();
+      const itemsUp=await uploadTextChunked(caisseUrl,"uploadSaleItemsChunk",tempSaleId,itemsJson);
+      if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement de la vente : "+itemsUp.error);return;}
+      const saleResult=await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,id:tempSaleId,
         total:total.toFixed(2),payment:JSON.stringify(payment),
-        items:JSON.stringify(stockEntries),readyCombos:readyCombosStr,comboLines:comboLinesStr,
+        items:itemsUp.param,itemsChunks:itemsUp.chunks||0,readyCombos:readyCombosStr,comboLines:comboLinesStr,
         member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
       if(saleResult?.stockWarning){
         await customAlert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
@@ -5382,13 +5393,14 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
       <div style={{marginTop:12,marginBottom:12}}>
         {comboLines.length>0&&<div style={{marginBottom:10}}>
           <div style={{fontSize:10,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>🍽 Menus</div>
-          {comboLines.map((c,i)=>(
-            <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
-              {c.photo?<img src={c.photo} style={{width:38,height:38,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:24,flexShrink:0}}>🍽</span>}
+          {comboLines.map((c,i)=>{
+            const currentPhoto=combos.find(cb=>cb.id.toString()===c.comboId.toString())?.photo;
+            return(<div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
+              {currentPhoto?<img src={currentPhoto} style={{width:38,height:38,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:24,flexShrink:0}}>🍽</span>}
               <div style={{flex:1,fontSize:13,color:T.dark,fontWeight:600}}>{c.name}</div>
               <div style={{fontSize:13,fontWeight:700,color:T.dark}}>×{c.qty}</div>
-            </div>
-          ))}
+            </div>);
+          })}
           <div style={{fontSize:10,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:.5,margin:"10px 0 6px"}}>📦 Articles décomptés du stock</div>
         </div>}
         {lines.length===0&&<div style={{fontSize:12,color:T.mid,fontStyle:"italic"}}>Détail des articles non disponible pour cette vente.</div>}
