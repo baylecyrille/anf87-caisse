@@ -8,7 +8,7 @@
 var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","saveCategory",
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
-  "saveCombo","deleteCombo","uploadComboPhotoChunk","saveAccompaniment","deleteAccompaniment",
+  "saveCombo","deleteCombo","uploadComboPhotoChunk","uploadComboItemsChunk","saveAccompaniment","deleteAccompaniment",
   "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit","logHappyHour","adjustReadyCombo"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
@@ -58,6 +58,7 @@ function doGet(e) {
       case "saveCombo":       result = saveCombo(e); break;
       case "deleteCombo":     result = deleteCombo(e); break;
       case "uploadComboPhotoChunk": result = uploadComboPhotoChunk(e); break;
+      case "uploadComboItemsChunk": result = uploadComboItemsChunk(e); break;
       case "saveAccompaniment":   result = saveAccompaniment(e); break;
       case "deleteAccompaniment": result = deleteAccompaniment(e); break;
       case "saveProductOrder":    result = saveProductOrder(e); break;
@@ -493,7 +494,23 @@ function saveCombo(e){
     photo=parts.join("");
     for(var c2=0;c2<total;c2++)cache.remove("combophoto_"+p.id+"_"+c2);
   }
-  var row=[p.id,p.name||"",+p.price||0,p.items||"",photo];
+  // Le contenu du menu (ingrédients, alternatives, portions, menus imbriqués...)
+  // peut devenir trop long pour tenir dans une seule URL une fois tout cumulé — dans
+  // ce cas, envoyé en plusieurs morceaux (même mécanisme que les photos) plutôt que
+  // de risquer un échec silencieux de la requête.
+  var items=p.items||"";
+  if(items==="__CHUNKED__"){
+    var totalI=+p.itemsChunks||0;
+    var cacheI=CacheService.getScriptCache(), partsI=[];
+    for(var ci=0;ci<totalI;ci++){
+      var partI=cacheI.get("comboitems_"+p.id+"_"+ci);
+      if(partI===null)return{ok:false,error:"Contenu du menu incomplet (morceau "+(ci+1)+"/"+totalI+" manquant ou expiré), réessayez."};
+      partsI.push(partI);
+    }
+    items=partsI.join("");
+    for(var ci2=0;ci2<totalI;ci2++)cacheI.remove("comboitems_"+p.id+"_"+ci2);
+  }
+  var row=[p.id,p.name||"",+p.price||0,items,photo];
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
@@ -517,6 +534,12 @@ function uploadComboPhotoChunk(e){
   var p=e.parameter;
   if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
   CacheService.getScriptCache().put("combophoto_"+p.id+"_"+p.idx, p.chunk, 600);
+  return{ok:true};
+}
+function uploadComboItemsChunk(e){
+  var p=e.parameter;
+  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
+  CacheService.getScriptCache().put("comboitems_"+p.id+"_"+p.idx, p.chunk, 600);
   return{ok:true};
 }
 

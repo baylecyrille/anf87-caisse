@@ -953,6 +953,23 @@ async function uploadPhotoGeneric(caisseUrl,chunkAction,id,photoDataUrl){
   }
   return{ok:true,photoParam:"__CHUNKED__",photoChunks:chunks.length};
 }
+// Même principe que ci-dessus, mais pour n'importe quel texte long (pas une photo) —
+// sert au contenu d'un menu (ingrédients + alternatives + portions) qui peut dépasser
+// la longueur d'URL maximale une fois tout cumulé, surtout avec des menus imbriqués :
+// sans ce découpage, la sauvegarde échouait silencieusement (\"Failed to fetch\") sur
+// les menus les plus riches, sans jamais prévenir clairement de la cause réelle.
+async function uploadTextChunked(caisseUrl,chunkAction,id,text){
+  if(!text||!caisseUrl)return{ok:true,param:text||""};
+  if(text.length<1500)return{ok:true,param:text};
+  const CHUNK=1500;
+  const chunks=[];
+  for(let i=0;i<text.length;i+=CHUNK)chunks.push(text.slice(i,i+CHUNK));
+  for(let i=0;i<chunks.length;i++){
+    const r=await api(caisseUrl,{action:chunkAction,id,idx:i,total:chunks.length,chunk:chunks[i]});
+    if(!r.ok)return{ok:false,error:r.error||"échec de l'envoi (morceau "+(i+1)+"/"+chunks.length+")"};
+  }
+  return{ok:true,param:"__CHUNKED__",chunks:chunks.length};
+}
 async function api(url,params){
   if(!url)return{ok:false,error:"URL non configurée"};
   // GET uniquement : sur ce déploiement, le POST vers l'URL Apps Script renvoie une
@@ -4190,6 +4207,14 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
       await customAlert("⚠️ Choisissez une portion (ou une quantité) pour chaque produit au volume du menu avant d'enregistrer.");
       return;
     }
+    // Empêche d'enregistrer un ingrédient dont la référence ne correspond plus à
+    // aucun produit ni menu réel (supprimé, ou donnée corrompue) — sans ce blocage,
+    // valider le formulaire sans y prêter attention pouvait discrètement remplacer
+    // le bon ingrédient par autre chose.
+    if(edit.items.some(it=>it.type==="combo"?!combos.some(c=>c.id===it.comboId):!products.some(p=>p.id.toString()===it.productId.toString()))){
+      await customAlert("⚠️ Au moins un ingrédient ne correspond plus à aucun produit ou menu existant (marqué \"⚠️ introuvable\") — choisissez-en un avant d'enregistrer, sinon le menu resterait faux.");
+      return;
+    }
     if(edit.id&&edit.items.some(it=>it.type==="combo"&&(it.comboId===edit.id||comboDependsOn(it.comboId,edit.id)))){
       await customAlert("⚠️ Ce menu ne peut pas s'inclure lui-même, même indirectement — vérifiez les menus imbriqués sélectionnés.");
       return;
@@ -4209,7 +4234,9 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
       photoParam="__KEEP__";
     }
     const itemsStr=serializeComboItems(edit.items);
-    const r=await apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsStr,photo:photoParam,...extra});
+    const itemsUp=await uploadTextChunked(caisseUrl,"uploadComboItemsChunk",id,itemsStr);
+    if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement du contenu du menu : "+itemsUp.error);setBusy(false);return;}
+    const r=await apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra});
     if(r.ok){
       const newEntry={id,name:edit.name,price:+edit.price,
         items:edit.items.map(it=>it.type==="combo"?{type:"combo",comboId:it.comboId,qty:+it.qty}:{type:"product",productId:it.productId,qty:+it.qty,portionId:it.portionId||"",alternates:it.alternates||[]}),
@@ -4305,7 +4332,7 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
               </div>
               <div style={{display:"flex",gap:6,alignItems:"center"}}>
                 <select value={it.comboId||""} onChange={e=>selectItemCombo(idx,e.target.value)}
-                  style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white"}}>
+                  style={{flex:1,padding:"8px",border:`1px solid ${(!it.comboId||otherCombos.some(c=>c.id===it.comboId))?T.border:T.red}`,borderRadius:7,fontSize:12,background:"white"}}>
                   <option value="">— Choisir un menu —</option>
                   {otherCombos.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
@@ -4330,7 +4357,13 @@ function CombosAdmin({products,combos,setCombos,caisseUrl,portions}){
             </div>
             <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:prod?.sellByVolume?6:0}}>
               <select value={it.productId} onChange={e=>selectItemProduct(idx,e.target.value)}
-                style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white"}}>
+                style={{flex:1,padding:"8px",border:`1px solid ${prod?T.border:T.red}`,borderRadius:7,fontSize:12,background:"white"}}>
+                {/* Si la référence ne correspond à AUCUN produit actuel (supprimé,
+                    ou donnée corrompue), on l'affiche explicitement au lieu de
+                    laisser le menu déroulant se rabattre silencieusement sur le
+                    premier produit de la liste — un enregistrement par erreur
+                    pourrait sinon remplacer discrètement le bon ingrédient. */}
+                {!prod&&<option value={it.productId}>⚠️ Produit introuvable — choisissez-en un</option>}
                 {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               {!prod?.sellByVolume&&<input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
@@ -5703,7 +5736,9 @@ function WeeklyComboIngredients({combos,products,setCombos,caisseUrl,onClose}){
     const newAlternates=[...new Set([...(item.alternates||[]).filter(a=>a!==newProdId&&a!==item.productId),item.productId])];
     const newItems=combo.items.map((it,i)=>i!==itemIdx?it:{...it,productId:newProdId,alternates:newAlternates});
     const itemsStr=serializeComboItems(newItems);
-    const r=await apiWrite(caisseUrl,{action:"saveCombo",id:combo.id,name:combo.name,price:combo.price,items:itemsStr,photo:"__KEEP__"});
+    const itemsUp=await uploadTextChunked(caisseUrl,"uploadComboItemsChunk",combo.id,itemsStr);
+    if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement : "+itemsUp.error);setBusyKey(null);return;}
+    const r=await apiWrite(caisseUrl,{action:"saveCombo",id:combo.id,name:combo.name,price:combo.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:"__KEEP__"});
     if(r.ok)setCombos(prev=>prev.map(c=>c.id===combo.id?{...c,items:newItems}:c));
     setBusyKey(null);
   };
