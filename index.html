@@ -878,6 +878,23 @@ async function adjustContainerApi(caisseUrl,siteId,prod,newRemaining,setContaine
   }
   return r;
 }
+// Applique un delta de stock à UN produit sur UN site, PARTOUT dans l'appli (vente,
+// suppression/modification de vente, entrée manuelle, import CSV, transfert,
+// préparation de menus...) — si un contenant est actuellement ouvert pour ce
+// produit sur ce site, sa jauge est ajustée EN MÊME TEMPS que le stock (même
+// mécanisme que la correction manuelle) ; sinon, un simple ajustement de stock
+// classique. Centralise ce choix pour ne jamais avoir à le refaire à chaque endroit
+// qui touche au stock — et donc ne plus jamais l'oublier.
+async function applyStockDelta(caisseUrl,siteId,prod,delta,containers,setContainers){
+  if(!delta)return;
+  const cont=(containers||[]).find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString());
+  if(cont){
+    const newRemaining=Math.max(0,cont.remaining+delta);
+    await adjustContainerApi(caisseUrl,siteId,prod,newRemaining,setContainers);
+  }else if(caisseUrl){
+    await apiWrite(caisseUrl,{action:"updateStock",id:prod.id,site:siteId,qty:delta,mode:"delta"});
+  }
+}
 // Redimensionne/compresse une photo côté navigateur avant stockage (400px max, JPEG
 // 70%) — réutilisé pour les photos produit ET les photos de portion.
 function resizePhotoFile(file){
@@ -1377,6 +1394,20 @@ function App(){
       return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-qtyTotal+crossDelta)}};
     });
     setProducts(upd);LS.set("anf87_products",upd);
+    // Reflet local immédiat de la jauge d'un contenant ouvert concerné par cette
+    // vente — le serveur (action saveSale) décrémente déjà la jauge en plus du
+    // stock, mais sans ce reflet ici, l'appareil qui vient de faire la vente ne le
+    // voyait qu'après une resynchronisation, pas tout de suite sur son propre écran.
+    if(stockEntries.length){
+      const soldByProduct={};
+      stockEntries.forEach(e=>{ soldByProduct[e.id]=(soldByProduct[e.id]||0)+e.qty; });
+      setContainers(prev=>prev.map(c=>{
+        if(c.site!==siteId)return c;
+        const sold=soldByProduct[c.productId];
+        if(!sold)return c;
+        return{...c,remaining:Math.max(0,c.remaining-sold)};
+      }));
+    }
     // Reflet local immédiat des consignes chez les clients, avant même la synchro.
     if(Object.keys(depositDeltas).length){
       setDeposits(prev=>{
@@ -1437,7 +1468,8 @@ function App(){
       // envoyés séparément : "saveSale" ne sait décompter que ce qui est dans "items".
       for(const[pid,delta]of Object.entries(crossStockDeltas)){
         if(delta===0)continue;
-        await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:siteId,qty:delta,mode:"delta"});
+        const prod=products.find(p=>p.id.toString()===pid.toString());
+        if(prod)await applyStockDelta(caisseUrl,siteId,prod,delta,containers,setContainers);
       }
       syncAll(); // reflète immédiatement le stock réel (utile à plusieurs caisses)
     }
@@ -1519,11 +1551,11 @@ function App(){
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
           happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour} readyCombos={readyCombos}/>}
         {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos}/>}
-        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos}/>}
+        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos} containers={containers} setContainers={setContainers}/>}
         {tab==="admin"&&(isAdmin||isManager)&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos}
-          accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits} isManager={isManager}/>}
+          accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits} isManager={isManager} containers={containers} setContainers={setContainers}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})} currentUser={currentUser} setCU={setCU}
           sumupKey={sumupKey} sumupAppId={sumupAppId} setConfig={setConfig} setLoggingOut={setLoggingOut}/>}
@@ -3015,7 +3047,7 @@ const findBestNameMatch=(nom,products)=>{
   return{prod:bestScore>=0.5?best:null,exact:false};
 };
 
-function StockCsvImport({products,sites,caisseUrl,onSave,categories}){
+function StockCsvImport({products,sites,caisseUrl,onSave,categories,containers,setContainers}){
   const [raw,setRaw]=useState("");
   const [rows,setRows]=useState(null); // null = pas encore analysé
   const [busy,setBusy]=useState(false);
@@ -3111,7 +3143,7 @@ function StockCsvImport({products,sites,caisseUrl,onSave,categories}){
         const qty=r.alloc[site.id]||0;
         if(qty<=0)continue;
         upd=upd.map(p=>p.id.toString()===r.prod.id.toString()?{...p,stock:{...p.stock,[site.id]:(p.stock[site.id]||0)+qty}}:p);
-        if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:r.prod.id,site:site.id,qty,mode:"delta"});
+        if(caisseUrl)await applyStockDelta(caisseUrl,site.id,r.prod,qty,containers,setContainers);
       }
       // Met aussi à jour le prix d'achat si un Tarif TTC a été renseigné sur la ligne.
       if(r.prixTTC>0&&r.prixTTC!==r.prod.costPrice){
@@ -3667,10 +3699,10 @@ function StockScreen({products,sites,siteId,caisseUrl,onSave,containers,setConta
     {!readOnly&&view==="dashboard"&&<StockDashboard products={products} sites={sites} siteId={sel} setSiteId={setSel} containers={containers} deposits={deposits} caisseUrl={caisseUrl}/>}
     {!readOnly&&view==="prepare"&&<PrepareCombos combos={combos} products={products} sites={sites} siteId={sel} setSiteId={setSel} readyCombos={readyCombos} setReadyCombos={setReadyCombos} onSaveProducts={onSave} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers}/>}
     {(view==="list"||readOnly)&&<StockList products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={readOnly}/>}
-    {!readOnly&&view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave}/>}
-    {!readOnly&&view==="csv"&&<StockCsvImport products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} categories={categories}/>}
+    {!readOnly&&view==="entry"&&<StockEntry products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} containers={containers} setContainers={setContainers}/>}
+    {!readOnly&&view==="csv"&&<StockCsvImport products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} categories={categories} containers={containers} setContainers={setContainers}/>}
     {!readOnly&&view==="containers"&&<ContainersScreen products={products} sites={sites} siteId={sel} setSiteId={setSel} caisseUrl={caisseUrl} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve}/>}
-    {!readOnly&&view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} reserve={reserve} setReserve={setReserve}/>}
+    {!readOnly&&view==="transfer"&&<StockTransfer products={products} sites={sites} caisseUrl={caisseUrl} onSave={onSave} reserve={reserve} setReserve={setReserve} containers={containers} setContainers={setContainers}/>}
   </div>);
 }
 
@@ -4516,8 +4548,11 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
     setEditingDeposit(null);
   };
   const updateQty=async(prod,site,newQty)=>{
-    const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[site]:Math.max(0,newQty)}});
-    onSave(upd);if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:prod.id,site,qty:Math.max(0,newQty),mode:"set"});
+    const clamped=Math.max(0,newQty);
+    const delta=clamped-(prod.stock[site]||0);
+    const upd=products.map(p=>p.id!==prod.id?p:{...p,stock:{...p.stock,[site]:clamped}});
+    onSave(upd);
+    if(caisseUrl)await applyStockDelta(caisseUrl,site,prod,delta,containers,setContainers);
   };
   const cats=[...new Set(products.filter(p=>isAvailableAtSite(p,siteId)).map(p=>p.cat))].sort((a,b)=>a.localeCompare(b,"fr"));
   return(<div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
@@ -4616,7 +4651,7 @@ function StockList({products,sites,siteId,setSiteId,caisseUrl,onSave,containers,
   </div>);
 }
 
-function StockEntry({products,sites,caisseUrl,onSave}){
+function StockEntry({products,sites,caisseUrl,onSave,containers,setContainers}){
   const videoRef=useRef(null);const readerRef=useRef(null);const camIdRef=useRef(null);
   const [scannedProd,setScannedProd]=useState(null);
   const [site,setSite]=useState(sites[0]?.id||"s1");
@@ -4658,7 +4693,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
     const newQty=(scannedProd.stock[site]||0)+(+qty);
     const upd=products.map(p=>p.id!==scannedProd.id?p:{...p,stock:{...p.stock,[site]:newQty}});
     onSave(upd);
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:scannedProd.id,site,qty:+qty,mode:"delta"});
+    if(caisseUrl)await applyStockDelta(caisseUrl,site,scannedProd,+qty,containers,setContainers);
     // Si le total vient du tableau de contenants (Nombre par taille), on enregistre
     // AUSSI la réserve précise de chaque type reçu — pour que l'écran Contenants
     // sache exactement combien de fûts/bouteilles/cubis de CHAQUE taille il reste,
@@ -4751,7 +4786,7 @@ function StockEntry({products,sites,caisseUrl,onSave}){
   </div>);
 }
 
-function StockTransfer({products,sites,caisseUrl,onSave,reserve,setReserve}){
+function StockTransfer({products,sites,caisseUrl,onSave,reserve,setReserve,containers,setContainers}){
   const [from,setFrom]=useState(sites[0]?.id||"s1");
   const [to,setTo]=useState(sites[1]?.id||"s2");
   const [qtys,setQtys]=useState({});
@@ -4780,7 +4815,21 @@ function StockTransfer({products,sites,caisseUrl,onSave,reserve,setReserve}){
       return{...p,stock:{...p.stock,[from]:Math.max(0,(p.stock[from]||0)-q),[to]:(p.stock[to]||0)+q}};});
     onSave(upd);
     if(caisseUrl){
-      await apiWrite(caisseUrl,{action:"transferStock",from,to,items:JSON.stringify(items)});
+      // Un produit avec un contenant OUVERT (sur le site de départ OU d'arrivée) ne
+      // peut pas passer par l'appel groupé "transferStock" (qui ne connaît pas les
+      // contenants) sans désynchroniser sa jauge — on le traite alors à part, en
+      // deux ajustements de stock classiques qui savent tenir compte du contenant ;
+      // les autres produits continuent de passer par l'appel groupé, plus efficace.
+      const hasOpenContainer=id=>(containers||[]).some(c=>(c.site===from||c.site===to)&&c.productId.toString()===id.toString());
+      const containerItems=items.filter(it=>hasOpenContainer(it.id));
+      const plainItems=items.filter(it=>!hasOpenContainer(it.id));
+      if(plainItems.length)await apiWrite(caisseUrl,{action:"transferStock",from,to,items:JSON.stringify(plainItems)});
+      for(const it of containerItems){
+        const prod=products.find(p=>p.id.toString()===it.id.toString());
+        if(!prod)continue;
+        await applyStockDelta(caisseUrl,from,prod,-it.qty,containers,setContainers);
+        await applyStockDelta(caisseUrl,to,prod,+it.qty,containers,setContainers);
+      }
       // Transfère aussi le nombre de contenants en réserve (pas seulement la
       // quantité en cl/g) : sans ça, "Ouvrir un fût" restait faussé sur les deux
       // sites après un transfert par contenant.
@@ -4885,7 +4934,7 @@ function StockTransfer({products,sites,caisseUrl,onSave,reserve,setReserve}){
 }
 
 // ═══ REPORTS ═══
-function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,isAdmin,isManager,portions,combos,readyCombos,setReadyCombos}){
+function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,isAdmin,isManager,portions,combos,readyCombos,setReadyCombos,containers,setContainers}){
   const canSeeAllPeriods=isAdmin||isManager; // Caissier : uniquement "Aujourd'hui"
   const [sales,setSales]=useState([]);const [loading,setLoading]=useState(false);const [period,setPeriod]=useState("today");
   const [viewMonth,setViewMonth]=useState(()=>{const d=new Date();return{y:d.getFullYear(),m:d.getMonth()};});
@@ -5060,7 +5109,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
       </button>);})}
     </>}
 
-    {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} caisseUrl={caisseUrl} onSaveProducts={onSaveProducts}
+    {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} caisseUrl={caisseUrl} onSaveProducts={onSaveProducts} containers={containers} setContainers={setContainers}
       isAdmin={isAdmin} isManager={isManager} today={today} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos}
       onClose={()=>setOpenSale(null)} onReorder={reorder}
       onSaleUpdated={updated=>{ setSales(prev=>prev.map(s=>s.id===updated.id?{...s,...updated}:s)); setOpenSale(updated); }}
@@ -5112,7 +5161,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
 }
 
 // ═══ DÉTAIL D'UNE VENTE (avec photos des produits, et reprise en panier) ═══
-function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,isManager,today,portions,combos,readyCombos,setReadyCombos,onClose,onReorder,onSaleUpdated,onSaleDeleted}){
+function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,isManager,today,portions,combos,readyCombos,setReadyCombos,containers,setContainers,onClose,onReorder,onSaleUpdated,onSaleDeleted}){
   const isToday=sale.date===today;
   const canModify=isToday?(isAdmin||isManager):isAdmin; // aujourd'hui : Admin+Manager ; passé : Admin seul
   const [editMode,setEditMode]=useState(false);
@@ -5164,7 +5213,8 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
       const r=await apiWrite(caisseUrl,{action:"updateSale",id:sale.id,total:newTotal,items:JSON.stringify(newItems),nbItems,payment:newPayment});
       if(!r.ok){await customAlert("⚠️ Échec de l'enregistrement : "+(r.error||"connexion")+". Rien n'a été modifié.");setSaving(false);return;}
       for(const[pid,delta]of deltaEntries){
-        await apiWrite(caisseUrl,{action:"updateStock",id:pid,site:sale.siteId,qty:delta,mode:"delta"});
+        const prod=products.find(p=>p.id.toString()===pid.toString());
+        if(prod)await applyStockDelta(caisseUrl,sale.siteId,prod,delta,containers,setContainers);
       }
     }
     // Reflet local immédiat du stock (le delta positif = on rend du stock, négatif = on en reprend).
@@ -5213,7 +5263,8 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
     if(caisseUrl){
       for(const it of items){
         if(!it.id||!it.qty)continue;
-        await apiWrite(caisseUrl,{action:"updateStock",id:it.id,site:sale.siteId,qty:+it.qty,mode:"delta"});
+        const prod=products.find(p=>p.id.toString()===it.id.toString());
+        if(prod)await applyStockDelta(caisseUrl,sale.siteId,prod,+it.qty,containers,setContainers);
       }
       await restoreReadyCombos();
       const r=await apiWrite(caisseUrl,{action:"deleteSale",id:sale.id});
@@ -5245,7 +5296,8 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
     if(caisseUrl){
       for(const it of items){
         if(!it.id||!it.qty)continue;
-        await apiWrite(caisseUrl,{action:"updateStock",id:it.id,site:sale.siteId,qty:+it.qty,mode:"delta"});
+        const prod=products.find(p=>p.id.toString()===it.id.toString());
+        if(prod)await applyStockDelta(caisseUrl,sale.siteId,prod,+it.qty,containers,setContainers);
       }
       await restoreReadyCombos();
       const r=await apiWrite(caisseUrl,{action:"deleteSale",id:sale.id});
@@ -5371,7 +5423,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
 }
 
 // ═══ ADMIN ═══
-function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,accompaniments,setAccompaniments,deposits,isManager}){
+function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,accompaniments,setAccompaniments,deposits,isManager,containers,setContainers}){
   const [tab,setTab]=useState("products");
   const allTabs=[["products","🏷 Produits"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"],["cartes","🍺 Cartes Boissons"]];
   const visibleTabs=isManager?allTabs.filter(([v])=>!["cats","sites","users"].includes(v)):allTabs;
@@ -5385,7 +5437,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
       ))}
     </div>
     <div style={{flex:1,overflow:"hidden"}}>
-      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits}/>}
+      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits} containers={containers} setContainers={setContainers}/>}
       {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} caisseUrl={caisseUrl} portions={portions}/>}
       {tab==="cartes"&&<CardsAdmin boissonsUrl={boissonsUrl}/>}
       {!isManager&&tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
@@ -5544,7 +5596,7 @@ function ProdForm({data,setData,onSubmit,label,categories,products,sites,handleP
 }
 
 // ═══ DÉTAIL VALEUR STOCK / MARGE POTENTIELLE (bandeau Admin → Produits) ═══
-function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,flattenProd,onSave,onClose}){
+function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,flattenProd,onSave,onClose,containers,setContainers}){
   const [siteFilter,setSiteFilter]=useState("all"); // "all" ou un id de site
   const [busyId,setBusyId]=useState(null);
 
@@ -5564,9 +5616,11 @@ function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,
   };
   const updateStockQty=async(p,newQty)=>{
     setBusyId(p.id);
-    const upd=products.map(x=>x.id===p.id?{...x,stock:{...x.stock,[siteFilter]:Math.max(0,newQty)}}:x);
+    const clamped=Math.max(0,newQty);
+    const delta=clamped-(p.stock[siteFilter]||0);
+    const upd=products.map(x=>x.id===p.id?{...x,stock:{...x.stock,[siteFilter]:clamped}}:x);
     onSave(upd);
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"updateStock",id:p.id,site:siteFilter,qty:Math.max(0,newQty),mode:"set"});
+    if(caisseUrl&&siteFilter!=="all")await applyStockDelta(caisseUrl,siteFilter,p,delta,containers,setContainers);
     setBusyId(null);
   };
 
@@ -5699,7 +5753,7 @@ function WeeklyComboIngredients({combos,products,setCombos,caisseUrl,onClose}){
   </div>);
 }
 
-function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions,accompaniments,setAccompaniments,deposits}){
+function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions,accompaniments,setAccompaniments,deposits,containers,setContainers}){
   const [edit,setEdit]=useState(null);
   const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
   const [portionsFor,setPortionsFor]=useState(null); // produit dont on gère les portions
@@ -5782,7 +5836,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       </button>
     </div>
     {valueDetail&&<StockValueDetailModal mode={valueDetail} products={products} sites={sites} caisseUrl={caisseUrl}
-      unitCost={unitCost} unitSell={unitSell} flattenProd={flattenProd} onSave={onSave} onClose={()=>setValueDetail(null)}/>}
+      unitCost={unitCost} unitSell={unitSell} flattenProd={flattenProd} onSave={onSave} onClose={()=>setValueDetail(null)} containers={containers} setContainers={setContainers}/>}
     <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} products={products} sites={sites} handlePhoto={handlePhoto} busy={saving}/>
     {[...categories.filter(c=>products.some(p=>p.cat===c.name)),
       ...(products.some(p=>!categories.some(c=>c.name===p.cat))?[{name:"Autres"}]:[])]
