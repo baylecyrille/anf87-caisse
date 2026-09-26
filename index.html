@@ -1928,7 +1928,11 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
   const [dragOverId,setDragOverId]=useState(null);
   const dragIdRef=useRef(null),dragOverIdRef=useRef(null);
   const reorderTo=(sourceId,targetId)=>{
-    const allIds=[...products.map(p=>p.id.toString()),...(combos||[]).map(c=>"combo-"+c.id)];
+    // Les Plats (préfixe "plat-", voir platEntries plus bas) doivent aussi faire partie
+    // de la liste des IDs déplaçables — sans ça, reorderTo() abandonnait silencieusement
+    // (from===-1) dès qu'on essayait de glisser une tuile de Plat, qui restait bloquée
+    // alors que les produits et les menus se déplaçaient normalement.
+    const allIds=[...products.map(p=>p.id.toString()),...(combos||[]).map(c=>"combo-"+c.id),...(plats||[]).map(pl=>"plat-"+pl.id)];
     let order=customOrder.length?[...customOrder]:allIds.slice();
     allIds.forEach(pid=>{if(!order.includes(pid))order.push(pid);});
     const from=order.indexOf(sourceId.toString());
