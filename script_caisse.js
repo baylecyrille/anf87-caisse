@@ -144,6 +144,10 @@ function initSheets() {
   if(users.getLastRow()<=1){
     users.getRange(1,1,1,7).setValues([["ID","Nom","PIN","Role","OrdreProduits","CameraPref","GroupesOnglets"]]);
     users.getRange(1,1,1,7).setFontWeight("bold");
+    // Colonne PIN en texte dès le départ (pas seulement à l'écriture via l'appli) —
+    // pour ne pas perdre un zéro initial même en cas de modification directe dans le
+    // tableur Google Sheets.
+    users.getRange(2,3,users.getMaxRows()-1,1).setNumberFormat("@");
     users.getRange(2,1,1,4).setValues([["u1","Admin","1234","admin"]]);
   }
   // Contenants ouverts (fûts/bouteilles/cubis entamés, un par site+produit)
@@ -1123,10 +1127,23 @@ function deleteCategory(e){
 }
 function saveUser(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), p=e.parameter;
-  var row=[p.id,p.name,p.pin,p.role];
+  // Le PIN doit être stocké en TEXTE, jamais en nombre : sinon Google Sheets
+  // l'interprète comme un nombre à l'écriture et perd un éventuel zéro initial
+  // (ex: "0123" devient 123). Le format de la cellule doit être forcé en texte
+  // AVANT d'y écrire la valeur — le faire après coup ne rattrape rien, la valeur a
+  // déjà été convertie en nombre au moment de l'écriture.
+  var pin=(p.pin||"").toString();
+  var row=[p.id,p.name,pin,p.role];
   if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){sh.getRange(i+2,1,1,4).setValues([row]);return{ok:true,action:"updated"};}}}
-  sh.appendRow(row); return{ok:true,action:"created"};
+    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      sh.getRange(i+2,3).setNumberFormat("@");
+      sh.getRange(i+2,1,1,4).setValues([row]);
+      return{ok:true,action:"updated"};
+    }}}
+  var newRow=sh.getLastRow()+1;
+  sh.getRange(newRow,3).setNumberFormat("@");
+  sh.appendRow(row);
+  return{ok:true,action:"created"};
 }
 function deleteUser(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), id=e.parameter.id;
