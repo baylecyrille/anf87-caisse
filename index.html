@@ -777,6 +777,21 @@ const toggleAvailabilityForSite=(prod,allSites,siteId)=>{
   }
   return newList.length>=allSites.length?"":newList.join(",");
 };
+// Convertit une saisie de quantité en nombre, en acceptant aussi bien la virgule
+// française ("0,5") que le point ("0.5") comme séparateur décimal — évite que les
+// demi-quantités soient perdues ou arrondies à l'entier le plus proche.
+const toNum=v=>{const n=parseFloat(String(v===undefined||v===null?"":v).replace(",","."));return isNaN(n)?0:n;};
+// Nettoie en direct un champ de saisie de quantité : ne garde que les chiffres et UN
+// seul séparateur décimal (virgule ou point), sans jamais forcer de valeur par défaut
+// pendant la frappe — pour que l'utilisateur puisse vider le champ ou taper "0,5"
+// librement (avec <input type="number">, le navigateur refusait la virgule et
+// réinitialisait le champ à chaque frappe invalide).
+const sanitizeQtyInput=v=>{
+  let s=String(v).replace(/[^0-9.,]/g,"");
+  const sep=s.search(/[.,]/);
+  if(sep!==-1)s=s.slice(0,sep+1)+s.slice(sep+1).replace(/[.,]/g,"");
+  return s;
+};
 // Résout un menu jusqu'aux vrais PRODUITS qui le composent, y compris quand il
 // contient lui-même un ou plusieurs autres menus (ex: "Croque Frites" qui inclut le
 // menu "Croque Monsieur") — nécessaire car le stock, lui, ne se décompte qu'au
@@ -789,14 +804,14 @@ const flattenComboItems=(combo,combos,plats,multiplier,depth)=>{
   (combo.items||[]).forEach(it=>{
     if(it.type==="combo"){
       const sub=combos.find(c=>c.id.toString()===(it.comboId||"").toString());
-      if(sub)result=result.concat(flattenComboItems(sub,combos,plats,multiplier*(+it.qty||1),depth+1));
+      if(sub)result=result.concat(flattenComboItems(sub,combos,plats,multiplier*(toNum(it.qty)||1),depth+1));
     }else if(it.type==="plat"){
       // Un Plat ne contient normalement que des produits bruts (pas d'imbrication),
       // mais on résout quand même récursivement par sécurité/uniformité.
       const sub=(plats||[]).find(c=>c.id.toString()===(it.platId||"").toString());
-      if(sub)result=result.concat(flattenComboItems(sub,combos,plats,multiplier*(+it.qty||1),depth+1));
+      if(sub)result=result.concat(flattenComboItems(sub,combos,plats,multiplier*(toNum(it.qty)||1),depth+1));
     }else{
-      result.push({productId:it.productId,qty:(+it.qty||0)*multiplier,portionId:it.portionId||""});
+      result.push({productId:it.productId,qty:toNum(it.qty)*multiplier,portionId:it.portionId||""});
     }
   });
   return result;
@@ -806,13 +821,16 @@ const flattenComboItems=(combo,combos,plats,multiplier,depth)=>{
 // "Produits de la semaine"...) pour ne jamais avoir deux logiques de sérialisation
 // qui divergent et corrompent les données (c'était le bug : la fenêtre "Produits de
 // la semaine" utilisait un format incomplet, oubliant le marqueur des menus imbriqués).
+// toNum() normalise systématiquement la quantité (virgule OU point) avant de
+// l'écrire, pour ne jamais enregistrer une virgule brute dans la feuille Google
+// Sheets (qui casserait ensuite la relecture côté serveur).
 const serializeComboItems=items=>items.map(it=>{
-  if(it.type==="combo")return(it.comboId||"")+":"+(it.qty||1)+"::"+":combo";
-  if(it.type==="plat")return(it.platId||"")+":"+(it.qty||1)+"::"+":plat";
+  if(it.type==="combo")return(it.comboId||"")+":"+(toNum(it.qty)||1)+"::"+":combo";
+  if(it.type==="plat")return(it.platId||"")+":"+(toNum(it.qty)||1)+"::"+":plat";
   // Set() en sécurité : élimine tout doublon éventuel dans les alternatives, même
   // si les données stockées en contenaient déjà par accident.
   const alts=[...new Set((it.alternates||[]).filter(a=>a&&a!==it.productId))];
-  return it.productId+":"+it.qty+":"+(it.portionId||"")+":"+alts.join("|");
+  return it.productId+":"+toNum(it.qty)+":"+(it.portionId||"")+":"+alts.join("|");
 }).join(",");
 // Comme flattenComboItems, mais en tenant compte du stock de menu DÉJÀ PRÉPARÉ pour
 // les menus imbriqués : sépare ce qui doit être décompté du stock "prêt" d'un
@@ -828,7 +846,7 @@ const resolveComboConsumption=(combo,combos,plats,multiplier,depth,readyCombos,r
     if(it.type==="combo"){
       const sub=combos.find(c=>c.id.toString()===(it.comboId||"").toString());
       if(!sub)return;
-      const neededMult=multiplier*(+it.qty||1);
+      const neededMult=multiplier*(toNum(it.qty)||1);
       const ready=readyStockFor(readyCombos,siteId,sub.id);
       const fromReady=Math.min(ready,neededMult);
       const fromFresh=neededMult-fromReady;
@@ -842,7 +860,7 @@ const resolveComboConsumption=(combo,combos,plats,multiplier,depth,readyCombos,r
     }else if(it.type==="plat"){
       const sub=(plats||[]).find(c=>c.id.toString()===(it.platId||"").toString());
       if(!sub)return;
-      const neededMult=multiplier*(+it.qty||1);
+      const neededMult=multiplier*(toNum(it.qty)||1);
       const ready=readyStockFor(readyPlats,siteId,sub.id);
       const fromReady=Math.min(ready,neededMult);
       const fromFresh=neededMult-fromReady;
@@ -853,7 +871,7 @@ const resolveComboConsumption=(combo,combos,plats,multiplier,depth,readyCombos,r
         flattenComboItems(sub,combos,plats,fromFresh,depth+1).forEach(fi=>out.productItems.push(fi));
       }
     }else{
-      out.productItems.push({productId:it.productId,qty:(+it.qty||0)*multiplier,portionId:it.portionId||""});
+      out.productItems.push({productId:it.productId,qty:toNum(it.qty)*multiplier,portionId:it.portionId||""});
     }
   });
   return out;
@@ -1257,11 +1275,19 @@ function App(){
     const ready=readyStockFor(readyCombos,siteId,combo.id);
     const alreadyReadyInCart=cart.filter(i=>i.pid===combo.id&&i.isCombo&&i.fromReadyStock).reduce((s,i)=>s+i.qty,0);
     if(ready>alreadyReadyInCart){
+      // Un menu vendu depuis le stock déjà préparé doit rester éligible à la carte
+      // boissons s'il contient une boisson — sans ça, un menu tout prêt (donc sans
+      // comboItems à inspecter directement) ne pouvait jamais être payé/offert via la
+      // carte, contrairement au même menu assemblé à la volée juste en dessous.
+      const containsDrinkReady=flattenComboItems(combo,combos,plats).some(fi=>{
+        const prod=products.find(p=>p.id.toString()===fi.productId.toString());
+        return prod?.drink;
+      });
       setCart(prev=>{
         const ex=prev.find(i=>i.pid===combo.id&&i.isCombo&&i.fromReadyStock);
         if(ex)return prev.map(i=>i===ex?{...i,qty:i.qty+1}:i);
         return[...prev,{id:combo.id+"-ready-"+Date.now(),pid:combo.id,isCombo:true,fromReadyStock:true,
-          comboItems:[],name:combo.name+" (prêt)",price:combo.price,emoji:"🍽",photo:combo.photo,drink:false,qty:1,free:false,unit:"menu"}];
+          comboItems:[],name:combo.name+" (prêt)",price:combo.price,emoji:"🍽",photo:combo.photo,drink:containsDrinkReady,qty:1,free:false,unit:"menu"}];
       });
       return;
     }
@@ -1317,11 +1343,18 @@ function App(){
     const ready=readyStockFor(readyPlats,siteId,plat.id);
     const alreadyReadyInCart=cart.filter(i=>i.pid===plat.id&&i.isCombo&&i.fromReadyStock).reduce((s,i)=>s+i.qty,0);
     if(ready>alreadyReadyInCart){
+      // Même correctif que pour les menus tout prêts : un Plat vendu depuis le stock
+      // déjà préparé doit rester éligible à la carte boissons s'il contient une
+      // boisson (ex: un plateau prêt avec une bière incluse).
+      const containsDrinkReady=flattenComboItems(plat,combos,plats).some(fi=>{
+        const prod=products.find(p=>p.id.toString()===fi.productId.toString());
+        return prod?.drink;
+      });
       setCart(prev=>{
         const ex=prev.find(i=>i.pid===plat.id&&i.isCombo&&i.fromReadyStock);
         if(ex)return prev.map(i=>i===ex?{...i,qty:i.qty+1}:i);
         return[...prev,{id:plat.id+"-ready-"+Date.now(),pid:plat.id,isCombo:true,isPlat:true,fromReadyStock:true,
-          comboItems:[],name:plat.name+" (prêt)",price:plat.price,emoji:"🍴",photo:plat.photo,drink:false,qty:1,free:false,unit:"plat"}];
+          comboItems:[],name:plat.name+" (prêt)",price:plat.price,emoji:"🍴",photo:plat.photo,drink:containsDrinkReady,qty:1,free:false,unit:"plat"}];
       });
       return;
     }
@@ -4384,11 +4417,16 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
     setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,portionId,qty:po?po.size*(it.portionMult||1):it.qty})}));
   };
   const setPortionMult=(idx,mult)=>{
-    const m=Math.max(0,parseFloat(mult)||0);
+    // Garde la saisie telle quelle (virgule/point, éventuellement incomplète pendant
+    // la frappe) plutôt que de la forcer en nombre tout de suite — sinon un champ
+    // vidé (m=0) se réaffichait "1" à cause du "||1" côté rendu, empêchant de
+    // vraiment le vider ou d'y mettre 0,5.
+    const clean=sanitizeQtyInput(mult);
+    const m=toNum(clean);
     setEdit(prev=>({...prev,items:prev.items.map((it,i)=>{
       if(i!==idx)return it;
       const po=(portions||[]).find(p=>p.id.toString()===(it.portionId||"").toString());
-      return{...it,portionMult:m,qty:po?po.size*m:it.qty};
+      return{...it,portionMult:clean,qty:po?po.size*m:it.qty};
     })}));
   };
   const removeItem=idx=>setEdit(prev=>({...prev,items:prev.items.filter((_,i)=>i!==idx)}));
@@ -4421,7 +4459,7 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
 
   const save=async()=>{
     if(!edit.name||!edit.price||edit.items.length===0)return;
-    if(edit.items.some(it=>!it.qty||+it.qty<=0)){
+    if(edit.items.some(it=>toNum(it.qty)<=0)){
       await customAlert("⚠️ Choisissez une portion (ou une quantité) pour chaque produit au volume du menu avant d'enregistrer.");
       return;
     }
@@ -4462,9 +4500,9 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
     if(r.ok){
       const newEntry={id,name:edit.name,price:+edit.price,
         items:edit.items.map(it=>{
-          if(it.type==="combo")return{type:"combo",comboId:it.comboId,qty:+it.qty};
-          if(it.type==="plat")return{type:"plat",platId:it.platId,qty:+it.qty};
-          return{type:"product",productId:it.productId,qty:+it.qty,portionId:it.portionId||"",alternates:it.alternates||[]};
+          if(it.type==="combo")return{type:"combo",comboId:it.comboId,qty:toNum(it.qty)||1};
+          if(it.type==="plat")return{type:"plat",platId:it.platId,qty:toNum(it.qty)||1};
+          return{type:"product",productId:it.productId,qty:toNum(it.qty),portionId:it.portionId||"",alternates:it.alternates||[]};
         }),
         photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setCombos(prev=>[...prev.filter(c=>c.id!==id),newEntry]);
@@ -4623,8 +4661,8 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
                 {!prod&&<option value={it.productId}>⚠️ Produit introuvable — choisissez-en un</option>}
                 {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
-              {!prod?.sellByVolume&&<input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
-                title="Quantités décimales acceptées (ex: 0.5 pour une demi-tranche)"
+              {!prod?.sellByVolume&&<input type="text" inputMode="decimal" value={it.qty} onChange={e=>updateItem(idx,"qty",sanitizeQtyInput(e.target.value))}
+                title="Quantités décimales acceptées (ex: 0.5 ou 0,5 pour une demi-tranche)"
                 style={{width:58,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center",background:"white"}}/>}
               <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red,flexShrink:0}}>🗑</button>
             </div>
@@ -4637,14 +4675,14 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
                 </select>
                 {it.portionId&&<>
                   <span style={{fontSize:13,color:T.mid,flexShrink:0}}>×</span>
-                  <input type="number" min="0.1" step="0.1" value={it.portionMult||1} onChange={e=>setPortionMult(idx,e.target.value)}
-                    title="Combien de fois cette portion (ex: 2 pour 2 tranches, 0.5 pour une demi-tranche)"
+                  <input type="text" inputMode="decimal" value={it.portionMult===undefined?1:it.portionMult} onChange={e=>setPortionMult(idx,e.target.value)}
+                    title="Combien de fois cette portion (ex: 2 pour 2 tranches, 0.5 ou 0,5 pour une demi-tranche)"
                     style={{width:54,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center",background:"white",flexShrink:0}}/>
                 </>}
               </div>
             ):(
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-                <input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)} placeholder="Quantité"
+                <input type="text" inputMode="decimal" value={it.qty} onChange={e=>updateItem(idx,"qty",sanitizeQtyInput(e.target.value))} placeholder="Quantité"
                   style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white"}}/>
                 <span style={{fontSize:11,color:T.mid}}>{prod.unit||"cl"} (aucune portion configurée)</span>
               </div>
@@ -4709,7 +4747,7 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
   // contenant jamais un autre Plat ni un Menu.
   const platCost=items=>items.reduce((s,it)=>{
     const prod=products.find(p=>p.id.toString()===it.productId.toString());
-    return s+(prod?unitCost(prod)*it.qty:0);
+    return s+(prod?unitCost(prod)*toNum(it.qty):0);
   },0);
 
   const startNew=()=>setEdit({id:null,name:"",price:"",items:[],photo:""});
@@ -4732,11 +4770,16 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
     setEdit(prev=>({...prev,items:prev.items.map((it,i)=>i!==idx?it:{...it,portionId,qty:po?po.size*(it.portionMult||1):it.qty})}));
   };
   const setPortionMult=(idx,mult)=>{
-    const m=Math.max(0,parseFloat(mult)||0);
+    // Garde la saisie telle quelle (virgule/point, éventuellement incomplète pendant
+    // la frappe) plutôt que de la forcer en nombre tout de suite — sinon un champ
+    // vidé (m=0) se réaffichait "1" à cause du "||1" côté rendu, empêchant de
+    // vraiment le vider ou d'y mettre 0,5.
+    const clean=sanitizeQtyInput(mult);
+    const m=toNum(clean);
     setEdit(prev=>({...prev,items:prev.items.map((it,i)=>{
       if(i!==idx)return it;
       const po=(portions||[]).find(p=>p.id.toString()===(it.portionId||"").toString());
-      return{...it,portionMult:m,qty:po?po.size*m:it.qty};
+      return{...it,portionMult:clean,qty:po?po.size*m:it.qty};
     })}));
   };
   const removeItem=idx=>setEdit(prev=>({...prev,items:prev.items.filter((_,i)=>i!==idx)}));
@@ -4758,7 +4801,7 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
 
   const save=async()=>{
     if(!edit.name||!edit.price||edit.items.length===0)return;
-    if(edit.items.some(it=>!it.qty||+it.qty<=0)){
+    if(edit.items.some(it=>toNum(it.qty)<=0)){
       await customAlert("⚠️ Choisissez une portion (ou une quantité) pour chaque produit au volume du plat avant d'enregistrer.");
       return;
     }
@@ -4786,7 +4829,7 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
     const r=await apiWrite(caisseUrl,{action:"savePlat",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra});
     if(r.ok){
       const newEntry={id,name:edit.name,price:+edit.price,
-        items:edit.items.map(it=>({type:"product",productId:it.productId,qty:+it.qty,portionId:it.portionId||"",alternates:it.alternates||[]})),
+        items:edit.items.map(it=>({type:"product",productId:it.productId,qty:toNum(it.qty),portionId:it.portionId||"",alternates:it.alternates||[]})),
         photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setPlats(prev=>[...prev.filter(p=>p.id!==id),newEntry]);
       setEdit(null);
@@ -4869,8 +4912,8 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
                 {!prod&&<option value={it.productId}>⚠️ Produit introuvable — choisissez-en un</option>}
                 {products.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
-              {!prod?.sellByVolume&&<input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)}
-                title="Quantités décimales acceptées (ex: 0.5 pour une demi-tranche)"
+              {!prod?.sellByVolume&&<input type="text" inputMode="decimal" value={it.qty} onChange={e=>updateItem(idx,"qty",sanitizeQtyInput(e.target.value))}
+                title="Quantités décimales acceptées (ex: 0.5 ou 0,5 pour une demi-tranche)"
                 style={{width:58,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center",background:"white"}}/>}
               <button onClick={()=>removeItem(idx)} style={{padding:"7px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red,flexShrink:0}}>🗑</button>
             </div>
@@ -4883,14 +4926,14 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
                 </select>
                 {it.portionId&&<>
                   <span style={{fontSize:13,color:T.mid,flexShrink:0}}>×</span>
-                  <input type="number" min="0.1" step="0.1" value={it.portionMult||1} onChange={e=>setPortionMult(idx,e.target.value)}
-                    title="Combien de fois cette portion (ex: 2 pour 2 tranches, 0.5 pour une demi-tranche)"
+                  <input type="text" inputMode="decimal" value={it.portionMult===undefined?1:it.portionMult} onChange={e=>setPortionMult(idx,e.target.value)}
+                    title="Combien de fois cette portion (ex: 2 pour 2 tranches, 0.5 ou 0,5 pour une demi-tranche)"
                     style={{width:54,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,textAlign:"center",background:"white",flexShrink:0}}/>
                 </>}
               </div>
             ):(
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-                <input type="number" min="0.1" step="0.1" value={it.qty} onChange={e=>updateItem(idx,"qty",e.target.value)} placeholder="Quantité"
+                <input type="text" inputMode="decimal" value={it.qty} onChange={e=>updateItem(idx,"qty",sanitizeQtyInput(e.target.value))} placeholder="Quantité"
                   style={{flex:1,padding:"8px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:12,background:"white"}}/>
                 <span style={{fontSize:11,color:T.mid}}>{prod.unit||"cl"} (aucune portion configurée)</span>
               </div>
