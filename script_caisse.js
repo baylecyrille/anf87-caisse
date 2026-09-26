@@ -9,7 +9,8 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","uploadComboItemsChunk","uploadSaleItemsChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit","logHappyHour","adjustReadyCombo"];
+  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit","logHappyHour","adjustReadyCombo",
+  "savePlat","deletePlat","uploadPlatPhotoChunk","uploadPlatItemsChunk","adjustReadyPlat","migrateToPlats"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
 
@@ -67,6 +68,12 @@ function doGet(e) {
       case "addToReserve":        result = addToReserve(e); break;
       case "adjustDeposit":       result = adjustDeposit(e); break;
       case "adjustReadyCombo":    result = adjustReadyCombo(e); break;
+      case "savePlat":            result = savePlat(e); break;
+      case "deletePlat":          result = deletePlat(e); break;
+      case "uploadPlatPhotoChunk": result = uploadPlatPhotoChunk(e); break;
+      case "uploadPlatItemsChunk": result = uploadPlatItemsChunk(e); break;
+      case "adjustReadyPlat":     result = adjustReadyPlat(e); break;
+      case "migrateToPlats":      result = migrateToPlats(); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -127,8 +134,8 @@ function initSheets() {
   // Ventes
   var ventes = getOrCreate(ss,"Ventes");
   if(ventes.getLastRow()<=1){
-    ventes.getRange(1,1,1,14).setValues([["ID","Date","Heure","SiteID","SiteNom","Total","Paiement","Articles","Membre","NbArticles","Caissier","PartFacture","MenusPretsConsommes","MenusVendus"]]);
-    ventes.getRange(1,1,1,14).setFontWeight("bold"); ventes.setFrozenRows(1);
+    ventes.getRange(1,1,1,15).setValues([["ID","Date","Heure","SiteID","SiteNom","Total","Paiement","Articles","Membre","NbArticles","Caissier","PartFacture","MenusPretsConsommes","MenusVendus","PlatsPretsConsommes"]]);
+    ventes.getRange(1,1,1,15).setFontWeight("bold"); ventes.setFrozenRows(1);
   }
   // Utilisateurs
   var users = getOrCreate(ss,"Utilisateurs");
@@ -183,6 +190,19 @@ function initSheets() {
     combo.getRange(1,1,1,5).setFontWeight("bold");
     combo.setFrozenRows(1);
   }
+  // Plats : un niveau intermédiaire entre Produit et Menu (ex: "Croque Monsieur" =
+  // un Plat composé de pain+jambon+fromage). Un Menu peut ensuite inclure un Plat
+  // comme ingrédient (ex: "Croque Frites" = Plat "Croque Monsieur" + frites +
+  // boisson), et un Plat peut aussi se vendre seul directement en caisse. Mêmes
+  // colonnes que Combos, mais son "Contenu" ne référence jamais un autre Plat/Menu
+  // (uniquement des produits bruts) — c'est ce qui évite l'imbrication à profondeur
+  // illimitée qui causait des bugs difficiles à diagnostiquer.
+  var plat = getOrCreate(ss,"Plats");
+  if(plat.getLastRow()<=1){
+    plat.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
+    plat.getRange(1,1,1,5).setFontWeight("bold");
+    plat.setFrozenRows(1);
+  }
   // Accompagnements automatiques : quand on vend le produit ProduitID, on décompte
   // AUSSI, en plus et discrètement (pas de ligne de panier, pas d'impact sur le
   // prix), Qté unités du produit ProduitAssocieID (ex: café -> gobelet, sucre,
@@ -209,7 +229,8 @@ function getAllData(){
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
     categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss),
     portions:getPortionsData(ss), combos:getCombosData(ss), accompaniments:getAccompanimentsData(ss),
-    reserve:getReserveData(ss), deposits:getDepositsData(ss), readyCombos:getReadyCombosData(ss), config:getConfig(ss), ts:Date.now()};
+    reserve:getReserveData(ss), deposits:getDepositsData(ss), readyCombos:getReadyCombosData(ss),
+    plats:getPlatsData(ss), readyPlats:getReadyPlatsData(ss), config:getConfig(ss), ts:Date.now()};
 }
 
 // Réglages globaux du club (clé/valeur) — ex: clé Affiliate SumUp, App ID SumUp.
@@ -299,6 +320,35 @@ function adjustReadyCombo(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"MenusPrets"), p=e.parameter;
   if(sh.getLastRow()<=1){
     sh.getRange(1,1,1,3).setValues([["SiteID","MenuID","Nombre"]]);
+    sh.getRange(1,1,1,3).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var site=p.site, id=p.id, delta=+p.delta||0;
+  if(!site||!id||delta===0)return{ok:false,error:"Paramètres manquants"};
+  if(sh.getLastRow()>1){
+    var data=sh.getRange(2,1,sh.getLastRow()-1,3).getValues();
+    for(var i=0;i<data.length;i++){
+      if(data[i][0].toString()===site.toString()&&data[i][1].toString()===id.toString()){
+        var newCount=Math.max(0,(+data[i][2]||0)+delta);
+        sh.getRange(i+2,3).setValue(newCount);
+        return{ok:true,count:newCount};
+      }
+    }
+  }
+  sh.appendRow([site,id,Math.max(0,delta)]);
+  return{ok:true,count:Math.max(0,delta)};
+}
+// Portions de PLAT déjà préparées d'avance (ex: 20 Croque Monsieur montés avant le
+// coup d'envoi, vendus seuls OU utilisés comme ingrédient d'un menu) — même
+// mécanisme que MenusPrets/adjustReadyCombo, sur sa propre feuille "PlatsPrets".
+function getReadyPlatsData(ss){
+  var sh=ss.getSheetByName("PlatsPrets"); if(!sh||sh.getLastRow()<=1)return [];
+  return sh.getRange(2,1,sh.getLastRow()-1,3).getValues().filter(r=>r[0]&&r[1])
+    .map(r=>({site:r[0],platId:r[1],count:+r[2]||0}));
+}
+function adjustReadyPlat(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"PlatsPrets"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,3).setValues([["SiteID","PlatID","Nombre"]]);
     sh.getRange(1,1,1,3).setFontWeight("bold"); sh.setFrozenRows(1);
   }
   var site=p.site, id=p.id, delta=+p.delta||0;
@@ -550,6 +600,148 @@ function uploadSaleItemsChunk(e){
   if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
   CacheService.getScriptCache().put("saleitems_"+p.id+"_"+p.idx, p.chunk, 600);
   return{ok:true};
+}
+
+// ── Plats (identiques à Combos dans leur structure, mais leur "Contenu" ne
+// référence jamais un autre Plat ni un Menu — uniquement des produits bruts) ──
+function getPlatsData(ss){
+  var sh=ss.getSheetByName("Plats"); if(!sh||sh.getLastRow()<=1)return [];
+  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0]).map(r=>{
+    var items=(r[3]||"").toString().split(",").map(function(pair){
+      var parts=pair.split(":");
+      var alternates=(parts[3]||"").split("|").map(function(a){return a.trim();}).filter(Boolean);
+      return{type:"product",productId:(parts[0]||"").trim(),qty:+parts[1]||1,portionId:(parts[2]||"").trim(),alternates:alternates};
+    }).filter(function(it){return it.productId;});
+    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||""};
+  });
+}
+function savePlat(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Plats"), p=e.parameter;
+  if(sh.getLastRow()<=1){
+    sh.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
+    sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
+  }
+  var photo=(p.photo||"").toString().trim();
+  if(photo==="__CHUNKED__"){
+    var total=+p.photoChunks||0;
+    var cache=CacheService.getScriptCache(), parts=[];
+    for(var c=0;c<total;c++){
+      var part=cache.get("platphoto_"+p.id+"_"+c);
+      if(part===null)return{ok:false,error:"Photo incomplète (morceau "+(c+1)+"/"+total+" manquant ou expiré), réessayez."};
+      parts.push(part);
+    }
+    photo=parts.join("");
+    for(var c2=0;c2<total;c2++)cache.remove("platphoto_"+p.id+"_"+c2);
+  }
+  var items=p.items||"";
+  if(items==="__CHUNKED__"){
+    var totalI=+p.itemsChunks||0;
+    var cacheI=CacheService.getScriptCache(), partsI=[];
+    for(var ci=0;ci<totalI;ci++){
+      var partI=cacheI.get("platitems_"+p.id+"_"+ci);
+      if(partI===null)return{ok:false,error:"Contenu du plat incomplet (morceau "+(ci+1)+"/"+totalI+" manquant ou expiré), réessayez."};
+      partsI.push(partI);
+    }
+    items=partsI.join("");
+    for(var ci2=0;ci2<totalI;ci2++)cacheI.remove("platitems_"+p.id+"_"+ci2);
+  }
+  var row=[p.id,p.name||"",+p.price||0,items,photo];
+  if(sh.getLastRow()>1){
+    var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      if(photo==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue();
+      if(row[4]==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // garde-fou : jamais la valeur littérale
+      sh.getRange(i+2,1,1,5).setValues([row]);
+      return{ok:true,action:"updated"};
+    }}
+  }
+  if(photo==="__KEEP__")row[4]="";
+  sh.appendRow(row);
+  return{ok:true,action:"created"};
+}
+function deletePlat(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Plats"), id=e.parameter.id;
+  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Non trouvé"};
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}
+  return{ok:false,error:"Non trouvé"};
+}
+function uploadPlatPhotoChunk(e){
+  var p=e.parameter;
+  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
+  CacheService.getScriptCache().put("platphoto_"+p.id+"_"+p.idx, p.chunk, 600);
+  return{ok:true};
+}
+function uploadPlatItemsChunk(e){
+  var p=e.parameter;
+  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
+  CacheService.getScriptCache().put("platitems_"+p.id+"_"+p.idx, p.chunk, 600);
+  return{ok:true};
+}
+// Migration en un clic depuis Config : convertit chaque Menu (Combo) qui n'est
+// utilisé QUE comme ingrédient d'un autre Menu (jamais vendu directement en tant
+// que Menu autonome ET ne contenant lui-même aucun autre Menu imbriqué) en un
+// Plat — sans quoi les Menus créés avant l'introduction des Plats resteraient
+// bloqués dans l'ancien système d'imbrication illimitée. Les Menus qui restent de
+// vrais Menus (jamais référencés comme ingrédient d'un autre Menu) ne sont pas
+// touchés.
+function migrateToPlats(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet();
+  var combosSh=ss.getSheetByName("Combos");
+  if(!combosSh||combosSh.getLastRow()<=1)return{ok:true,migrated:0,names:""};
+  var combos=getCombosData(ss);
+  // Un menu est "migrable" s'il est référencé comme ingrédient (type "combo") par
+  // au moins un autre menu, ET qu'il ne référence lui-même aucun autre menu imbriqué
+  // (sinon il faudrait d'abord migrer ses propres sous-menus, cas volontairement
+  // non traité automatiquement pour rester simple et sûr).
+  var referencedIds={};
+  combos.forEach(function(c){
+    c.items.forEach(function(it){ if(it.type==="combo")referencedIds[it.comboId]=true; });
+  });
+  var toMigrate=combos.filter(function(c){
+    return referencedIds[c.id]&&!c.items.some(function(it){return it.type==="combo";});
+  });
+  if(!toMigrate.length)return{ok:true,migrated:0,names:""};
+  var platsSh=getOrCreate(ss,"Plats");
+  if(platsSh.getLastRow()<=1){
+    platsSh.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
+    platsSh.getRange(1,1,1,5).setFontWeight("bold"); platsSh.setFrozenRows(1);
+  }
+  var migratedIds={};
+  toMigrate.forEach(function(c){
+    var itemsStr=c.items.map(function(it){
+      var alts=(it.alternates||[]).join("|");
+      return it.productId+":"+it.qty+":"+(it.portionId||"")+":"+alts;
+    }).join(",");
+    platsSh.appendRow([c.id,c.name,c.price,itemsStr,c.photo||""]);
+    migratedIds[c.id]=true;
+  });
+  // Retire les menus migrés de la feuille Combos (ils vivent désormais dans Plats),
+  // en repartant du bas pour que les suppressions de ligne ne décalent pas les
+  // index restants à traiter.
+  var ids=combosSh.getRange(2,1,combosSh.getLastRow()-1,1).getValues();
+  for(var i=ids.length-1;i>=0;i--){
+    if(migratedIds[ids[i][0]])combosSh.deleteRow(i+2);
+  }
+  // Dans les menus restants, change le marqueur de type "combo" en "plat" pour
+  // toute référence à un menu qui vient d'être migré — sans ça, ces menus
+  // pointeraient vers un ID qui n'existe plus dans Combos.
+  var remainingData=combosSh.getRange(2,1,combosSh.getLastRow()-1,5).getValues();
+  for(var r=0;r<remainingData.length;r++){
+    var content=(remainingData[r][3]||"").toString();
+    if(!content)continue;
+    var changed=false;
+    var newContent=content.split(",").map(function(pair){
+      var parts=pair.split(":");
+      if(parts[4]&&parts[4].trim()==="combo"&&migratedIds[(parts[0]||"").trim()]){
+        changed=true;
+        return parts[0]+":"+parts[1]+"::"+":plat";
+      }
+      return pair;
+    }).join(",");
+    if(changed)combosSh.getRange(r+2,4).setValue(newContent);
+  }
+  return{ok:true,migrated:toMigrate.length,names:toMigrate.map(function(c){return c.name;}).join(", ")};
 }
 
 // Les 4 colonnes de stock (L à O) correspondent aux 4 premiers sites de l'onglet
@@ -948,7 +1140,7 @@ function saveSale(e){
   var tz=Session.getScriptTimeZone(), now=new Date(), saleId=now.getTime().toString();
   var dateStr=Utilities.formatDate(now,tz,"dd/MM/yyyy"), heureStr=Utilities.formatDate(now,tz,"HH:mm:ss");
   sh.appendRow([saleId,dateStr,heureStr,
-    p.site,p.siteName,+p.total,p.payment,itemsRaw,p.member||"",+p.nbItems,p.caissier||"",p.splitPart||"",p.readyCombos||"",p.comboLines||""]);
+    p.site,p.siteName,+p.total,p.payment,itemsRaw,p.member||"",+p.nbItems,p.caissier||"",p.splitPart||"",p.readyCombos||"",p.comboLines||"",p.readyPlats||""]);
   // Empêche Google Sheets de convertir les colonnes Date/Heure en vraies dates (ce qui
   // cassait le filtre "Aujourd'hui" et les totaux dans les Rapports : la date revenait
   // au format ISO complet au lieu du "dd/MM/yyyy" attendu par l'appli, donc plus rien
@@ -1043,12 +1235,12 @@ function getSales(e){
   // seulement les nouvelles.
   var fmtDate=function(v){ return v instanceof Date ? Utilities.formatDate(v,tz,"dd/MM/yyyy") : v; };
   var fmtTime=function(v){ return v instanceof Date ? Utilities.formatDate(v,tz,"HH:mm:ss") : v; };
-  var data=sh.getRange(2,1,sh.getLastRow()-1,14).getValues();
+  var data=sh.getRange(2,1,sh.getLastRow()-1,15).getValues();
   var sales=data.filter(function(r){
     if(!r[0])return false;
     if(p.site&&p.site!=="all"&&r[3]!==p.site)return false;
     if(p.date&&fmtDate(r[1])!==p.date)return false;
     return true;
-  }).map(function(r){return{id:r[0],date:fmtDate(r[1]),time:fmtTime(r[2]),siteId:r[3],siteName:r[4],total:r[5],payment:r[6],items:r[7],member:r[8],caissier:r[10],readyCombos:r[12]||"",comboLines:r[13]||""};});
+  }).map(function(r){return{id:r[0],date:fmtDate(r[1]),time:fmtTime(r[2]),siteId:r[3],siteName:r[4],total:r[5],payment:r[6],items:r[7],member:r[8],caissier:r[10],readyCombos:r[12]||"",comboLines:r[13]||"",readyPlats:r[14]||""};});
   return{ok:true,sales:sales};
 }
