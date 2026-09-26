@@ -9,7 +9,7 @@ var WRITE_ACTIONS = ["saveProduct","deleteProduct","saveSite","deleteSite","save
   "deleteCategory","saveUser","deleteUser","saveSale","updateStock","transferStock","uploadPhotoChunk",
   "openContainer","closeContainer","savePortion","deletePortion","uploadPortionPhotoChunk",
   "saveCombo","deleteCombo","uploadComboPhotoChunk","uploadComboItemsChunk","uploadSaleItemsChunk","saveAccompaniment","deleteAccompaniment",
-  "saveProductOrder","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit","logHappyHour","adjustReadyCombo",
+  "saveProductOrder","saveTabGroups","addToReserve","adjustContainer","setReserveCount","saveConfig","updateSale","saveCameraPref","deleteSale","adjustDeposit","logHappyHour","adjustReadyCombo",
   "savePlat","deletePlat","uploadPlatPhotoChunk","uploadPlatItemsChunk","adjustReadyPlat","migrateToPlats"];
   // initSheets n'est pas verrouillé : c'est une action ponctuelle de 1ère installation,
   // pas de risque de conflit multi-utilisateurs à ce moment-là.
@@ -51,6 +51,7 @@ function doGet(e) {
       case "setReserveCount":  result = setReserveCount(e); break;
       case "saveConfig":       result = saveConfig(e); break;
       case "logHappyHour":     result = logHappyHour(e); break;
+      case "getHappyHourLog":  result = getHappyHourLog(); break;
       case "updateSale":       result = updateSale(e); break;
       case "deleteSale":       result = deleteSale(e); break;
       case "savePortion":     result = savePortion(e); break;
@@ -64,6 +65,7 @@ function doGet(e) {
       case "saveAccompaniment":   result = saveAccompaniment(e); break;
       case "deleteAccompaniment": result = deleteAccompaniment(e); break;
       case "saveProductOrder":    result = saveProductOrder(e); break;
+      case "saveTabGroups":       result = saveTabGroups(e); break;
       case "saveCameraPref":      result = saveCameraPref(e); break;
       case "addToReserve":        result = addToReserve(e); break;
       case "adjustDeposit":       result = adjustDeposit(e); break;
@@ -140,8 +142,8 @@ function initSheets() {
   // Utilisateurs
   var users = getOrCreate(ss,"Utilisateurs");
   if(users.getLastRow()<=1){
-    users.getRange(1,1,1,6).setValues([["ID","Nom","PIN","Role","OrdreProduits","CameraPref"]]);
-    users.getRange(1,1,1,6).setFontWeight("bold");
+    users.getRange(1,1,1,7).setValues([["ID","Nom","PIN","Role","OrdreProduits","CameraPref","GroupesOnglets"]]);
+    users.getRange(1,1,1,7).setFontWeight("bold");
     users.getRange(2,1,1,4).setValues([["u1","Admin","1234","admin"]]);
   }
   // Contenants ouverts (fûts/bouteilles/cubis entamés, un par site+produit)
@@ -223,6 +225,14 @@ function safeDecodeItems(raw){
 function getOrCreate(ss,name){
   var s=ss.getSheetByName(name); if(!s)s=ss.insertSheet(name); return s;
 }
+// Convertit une quantité stockée en nombre, en tolérant une virgule française
+// résiduelle ("0,5") au cas où une donnée aurait été enregistrée avant la
+// correction du champ de saisie côté client — évite qu'un ancien Plat/Menu casse
+// à la relecture.
+function numQty(v){
+  var n=parseFloat(String(v==null?"":v).replace(",","."));
+  return isNaN(n)?0:n;
+}
 
 function getAllData(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
@@ -272,6 +282,18 @@ function logHappyHour(e){
   sh.appendRow([dateStr,heureStr,p.action2==="on"?"Activé":"Désactivé",p.user||""]);
   sh.getRange(sh.getLastRow(),1,1,2).setNumberFormat("@"); // Date/Heure en texte, même raison que pour les ventes
   return{ok:true};
+}
+// Relit l'historique des bascules Happy Hour (voir logHappyHour) pour l'afficher dans
+// l'appli — jusque-là, cette info n'existait que dans la feuille Google Sheets
+// elle-même, invisible pour quelqu'un qui n'ouvre pas le tableur. Les plus récentes
+// bascules en premier, limité aux 300 dernières pour rester léger.
+function getHappyHourLog(){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("HappyHourLog");
+  if(!sh||sh.getLastRow()<=1)return{ok:true,log:[]};
+  var rows=sh.getRange(2,1,sh.getLastRow()-1,4).getValues().filter(r=>r[0])
+    .map(r=>({date:r[0].toString(),heure:r[1].toString(),action:r[2].toString(),user:r[3]||""}));
+  rows.reverse();
+  return{ok:true,log:rows.slice(0,300)};
 }
 
 function getReserveData(ss){
@@ -519,10 +541,13 @@ function getCombosData(ss){
       var type=(parts[4]||"").trim();
       var refId=(parts[0]||"").trim();
       if(type==="combo"){
-        return{type:"combo",comboId:refId,qty:+parts[1]||1};
+        return{type:"combo",comboId:refId,qty:numQty(parts[1])||1};
       }
-      return{type:"product",productId:refId,qty:+parts[1]||1,portionId:(parts[2]||"").trim(),alternates:alternates};
-    }).filter(function(it){return it.type==="combo"?it.comboId:it.productId;});
+      if(type==="plat"){
+        return{type:"plat",platId:refId,qty:numQty(parts[1])||1};
+      }
+      return{type:"product",productId:refId,qty:numQty(parts[1])||1,portionId:(parts[2]||"").trim(),alternates:alternates};
+    }).filter(function(it){return it.type==="combo"?it.comboId:(it.type==="plat"?it.platId:it.productId);});
     return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||""};
   });
 }
@@ -610,7 +635,7 @@ function getPlatsData(ss){
     var items=(r[3]||"").toString().split(",").map(function(pair){
       var parts=pair.split(":");
       var alternates=(parts[3]||"").split("|").map(function(a){return a.trim();}).filter(Boolean);
-      return{type:"product",productId:(parts[0]||"").trim(),qty:+parts[1]||1,portionId:(parts[2]||"").trim(),alternates:alternates};
+      return{type:"product",productId:(parts[0]||"").trim(),qty:numQty(parts[1])||1,portionId:(parts[2]||"").trim(),alternates:alternates};
     }).filter(function(it){return it.productId;});
     return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||""};
   });
@@ -817,8 +842,8 @@ function getCategoriesData(ss){
 }
 function getUsersData(ss){
   var sh=ss.getSheetByName("Utilisateurs"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,6).getValues().filter(r=>r[0])
-    .map(r=>({id:r[0],name:r[1],pin:r[2].toString(),role:r[3],productOrder:(r[4]||"").toString(),cameraPref:(r[5]||"").toString()}));
+  return sh.getRange(2,1,sh.getLastRow()-1,7).getValues().filter(r=>r[0])
+    .map(r=>({id:r[0],name:r[1],pin:r[2].toString(),role:r[3],productOrder:(r[4]||"").toString(),cameraPref:(r[5]||"").toString(),tabGroups:(r[6]||"").toString()}));
 }
 // Sauvegarde l'ordre personnalisé des produits sur l'écran caisse pour un utilisateur
 // donné (colonne E "OrdreProduits" de la feuille Utilisateurs) — ne touche à rien
@@ -829,6 +854,22 @@ function saveProductOrder(e){
   var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
   for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.userId.toString()){
     sh.getRange(i+2,5).setValue(p.order||"");
+    return{ok:true};
+  }}
+  return{ok:false,error:"Utilisateur introuvable"};
+}
+// Sauvegarde les regroupements d'onglets personnalisés de l'écran caisse (JSON, ex:
+// '[{"name":"Repas","cats":["Plats","Menus","Snacks"]}]') pour un utilisateur donné
+// (colonne G "GroupesOnglets" de la feuille Utilisateurs).
+function saveTabGroups(e){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), p=e.parameter;
+  if(!sh||sh.getLastRow()<=1||!p.userId)return{ok:false,error:"Utilisateur introuvable"};
+  // Installations existantes créées avant l'ajout de cette colonne : on la crée à la
+  // volée si besoin, sans toucher aux 6 colonnes déjà en place.
+  if(!sh.getRange(1,7).getValue())sh.getRange(1,7).setValue("GroupesOnglets").setFontWeight("bold");
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.userId.toString()){
+    sh.getRange(i+2,7).setValue(p.groups||"");
     return{ok:true};
   }}
   return{ok:false,error:"Utilisateur introuvable"};
