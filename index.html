@@ -1120,10 +1120,6 @@ function App(){
       await apiWrite(caisseUrl,{action:"logHappyHour",action2:next?"on":"off",user:currentUser?.name||""});
     }
   };
-  // Historique des bascules Happy Hour, consultable depuis le bouton 🕐 de l'écran
-  // caisse — jusqu'ici, cette info n'était enregistrée que dans la feuille Google
-  // Sheets "HappyHourLog", invisible pour quelqu'un qui n'ouvre pas le tableur.
-  const [showHappyHourHistory,setShowHappyHourHistory]=useState(false);
   const site=sites.find(s=>s.id===siteId)||sites[0]||{id:"s1",name:"Buvette",color:T.red};
   // Sites "actifs" uniquement pour les écrans du quotidien (caisse, stock) — un site
   // archivé (manifestation terminée) reste consultable dans Admin et Rapports, mais
@@ -1667,8 +1663,6 @@ function App(){
               border:`1px solid ${happyHourActive?"#FF9500":"rgba(255,255,255,0.3)"}`,borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:"pointer",fontWeight:700}}>
             🎉{happyHourActive?" ON":""}
           </button>
-          {caisseUrl&&<button onClick={()=>setShowHappyHourHistory(true)} title="Historique des activations/désactivations du Happy Hour"
-            style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 9px",fontSize:13,cursor:"pointer",fontWeight:700}}>🕐</button>}
           {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:700}}>↻</button>}
           {users.length>0&&<button onClick={doLogout} disabled={loggingOut} title="Déconnexion / changer d'utilisateur" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:loggingOut?"default":"pointer",fontWeight:700}}>⎋</button>}
         </div>
@@ -1748,7 +1742,6 @@ function App(){
       {modal==="cart"&&<CartModal cart={cart} cartTotal={cartTotal} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
         onClose={()=>setModal(null)} onEncaisser={step=>{setPaymentInitialStep(step||"select");setModal("payment");}}/>}
       {volumeProd&&<VolumeModal prod={volumeProd} onClose={()=>setVolumeProd(null)} onAdd={addVolumeToCart} portions={portions} happyHourActive={happyHourActive}/>}
-      {showHappyHourHistory&&<HappyHourHistoryModal caisseUrl={caisseUrl} onClose={()=>setShowHappyHourHistory(false)}/>}
     </div>
   );
 }
@@ -1756,37 +1749,39 @@ function App(){
 // Simple consultation des bascules enregistrées (voir logHappyHour côté serveur) —
 // jusqu'ici invisible depuis l'appli, seulement lisible en ouvrant directement la
 // feuille Google Sheets "HappyHourLog".
-function HappyHourHistoryModal({caisseUrl,onClose}){
+// ═══ HISTORIQUE HAPPY HOUR (onglet Admin, visible manager + admin) ═══
+// Simple consultation des bascules enregistrées (voir logHappyHour côté serveur) —
+// jusqu'ici invisible depuis l'appli, seulement lisible en ouvrant directement la
+// feuille Google Sheets "HappyHourLog". Réservé à Admin (pas l'écran caisse d'un
+// simple caissier) : c'est une info de pilotage, pas un outil de vente.
+function HappyHourAdmin({caisseUrl}){
   const [log,setLog]=useState(null); // null = en cours de chargement
   const [error,setError]=useState("");
-  useEffect(()=>{
-    let cancelled=false;
-    (async()=>{
-      const r=await api(caisseUrl,{action:"getHappyHourLog"});
-      if(cancelled)return;
-      if(r.ok)setLog(r.log||[]);
-      else{setError(r.error||"Erreur inconnue");setLog([]);}
-    })();
-    return()=>{cancelled=true;};
-  },[caisseUrl]);
-  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
-    <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:420,maxHeight:"80vh",display:"flex",flexDirection:"column"}}>
-      <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>🕐 Historique Happy Hour</div>
-      <div style={{flex:1,overflowY:"auto",marginBottom:14}}>
-        {log===null&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Chargement...</div>}
-        {log&&log.length===0&&!error&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Aucune activation/désactivation enregistrée pour l'instant.</div>}
-        {error&&<div style={{textAlign:"center",color:T.red,fontSize:13,padding:20}}>⚠️ {error}</div>}
-        {log&&log.map((l,idx)=>(
-          <div key={idx} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 4px",borderBottom:idx<log.length-1?`1px solid ${T.border}`:"none"}}>
-            <span style={{fontSize:18}}>{l.action==="Activé"?"🎉":"⏹"}</span>
-            <div style={{flex:1}}>
-              <div style={{fontSize:13,fontWeight:700,color:l.action==="Activé"?"#FF9500":T.dark}}>{l.action}</div>
-              <div style={{fontSize:11,color:T.mid}}>{l.date} à {l.heure}{l.user?" • "+l.user:""}</div>
-            </div>
+  const load=async()=>{
+    setLog(null);setError("");
+    const r=await api(caisseUrl,{action:"getHappyHourLog"});
+    if(r.ok)setLog(r.log||[]);
+    else{setError(r.error||"Erreur inconnue");setLog([]);}
+  };
+  useEffect(()=>{ load(); },[caisseUrl]);
+  return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+      <div style={{fontWeight:800,fontSize:15,color:T.dark}}>🕐 Historique Happy Hour</div>
+      <button onClick={load} title="Rafraîchir" style={{padding:"6px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600}}>↻</button>
+    </div>
+    <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:"4px 12px"}}>
+      {log===null&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Chargement...</div>}
+      {log&&log.length===0&&!error&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:20}}>Aucune activation/désactivation enregistrée pour l'instant.</div>}
+      {error&&<div style={{textAlign:"center",color:T.red,fontSize:13,padding:20}}>⚠️ {error}</div>}
+      {log&&log.map((l,idx)=>(
+        <div key={idx} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 4px",borderBottom:idx<log.length-1?`1px solid ${T.border}`:"none"}}>
+          <span style={{fontSize:18}}>{l.action==="Activé"?"🎉":"⏹"}</span>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13,fontWeight:700,color:l.action==="Activé"?"#FF9500":T.dark}}>{l.action}</div>
+            <div style={{fontSize:11,color:T.mid}}>{l.date} à {l.heure}{l.user?" • "+l.user:""}</div>
           </div>
-        ))}
-      </div>
-      <button onClick={onClose} style={{padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Fermer</button>
+        </div>
+      ))}
     </div>
   </div>);
 }
@@ -6192,7 +6187,9 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
 // ═══ ADMIN ═══
 function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,plats,setPlats,accompaniments,setAccompaniments,deposits,isManager,containers,setContainers}){
   const [tab,setTab]=useState("products");
-  const allTabs=[["products","🏷 Produits"],["plats","🍴 Plats"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"],["cartes","🍺 Cartes Boissons"]];
+  const allTabs=[["products","🏷 Produits"],["plats","🍴 Plats"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"],["cartes","🍺 Cartes Boissons"],["happyhour","🕐 Happy Hour"]];
+  // "happyhour" reste visible pour un manager (comme "cartes") — seuls cats/sites/users
+  // (réglages structurels) sont réservés à l'admin complet.
   const visibleTabs=isManager?allTabs.filter(([v])=>!["cats","sites","users"].includes(v)):allTabs;
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{display:"flex",background:T.card,borderBottom:`1px solid ${T.border}`,overflowX:"auto",flexShrink:0}}>
@@ -6208,6 +6205,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
       {tab==="plats"&&<PlatsAdmin products={products} plats={plats} setPlats={setPlats} caisseUrl={caisseUrl} portions={portions}/>}
       {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} plats={plats} setPlats={setPlats} caisseUrl={caisseUrl} portions={portions}/>}
       {tab==="cartes"&&<CardsAdmin boissonsUrl={boissonsUrl}/>}
+      {tab==="happyhour"&&<HappyHourAdmin caisseUrl={caisseUrl}/>}
       {!isManager&&tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
       {!isManager&&tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl} products={products} onSaveProducts={onSaveProd}/>}
       {!isManager&&tab==="users"&&<UsersAdmin users={users} onSave={onSaveUsers} caisseUrl={caisseUrl}/>}
