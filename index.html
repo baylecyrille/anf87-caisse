@@ -1120,6 +1120,27 @@ function App(){
       await apiWrite(caisseUrl,{action:"logHappyHour",action2:next?"on":"off",user:currentUser?.name||""});
     }
   };
+  // Regroupement des onglets de l'écran caisse : propre à chaque utilisateur connecté
+  // (comme l'ordre des produits), mais réglé depuis l'écran Admin (voir TabGroupsAdmin),
+  // réservé aux managers/admins — pas depuis la caisse elle-même. On le garde au niveau
+  // de App (et non de PosScreen) car AdminScreen doit aussi pouvoir le lire et l'écrire.
+  const tabGroupsKey=currentUser?"anf87_tab_groups_"+currentUser.id:"anf87_tab_groups";
+  const parseTabGroups=v=>{ try{const a=JSON.parse(v);return Array.isArray(a)?a:[];}catch(e){return [];} };
+  const [tabGroups,setTabGroups]=useState(()=>{
+    if(currentUser?.tabGroups)return parseTabGroups(currentUser.tabGroups);
+    return LS.get(tabGroupsKey)||[];
+  });
+  useEffect(()=>{
+    if(currentUser?.tabGroups)setTabGroups(parseTabGroups(currentUser.tabGroups));
+    else setTabGroups(LS.get(tabGroupsKey)||[]);
+  },[currentUser?.id]);
+  const saveTabGroups=(groups)=>{
+    setTabGroups(groups);
+    LS.set(tabGroupsKey,groups);
+    if(caisseUrl&&currentUser){
+      apiWrite(caisseUrl,{action:"saveTabGroups",userId:currentUser.id,groups:JSON.stringify(groups)});
+    }
+  };
   const site=sites.find(s=>s.id===siteId)||sites[0]||{id:"s1",name:"Buvette",color:T.red};
   // Sites "actifs" uniquement pour les écrans du quotidien (caisse, stock) — un site
   // archivé (manifestation terminée) reste consultable dans Admin et Rapports, mais
@@ -1706,13 +1727,14 @@ function App(){
           cartTotal={cartTotal} cartCount={cartCount} currentUser={currentUser}
           openPayment={step=>{setPaymentInitialStep(step||"select");setModal("payment");}} openScanner={()=>setModal("scanner")}
           openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
-          happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour} readyCombos={readyCombos}/>}
+          happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour} readyCombos={readyCombos} tabGroups={tabGroups}/>}
         {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos} plats={plats} readyPlats={readyPlats} setReadyPlats={setReadyPlats}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos} plats={plats} readyPlats={readyPlats} setReadyPlats={setReadyPlats} containers={containers} setContainers={setContainers}/>}
         {tab==="admin"&&(isAdmin||isManager)&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos} plats={plats} setPlats={setPlats}
-          accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits} isManager={isManager} containers={containers} setContainers={setContainers}/>}
+          accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits} isManager={isManager} containers={containers} setContainers={setContainers}
+          tabGroups={tabGroups} onSaveTabGroups={saveTabGroups}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})} currentUser={currentUser} setCU={setCU}
           sumupKey={sumupKey} sumupAppId={sumupAppId} setConfig={setConfig} setLoggingOut={setLoggingOut}/>}
@@ -1943,7 +1965,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl,rese
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,plats,readyPlats,addPlatToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve,happyHourActive,onToggleHappyHour,readyCombos}){
+function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,plats,readyPlats,addPlatToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve,happyHourActive,onToggleHappyHour,readyCombos,tabGroups}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   // Un smartphone en paysage est "large" (isLandscape=true) mais reste très BAS en
@@ -1956,36 +1978,14 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
   useEffect(()=>{const h=()=>setShortScreen(window.innerHeight<430);
     window.addEventListener("resize",h);window.addEventListener("orientationchange",()=>setTimeout(h,100));return()=>{window.removeEventListener("resize",h);window.removeEventListener("orientationchange",h);};},[]);
   // Onglets "de base" (un par catégorie réelle + Menus + Plats) — ce sur quoi les
-  // regroupements personnalisés (voir tabGroups plus bas) opèrent.
+  // regroupements personnalisés (voir tabGroups, reçu en prop) opèrent. La
+  // configuration de ces regroupements se fait dans Admin (réservé manager/admin),
+  // pas ici — l'écran caisse ne fait qu'appliquer le réglage déjà choisi.
   const baseCats=[...categories.map(c=>c.name),...(combos&&combos.length?["Menus"]:[]),...(plats&&plats.length?["Plats"]:[])];
   const [reorderMode,setReorderMode]=useState(false);
-  // Regroupement personnalisé des onglets de l'écran caisse (ex: fusionner "Plats",
-  // "Menus" et "Snacks" en un seul onglet "Repas") — propre à chaque utilisateur
-  // connecté, comme l'ordre des tuiles, et sauvegardé sur Google Sheets (colonne
-  // "GroupesOnglets" de la feuille Utilisateurs) pour suivre la personne partout.
-  // Format : [{name:"Repas",cats:["Plats","Menus","Snacks"]}, ...].
-  const tabGroupsKey=currentUser?"anf87_tab_groups_"+currentUser.id:"anf87_tab_groups";
-  const parseTabGroups=raw=>{ try{const g=JSON.parse(raw||"[]");return Array.isArray(g)?g:[];}catch{return[];} };
-  const [tabGroups,setTabGroupsState]=useState(()=>{
-    if(currentUser?.tabGroups)return parseTabGroups(currentUser.tabGroups);
-    return LS.get(tabGroupsKey)||[];
-  });
-  useEffect(()=>{
-    if(currentUser?.tabGroups)setTabGroupsState(parseTabGroups(currentUser.tabGroups));
-    else setTabGroupsState(LS.get(tabGroupsKey)||[]);
-  },[currentUser?.id]);
-  const [showTabGroups,setShowTabGroups]=useState(false);
-  const saveTabGroups=groups=>{
-    setTabGroupsState(groups);
-    LS.set(tabGroupsKey,groups);
-    setCat("Tout"); // évite un onglet sélectionné qui viendrait de disparaître dans un regroupement
-    if(caisseUrl&&currentUser){
-      apiWrite(caisseUrl,{action:"saveTabGroups",userId:currentUser.id,groups:JSON.stringify(groups)});
-    }
-  };
   // Un onglet visible = un groupe personnalisé (affiché une seule fois, à la position
   // de son premier membre) OU, à défaut, la catégorie/Menus/Plats non regroupés.
-  const groupContaining=bc=>tabGroups.find(g=>(g.cats||[]).includes(bc));
+  const groupContaining=bc=>(tabGroups||[]).find(g=>(g.cats||[]).includes(bc));
   const tabLabels=[];
   { const seen=new Set();
     baseCats.forEach(bc=>{ const g=groupContaining(bc); const label=g?g.name:bc;
@@ -1993,7 +1993,7 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
   const cats=["Tout",...tabLabels];
   // Un onglet sélectionné qui est en fait un groupe se résout vers la liste des
   // catégories/"Menus"/"Plats" qu'il regroupe, pour le filtrage ci-dessous.
-  const activeGroup=cat!=="Tout"?tabGroups.find(g=>g.name===cat):null;
+  const activeGroup=cat!=="Tout"?(tabGroups||[]).find(g=>g.name===cat):null;
   const activeCatsForFilter=activeGroup?(activeGroup.cats||[]):[cat];
   // L'ordre des produits est propre à chaque utilisateur connecté, et sauvegardé sur
   // Google Sheets (colonne "OrdreProduits" de la feuille Utilisateurs) pour qu'il
@@ -2077,12 +2077,6 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
               background:reorderMode?T.red:T.bg,color:reorderMode?"white":T.dark,border:`1px solid ${reorderMode?T.red:T.border}`,
               borderRadius:"50%",fontSize:15,cursor:"pointer"}}>
             {reorderMode?"✓":"↕"}
-          </button>
-          <button onClick={()=>setShowTabGroups(true)} title="Regrouper des onglets ensemble (ex: Plats+Menus+Snacks)"
-            style={{flexShrink:0,width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",
-              background:tabGroups.length>0?"#5856D6":T.bg,color:tabGroups.length>0?"white":T.dark,border:`1px solid ${tabGroups.length>0?"#5856D6":T.border}`,
-              borderRadius:"50%",fontSize:15,cursor:"pointer"}}>
-            ⚏
           </button>
           {hiddenFreeCount>0&&<button onClick={()=>setShowFree(s=>!s)} title={showFree?"Masquer les produits à 0€":"Afficher les produits à 0€ (accompagnements...)"}
             style={{flexShrink:0,position:"relative",width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",
@@ -2448,7 +2442,6 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         </div>
       </div>
     </div>}
-    {showTabGroups&&<TabGroupsModal baseCats={baseCats} tabGroups={tabGroups} onSave={saveTabGroups} onClose={()=>setShowTabGroups(false)}/>}
   </div>);
 }
 // ═══ REGROUPEMENT D'ONGLETS (écran caisse) ═══
@@ -2457,9 +2450,21 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
 // Plats+Menus+Snacks, ou "Boissons" pour Boissons+Bières. Chaque onglet de base ne
 // peut appartenir qu'à un seul groupe à la fois, pour éviter toute ambiguïté sur le
 // contenu réellement affiché en cliquant dessus.
-function TabGroupsModal({baseCats,tabGroups,onSave,onClose}){
-  const [groups,setGroups]=useState(()=>tabGroups.map(g=>({name:g.name,cats:[...(g.cats||[])]})));
+// ═══ REGROUPEMENT D'ONGLETS (onglet Admin, visible manager + admin) ═══
+// Anciennement accessible directement depuis l'écran caisse (bouton ⚏) — déplacé ici
+// pour que ce ne soit plus un simple caissier qui puisse modifier l'affichage en plein
+// service, mais seulement l'équipe d'encadrement. Le réglage reste propre au compte
+// connecté (comme l'ordre des tuiles) et s'applique automatiquement à l'écran caisse
+// de cette personne, sur tous ses appareils.
+function TabGroupsAdmin({categories,combos,plats,tabGroups,onSave}){
+  const baseCats=[...categories.map(c=>c.name),...(combos&&combos.length?["Menus"]:[]),...(plats&&plats.length?["Plats"]:[])];
+  const [groups,setGroups]=useState(()=>(tabGroups||[]).map(g=>({name:g.name,cats:[...(g.cats||[])]})));
   const [newName,setNewName]=useState("");
+  const [saved,setSaved]=useState(false);
+  // Si le compte connecté change (ou revient d'ailleurs) pendant que cet onglet est
+  // ouvert, on repart bien du dernier réglage enregistré plutôt que d'un brouillon
+  // d'une autre session.
+  useEffect(()=>{ setGroups((tabGroups||[]).map(g=>({name:g.name,cats:[...(g.cats||[])]}))); },[tabGroups]);
   const usedElsewhere=(bc,exceptIdx)=>groups.some((g,i)=>i!==exceptIdx&&g.cats.includes(bc));
   const addGroup=()=>{
     if(!newName.trim())return;
@@ -2476,50 +2481,47 @@ function TabGroupsModal({baseCats,tabGroups,onSave,onClose}){
     // Un groupe sans au moins 2 onglets ne sert à rien (ça ne "regroupe" rien) —
     // on l'ignore silencieusement plutôt que de bloquer l'enregistrement pour ça.
     onSave(groups.filter(g=>g.name.trim()&&g.cats.length>=2));
-    onClose();
+    setSaved(true);setTimeout(()=>setSaved(false),2000);
   };
-  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}>
-    <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:440,maxHeight:"88vh",overflowY:"auto"}}>
-      <div style={{fontWeight:800,fontSize:17,marginBottom:6}}>⚏ Regrouper des onglets</div>
-      <div style={{fontSize:12,color:T.mid,marginBottom:14}}>
-        Fusionnez plusieurs onglets de l'écran caisse en un seul (ex: "Repas" pour Plats + Menus + Snacks). Réglage propre à votre compte, visible sur tous vos appareils.
-      </div>
-      {groups.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:"10px 0 16px"}}>Aucun regroupement pour l'instant — tous les onglets s'affichent séparément.</div>}
-      {groups.map((g,idx)=>(
-        <div key={idx} style={{background:T.bg,borderRadius:10,border:`1px solid ${T.border}`,padding:10,marginBottom:10}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-            <input value={g.name} onChange={e=>setGroups(prev=>prev.map((gg,i)=>i===idx?{...gg,name:e.target.value}:gg))}
-              placeholder="Nom de l'onglet (ex: Repas)"
-              style={{flex:1,padding:"7px 9px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:13,fontWeight:600}}/>
-            <button onClick={()=>removeGroup(idx)} style={{padding:"6px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
-          </div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-            {baseCats.map(bc=>{
-              const checked=g.cats.includes(bc);
-              const disabled=!checked&&usedElsewhere(bc,idx);
-              return(<button key={bc} onClick={()=>!disabled&&toggleMember(idx,bc)} disabled={disabled}
-                title={disabled?"Déjà dans un autre groupe":""}
-                style={{padding:"5px 10px",borderRadius:14,fontSize:11,fontWeight:600,cursor:disabled?"not-allowed":"pointer",
-                  background:checked?"#5856D6":"white",color:checked?"white":disabled?T.mid:T.dark,
-                  border:`1px solid ${checked?"#5856D6":T.border}`,opacity:disabled?0.5:1}}>
-                {checked?"✓ ":""}{bc}
-              </button>);
-            })}
-          </div>
-          {g.cats.length===1&&<div style={{fontSize:10,color:T.orange,marginTop:6}}>⚠️ Choisissez au moins un 2e onglet, sinon ce groupe sera ignoré.</div>}
-        </div>
-      ))}
-      <div style={{display:"flex",gap:8,marginBottom:16}}>
-        <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="+ Nouveau groupe (ex: Boissons+Bières)"
-          onKeyDown={e=>e.key==="Enter"&&addGroup()}
-          style={{flex:1,padding:"9px 11px",border:`1px dashed ${T.border}`,borderRadius:8,fontSize:13}}/>
-        <button onClick={addGroup} style={{padding:"9px 14px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Ajouter</button>
-      </div>
-      <div style={{display:"flex",gap:8}}>
-        <button onClick={onClose} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
-        <button onClick={save} style={{flex:2,padding:"11px",background:"#5856D6",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>💾 Enregistrer</button>
-      </div>
+  return(<div style={{height:"100%",overflowY:"auto",padding:"12px 14px"}}>
+    <div style={{fontWeight:800,fontSize:15,color:T.dark,marginBottom:6}}>⚏ Regrouper les onglets de l'écran caisse</div>
+    <div style={{fontSize:12,color:T.mid,marginBottom:14}}>
+      Fusionnez plusieurs onglets (catégories, Menus, Plats) en un seul — ex: "Repas" pour Plats + Menus + Snacks, ou "Boissons" pour Boissons + Bières. Réglage propre au compte connecté ici, visible sur tous ses appareils.
     </div>
+    {groups.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:13,padding:"10px 0 16px"}}>Aucun regroupement pour l'instant — tous les onglets s'affichent séparément.</div>}
+    {groups.map((g,idx)=>(
+      <div key={idx} style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:10,marginBottom:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+          <input value={g.name} onChange={e=>setGroups(prev=>prev.map((gg,i)=>i===idx?{...gg,name:e.target.value}:gg))}
+            placeholder="Nom de l'onglet (ex: Repas)"
+            style={{flex:1,padding:"7px 9px",border:`1px solid ${T.border}`,borderRadius:7,fontSize:13,fontWeight:600}}/>
+          <button onClick={()=>removeGroup(idx)} style={{padding:"6px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:"pointer",color:T.red}}>🗑</button>
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+          {baseCats.map(bc=>{
+            const checked=g.cats.includes(bc);
+            const disabled=!checked&&usedElsewhere(bc,idx);
+            return(<button key={bc} onClick={()=>!disabled&&toggleMember(idx,bc)} disabled={disabled}
+              title={disabled?"Déjà dans un autre groupe":""}
+              style={{padding:"5px 10px",borderRadius:14,fontSize:11,fontWeight:600,cursor:disabled?"not-allowed":"pointer",
+                background:checked?"#5856D6":"white",color:checked?"white":disabled?T.mid:T.dark,
+                border:`1px solid ${checked?"#5856D6":T.border}`,opacity:disabled?0.5:1}}>
+              {checked?"✓ ":""}{bc}
+            </button>);
+          })}
+        </div>
+        {g.cats.length===1&&<div style={{fontSize:10,color:T.orange,marginTop:6}}>⚠️ Choisissez au moins un 2e onglet, sinon ce groupe sera ignoré à l'enregistrement.</div>}
+      </div>
+    ))}
+    <div style={{display:"flex",gap:8,marginBottom:16}}>
+      <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="+ Nouveau groupe (ex: Boissons+Bières)"
+        onKeyDown={e=>e.key==="Enter"&&addGroup()}
+        style={{flex:1,padding:"9px 11px",border:`1px dashed ${T.border}`,borderRadius:8,fontSize:13}}/>
+      <button onClick={addGroup} style={{padding:"9px 14px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Ajouter</button>
+    </div>
+    <button onClick={save} style={{width:"100%",padding:"12px",background:"#5856D6",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>
+      {saved?"✓ Enregistré":"💾 Enregistrer"}
+    </button>
   </div>);
 }
 
@@ -6198,11 +6200,11 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
 }
 
 // ═══ ADMIN ═══
-function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,plats,setPlats,accompaniments,setAccompaniments,deposits,isManager,containers,setContainers}){
+function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,plats,setPlats,accompaniments,setAccompaniments,deposits,isManager,containers,setContainers,tabGroups,onSaveTabGroups}){
   const [tab,setTab]=useState("products");
-  const allTabs=[["products","🏷 Produits"],["plats","🍴 Plats"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"],["cartes","🍺 Cartes Boissons"],["happyhour","🕐 Happy Hour"]];
-  // "happyhour" reste visible pour un manager (comme "cartes") — seuls cats/sites/users
-  // (réglages structurels) sont réservés à l'admin complet.
+  const allTabs=[["products","🏷 Produits"],["plats","🍴 Plats"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"],["cartes","🍺 Cartes Boissons"],["happyhour","🕐 Happy Hour"],["tabgroups","⚏ Onglets caisse"]];
+  // "happyhour" et "tabgroups" restent visibles pour un manager (comme "cartes") — seuls
+  // cats/sites/users (réglages structurels) sont réservés à l'admin complet.
   const visibleTabs=isManager?allTabs.filter(([v])=>!["cats","sites","users"].includes(v)):allTabs;
   return(<div style={{height:"100%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
     <div style={{display:"flex",background:T.card,borderBottom:`1px solid ${T.border}`,overflowX:"auto",flexShrink:0}}>
@@ -6219,6 +6221,7 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
       {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} plats={plats} setPlats={setPlats} caisseUrl={caisseUrl} portions={portions}/>}
       {tab==="cartes"&&<CardsAdmin boissonsUrl={boissonsUrl}/>}
       {tab==="happyhour"&&<HappyHourAdmin caisseUrl={caisseUrl}/>}
+      {tab==="tabgroups"&&<TabGroupsAdmin categories={categories} combos={combos} plats={plats} tabGroups={tabGroups} onSave={onSaveTabGroups}/>}
       {!isManager&&tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
       {!isManager&&tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl} products={products} onSaveProducts={onSaveProd}/>}
       {!isManager&&tab==="users"&&<UsersAdmin users={users} onSave={onSaveUsers} caisseUrl={caisseUrl}/>}
