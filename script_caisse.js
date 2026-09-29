@@ -238,13 +238,72 @@ function numQty(v){
   return isNaN(n)?0:n;
 }
 
+// ═══ DÉTECTION DE CONFLIT (modification simultanée par 2 utilisateurs) ═══
+// Chaque fiche éditable depuis l'écran Admin (Produits, Menus, Plats, Catégories,
+// Sites, Utilisateurs, Réglages) porte 3 colonnes cachées en fin de ligne : Version
+// (horodatage de sa dernière modification, jamais affiché tel quel), ModifiePar (qui)
+// et ModifieLe (quand, lisible). Quand l'appli enregistre une modification, elle
+// renvoie la version qu'elle avait sous les yeux au moment d'ouvrir l'écran d'édition
+// (baseVersion) : si elle ne correspond plus à la version actuellement enregistrée,
+// c'est que quelqu'un d'autre a modifié cette même fiche entre-temps — on refuse
+// d'écraser en silence et on renvoie qui/quand ainsi que la fiche à jour, pour que
+// l'appli puisse montrer clairement ce qui a changé et laisser la personne choisir.
+// Un baseVersion absent (ancien client, ou action non liée à un formulaire d'édition)
+// désactive la vérification pour cet appel précis.
+function ensureCol(sh,col,header){
+  if(!sh.getRange(1,col).getValue()){ sh.getRange(1,col).setValue(header).setFontWeight("bold"); }
+}
+function ensureVersionCols(sh,startCol){
+  ensureCol(sh,startCol,"Version");
+  ensureCol(sh,startCol+1,"ModifiePar");
+  ensureCol(sh,startCol+2,"ModifieLe");
+}
+// Colonnes de version par feuille — volontairement loin des colonnes de données
+// utiles (en particulier pour Produits, dont les colonnes de stock par site peuvent
+// grandir), pour ne jamais entrer en collision avec elles.
+function ensureAllVersionCols(ss){
+  var prods=ss.getSheetByName("Produits"); if(prods)ensureVersionCols(prods,40);
+  var combos=ss.getSheetByName("Combos"); if(combos)ensureVersionCols(combos,6);
+  var plats=ss.getSheetByName("Plats"); if(plats)ensureVersionCols(plats,6);
+  var cats=ss.getSheetByName("Categories"); if(cats)ensureVersionCols(cats,3);
+  var sites=ss.getSheetByName("Sites"); if(sites)ensureVersionCols(sites,7);
+  var users=ss.getSheetByName("Utilisateurs"); if(users)ensureVersionCols(users,8);
+  var cfg=ss.getSheetByName("Config"); if(cfg)ensureVersionCols(cfg,3);
+}
+// Renvoie {modifiedBy,modifiedAt} si un conflit est détecté sur la ligne "row" (1-based,
+// en-tête comprise), null sinon (pas de conflit, ou pas de vérification possible/demandée).
+function versionConflict(sh,row,versionCol,baseVersion){
+  if(baseVersion===undefined||baseVersion===null)return null;
+  var curVersion=(sh.getRange(row,versionCol).getValue()||"").toString();
+  if(baseVersion.toString()===curVersion)return null;
+  return {
+    modifiedBy:(sh.getRange(row,versionCol+1).getValue()||"").toString(),
+    modifiedAt:(sh.getRange(row,versionCol+2).getValue()||"").toString()
+  };
+}
+// Enregistre une nouvelle version (horodatage en texte, pour ne jamais subir la même
+// conversion numérique parasite que le PIN/code-barres) + qui/quand, sur la ligne
+// qui vient d'être écrite. Renvoyée au client pour servir de futur baseVersion.
+function stampVersion(sh,row,versionCol,modifiedBy){
+  var version=Date.now().toString();
+  var tz=Session.getScriptTimeZone();
+  sh.getRange(row,versionCol).setNumberFormat("@").setValue(version);
+  sh.getRange(row,versionCol+1).setValue(modifiedBy||"");
+  sh.getRange(row,versionCol+2).setValue(Utilities.formatDate(new Date(),tz,"dd/MM HH:mm"));
+  return version;
+}
+
 function getAllData(){
   var ss=SpreadsheetApp.getActiveSpreadsheet();
+  // Garantit que les colonnes de version existent AVANT toute lecture (premier appel
+  // après mise à jour de l'appli, ou tout premier lancement) — sans ça, une lecture
+  // pourrait tomber sur une feuille pas encore assez large pour ces colonnes.
+  ensureAllVersionCols(ss);
   return {ok:true, products:getProductsData(ss), sites:getSitesData(ss),
     categories:getCategoriesData(ss), users:getUsersData(ss), containers:getContainersData(ss),
     portions:getPortionsData(ss), combos:getCombosData(ss), accompaniments:getAccompanimentsData(ss),
     reserve:getReserveData(ss), deposits:getDepositsData(ss), readyCombos:getReadyCombosData(ss),
-    plats:getPlatsData(ss), readyPlats:getReadyPlatsData(ss), config:getConfig(ss), ts:Date.now()};
+    plats:getPlatsData(ss), readyPlats:getReadyPlatsData(ss), config:getConfig(ss), configMeta:getConfigMeta(ss), ts:Date.now()};
 }
 
 // Réglages globaux du club (clé/valeur) — ex: clé Affiliate SumUp, App ID SumUp.
@@ -256,22 +315,38 @@ function getConfig(ss){
   data.forEach(function(r){ if(r[0])cfg[r[0].toString()]=r[1]||""; });
   return cfg;
 }
+// Version/ModifiePar/ModifieLe par CLÉ (une ligne = un réglage), séparé de getConfig()
+// (qui reste une simple map clé->valeur, utilisée partout dans l'appli) pour ne rien
+// changer à sa forme habituelle — seul l'écran Réglages (SumUp) a besoin de ce détail
+// pour détecter un conflit d'édition.
+function getConfigMeta(ss){
+  var sh=ss.getSheetByName("Config"); if(!sh||sh.getLastRow()<=1)return {};
+  var data=sh.getRange(2,1,sh.getLastRow()-1,5).getValues(), meta={};
+  data.forEach(function(r){ if(r[0])meta[r[0].toString()]={version:(r[2]||"").toString(),modifiedBy:(r[3]||"").toString(),modifiedAt:(r[4]||"").toString()}; });
+  return meta;
+}
 function saveConfig(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Config"), p=e.parameter;
   if(sh.getLastRow()<=1){
     sh.getRange(1,1,1,2).setValues([["Clé","Valeur"]]);
     sh.getRange(1,1,1,2).setFontWeight("bold"); sh.setFrozenRows(1);
   }
+  ensureVersionCols(sh,3);
   if(!p.key)return{ok:false,error:"Clé manquante"};
   if(sh.getLastRow()>1){
     var keys=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<keys.length;i++){if(keys[i][0].toString()===p.key.toString()){
+      var conflict=versionConflict(sh,i+2,3,p.baseVersion);
+      if(conflict)return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,
+        current:{key:p.key,value:sh.getRange(i+2,2).getValue()||""}};
       sh.getRange(i+2,2).setValue(p.value||"");
-      return{ok:true};
+      var newVersion=stampVersion(sh,i+2,3,p.modifiedBy);
+      return{ok:true,version:newVersion};
     }}
   }
   sh.appendRow([p.key,p.value||""]);
-  return{ok:true};
+  var newVersion2=stampVersion(sh,sh.getLastRow(),3,p.modifiedBy);
+  return{ok:true,version:newVersion2};
 }
 // Historique des activations/désactivations du Happy Hour — une ligne par bascule,
 // pour garder une trace de quand ça a été activé/désactivé et par qui.
@@ -530,7 +605,7 @@ function uploadPortionPhotoChunk(e){
 
 function getCombosData(ss){
   var sh=ss.getSheetByName("Combos"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0]).map(r=>{
+  return sh.getRange(2,1,sh.getLastRow()-1,8).getValues().filter(r=>r[0]).map(r=>{
     var items=(r[3]||"").toString().split(",").map(function(pair){
       var parts=pair.split(":");
       // 4e partie optionnelle : autres produits interchangeables pour cet
@@ -552,7 +627,8 @@ function getCombosData(ss){
       }
       return{type:"product",productId:refId,qty:numQty(parts[1])||1,portionId:(parts[2]||"").trim(),alternates:alternates};
     }).filter(function(it){return it.type==="combo"?it.comboId:(it.type==="plat"?it.platId:it.productId);});
-    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||""};
+    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||"",
+      version:(r[5]||"").toString(),modifiedBy:(r[6]||"").toString(),modifiedAt:(r[7]||"").toString()};
   });
 }
 
@@ -563,6 +639,7 @@ function saveCombo(e){
     sh.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
     sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
   }
+  ensureVersionCols(sh,6);
   var photo=(p.photo||"").toString().trim();
   if(photo==="__CHUNKED__"){
     var total=+p.photoChunks||0;
@@ -595,15 +672,22 @@ function saveCombo(e){
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      var conflict=versionConflict(sh,i+2,6,p.baseVersion);
+      if(conflict){
+        var cur=getCombosData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+      }
       if(photo==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // photo inchangée, non renvoyée
       if(row[4]==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // garde-fou : jamais la valeur littérale
       sh.getRange(i+2,1,1,5).setValues([row]);
-      return{ok:true,action:"updated"};
+      var newVersion=stampVersion(sh,i+2,6,p.modifiedBy);
+      return{ok:true,action:"updated",version:newVersion};
     }}
   }
   if(photo==="__KEEP__")row[4]=""; // création : rien à garder
   sh.appendRow(row);
-  return{ok:true,action:"created"};
+  var newVersion2=stampVersion(sh,sh.getLastRow(),6,p.modifiedBy);
+  return{ok:true,action:"created",version:newVersion2};
 }
 function deleteCombo(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Combos"), id=e.parameter.id;
@@ -635,13 +719,14 @@ function uploadSaleItemsChunk(e){
 // référence jamais un autre Plat ni un Menu — uniquement des produits bruts) ──
 function getPlatsData(ss){
   var sh=ss.getSheetByName("Plats"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0]).map(r=>{
+  return sh.getRange(2,1,sh.getLastRow()-1,8).getValues().filter(r=>r[0]).map(r=>{
     var items=(r[3]||"").toString().split(",").map(function(pair){
       var parts=pair.split(":");
       var alternates=(parts[3]||"").split("|").map(function(a){return a.trim();}).filter(Boolean);
       return{type:"product",productId:(parts[0]||"").trim(),qty:numQty(parts[1])||1,portionId:(parts[2]||"").trim(),alternates:alternates};
     }).filter(function(it){return it.productId;});
-    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||""};
+    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||"",
+      version:(r[5]||"").toString(),modifiedBy:(r[6]||"").toString(),modifiedAt:(r[7]||"").toString()};
   });
 }
 function savePlat(e){
@@ -650,6 +735,7 @@ function savePlat(e){
     sh.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
     sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
   }
+  ensureVersionCols(sh,6);
   var photo=(p.photo||"").toString().trim();
   if(photo==="__CHUNKED__"){
     var total=+p.photoChunks||0;
@@ -678,15 +764,22 @@ function savePlat(e){
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      var conflict=versionConflict(sh,i+2,6,p.baseVersion);
+      if(conflict){
+        var cur=getPlatsData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+      }
       if(photo==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue();
       if(row[4]==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // garde-fou : jamais la valeur littérale
       sh.getRange(i+2,1,1,5).setValues([row]);
-      return{ok:true,action:"updated"};
+      var newVersion=stampVersion(sh,i+2,6,p.modifiedBy);
+      return{ok:true,action:"updated",version:newVersion};
     }}
   }
   if(photo==="__KEEP__")row[4]="";
   sh.appendRow(row);
-  return{ok:true,action:"created"};
+  var newVersion2=stampVersion(sh,sh.getLastRow(),6,p.modifiedBy);
+  return{ok:true,action:"created",version:newVersion2};
 }
 function deletePlat(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Plats"), id=e.parameter.id;
@@ -807,7 +900,11 @@ function getProductsData(ss){
   // Colonne AD (30) : "AfficherBarreContenants" (vide/TRUE = affiché par défaut dans
   // la barre de contenants en haut de la Caisse ; FALSE = exclu volontairement).
   var CONTAINERS_COL=25, COLOR_COL=26, RETURNFOR_COL=27, HAPPYPRICE_COL=28, SITESVENDUS_COL=29, SHOWBAR_COL=30;
-  var maxCol=Math.max(SHOWBAR_COL, sites.length>4 ? 18+(sites.length-4)-1 : 17);
+  // Colonnes 40/41/42 (AN/AO/AP) : Version/ModifiePar/ModifieLe (voir plus haut,
+  // ensureAllVersionCols) — volontairement très loin même des colonnes de stock
+  // au-delà du 4e site, pour ne jamais risquer de collision avec elles.
+  var VERSION_COL=40;
+  var maxCol=Math.max(VERSION_COL+2, sites.length>4 ? 18+(sites.length-4)-1 : 17);
   return sh.getRange(2,1,sh.getLastRow()-1,maxCol).getValues()
     .filter(r=>r[0]).map(r=>{
       var stock={};
@@ -828,26 +925,29 @@ function getProductsData(ss){
         returnFor:(r[RETURNFOR_COL-1]||"").toString(),
         happyPrice:+r[HAPPYPRICE_COL-1]||0,
         siteAvailability:(r[SITESVENDUS_COL-1]||"").toString(),
-        showInContainerBar:r[SHOWBAR_COL-1]!==false&&r[SHOWBAR_COL-1]!=="FALSE"&&r[SHOWBAR_COL-1]!=="false"
+        showInContainerBar:r[SHOWBAR_COL-1]!==false&&r[SHOWBAR_COL-1]!=="FALSE"&&r[SHOWBAR_COL-1]!=="false",
+        version:(r[VERSION_COL-1]||"").toString(),modifiedBy:(r[VERSION_COL]||"").toString(),modifiedAt:(r[VERSION_COL+1]||"").toString()
       };
     });
 }
 function getSitesData(ss){
   var sh=ss.getSheetByName("Sites"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,6).getValues().filter(r=>r[0])
+  return sh.getRange(2,1,sh.getLastRow()-1,9).getValues().filter(r=>r[0])
     .map(r=>({id:r[0],name:r[1],village:r[2],color:r[3],
       active:r[4]!==false&&r[4]!=="FALSE"&&r[4]!=="false",
-      isSalesPoint:r[5]!==false&&r[5]!=="FALSE"&&r[5]!=="false"}));
+      isSalesPoint:r[5]!==false&&r[5]!=="FALSE"&&r[5]!=="false",
+      version:(r[6]||"").toString(),modifiedBy:(r[7]||"").toString(),modifiedAt:(r[8]||"").toString()}));
 }
 function getCategoriesData(ss){
   var sh=ss.getSheetByName("Categories"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,2).getValues().filter(r=>r[0])
-    .map(r=>({id:r[0],name:r[1]}));
+  return sh.getRange(2,1,sh.getLastRow()-1,5).getValues().filter(r=>r[0])
+    .map(r=>({id:r[0],name:r[1],version:(r[2]||"").toString(),modifiedBy:(r[3]||"").toString(),modifiedAt:(r[4]||"").toString()}));
 }
 function getUsersData(ss){
   var sh=ss.getSheetByName("Utilisateurs"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,7).getValues().filter(r=>r[0])
-    .map(r=>({id:r[0],name:r[1],pin:r[2].toString(),role:r[3],productOrder:(r[4]||"").toString(),cameraPref:(r[5]||"").toString(),tabGroups:(r[6]||"").toString()}));
+  return sh.getRange(2,1,sh.getLastRow()-1,10).getValues().filter(r=>r[0])
+    .map(r=>({id:r[0],name:r[1],pin:r[2].toString(),role:r[3],productOrder:(r[4]||"").toString(),cameraPref:(r[5]||"").toString(),tabGroups:(r[6]||"").toString(),
+      version:(r[7]||"").toString(),modifiedBy:(r[8]||"").toString(),modifiedAt:(r[9]||"").toString()}));
 }
 // Sauvegarde l'ordre personnalisé des produits sur l'écran caisse pour un utilisateur
 // donné (colonne E "OrdreProduits" de la feuille Utilisateurs) — ne touche à rien
@@ -1001,6 +1101,7 @@ function adjustContainer(e){
 
 function saveProduct(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), p=e.parameter;
+  ensureVersionCols(sh,40);
   // .trim() en sécurité : un espace ou un caractère invisible ajouté quelque part en
   // route (encodage d'URL, copier-coller...) ferait échouer une comparaison stricte
   // avec "__KEEP__" sans que ce soit visible autrement.
@@ -1030,6 +1131,11 @@ function saveProduct(e){
   if(sh.getLastRow()>1){
     var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      var conflict=versionConflict(sh,i+2,40,p.baseVersion);
+      if(conflict){
+        var cur=getProductsData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+      }
       // "__KEEP__" : la photo n'a pas changé côté appli, on ne l'a donc pas renvoyée
       // (gain de temps important) — on garde simplement celle déjà enregistrée.
       var finalPhoto = photo==="__KEEP__" ? sh.getRange(i+2,6).getValue() : photo;
@@ -1053,7 +1159,8 @@ function saveProduct(e){
       sh.getRange(i+2,28).setValue(happyPrice);// AB = Prix Happy Hour
       sh.getRange(i+2,29).setValue(siteAvailability);// AC = Sites où le produit est vendu (vide = tous)
       sh.getRange(i+2,30).setValue(showInContainerBar);// AD = Affiché dans la barre de contenants (Caisse)
-      return{ok:true,action:"updated"};
+      var newVersion=stampVersion(sh,i+2,40,p.modifiedBy);
+      return{ok:true,action:"updated",version:newVersion};
     }}
   }
   // Création d'un nouveau produit : "__KEEP__" n'a pas de sens ici (rien à garder), on
@@ -1081,7 +1188,8 @@ function saveProduct(e){
   row[29]=showInContainerBar;         // colonne 30 (AD)
   sh.appendRow(row);
   sh.getRange(sh.getLastRow(),7).setNumberFormat("@"); // Codebarres en texte, même raison que ci-dessus
-  return{ok:true,action:"created"};
+  var newVersion2=stampVersion(sh,sh.getLastRow(),40,p.modifiedBy);
+  return{ok:true,action:"created",version:newVersion2};
 }
 // Reçoit un morceau de photo (base64) et le stocke temporairement (10 min) en attendant
 // que tous les morceaux soient arrivés ; saveProduct les réassemble ensuite via photoChunks.
@@ -1099,12 +1207,24 @@ function deleteProduct(e){
 }
 function saveSite(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Sites"), p=e.parameter;
+  ensureVersionCols(sh,7);
   var active=p.active===undefined?true:(p.active==="true"||p.active===true);
   var isSalesPoint=p.isSalesPoint===undefined?true:(p.isSalesPoint==="true"||p.isSalesPoint===true);
   var row=[p.id,p.name,p.village||"",p.color||"#CC0000",active,isSalesPoint];
   if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){sh.getRange(i+2,1,1,6).setValues([row]);return{ok:true,action:"updated"};}}}
-  sh.appendRow(row); return{ok:true,action:"created"};
+    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      var conflict=versionConflict(sh,i+2,7,p.baseVersion);
+      if(conflict){
+        var cur=getSitesData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+      }
+      sh.getRange(i+2,1,1,6).setValues([row]);
+      var newVersion=stampVersion(sh,i+2,7,p.modifiedBy);
+      return{ok:true,action:"updated",version:newVersion};
+    }}}
+  sh.appendRow(row);
+  var newVersion2=stampVersion(sh,sh.getLastRow(),7,p.modifiedBy);
+  return{ok:true,action:"created",version:newVersion2};
 }
 function deleteSite(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Sites"), id=e.parameter.id;
@@ -1114,10 +1234,22 @@ function deleteSite(e){
 }
 function saveCategory(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Categories"), p=e.parameter;
+  ensureVersionCols(sh,3);
   var row=[p.id,p.name];
   if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){sh.getRange(i+2,1,1,2).setValues([row]);return{ok:true,action:"updated"};}}}
-  sh.appendRow(row); return{ok:true,action:"created"};
+    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      var conflict=versionConflict(sh,i+2,3,p.baseVersion);
+      if(conflict){
+        var cur=getCategoriesData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+      }
+      sh.getRange(i+2,1,1,2).setValues([row]);
+      var newVersion=stampVersion(sh,i+2,3,p.modifiedBy);
+      return{ok:true,action:"updated",version:newVersion};
+    }}}
+  sh.appendRow(row);
+  var newVersion2=stampVersion(sh,sh.getLastRow(),3,p.modifiedBy);
+  return{ok:true,action:"created",version:newVersion2};
 }
 function deleteCategory(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Categories"), id=e.parameter.id;
@@ -1127,6 +1259,13 @@ function deleteCategory(e){
 }
 function saveUser(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), p=e.parameter;
+  // Version/ModifiePar/ModifieLe (colonnes 8-10) ne concernent QUE cette fonction
+  // (identité : nom/PIN/rôle) — surtout PAS saveProductOrder/saveCameraPref/
+  // saveTabGroups, qui sont des réglages personnels sauvegardés très fréquemment par
+  // le titulaire du compte lui-même (glisser une tuile, changer de caméra...) et ne
+  // doivent jamais déclencher un faux conflit sur la fiche d'un utilisateur quand un
+  // admin modifie son nom/PIN/rôle au même moment.
+  ensureVersionCols(sh,8);
   // Le PIN doit être stocké en TEXTE, jamais en nombre : sinon Google Sheets
   // l'interprète comme un nombre à l'écriture et perd un éventuel zéro initial
   // (ex: "0123" devient 123). Le format de la cellule doit être forcé en texte
@@ -1136,14 +1275,21 @@ function saveUser(e){
   var row=[p.id,p.name,pin,p.role];
   if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
     for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
+      var conflict=versionConflict(sh,i+2,8,p.baseVersion);
+      if(conflict){
+        var cur=getUsersData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+      }
       sh.getRange(i+2,3).setNumberFormat("@");
       sh.getRange(i+2,1,1,4).setValues([row]);
-      return{ok:true,action:"updated"};
+      var newVersion=stampVersion(sh,i+2,8,p.modifiedBy);
+      return{ok:true,action:"updated",version:newVersion};
     }}}
   var newRow=sh.getLastRow()+1;
   sh.getRange(newRow,3).setNumberFormat("@");
   sh.appendRow(row);
-  return{ok:true,action:"created"};
+  var newVersion2=stampVersion(sh,newRow,8,p.modifiedBy);
+  return{ok:true,action:"created",version:newVersion2};
 }
 function deleteUser(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), id=e.parameter.id;

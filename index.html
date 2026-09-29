@@ -503,6 +503,85 @@ function ModalHost(){
   </div>);
 }
 
+// ═══ NOTIFICATIONS DISCRÈTES (toasts) ═══
+// Pour les infos qui ne nécessitent pas d'interrompre l'utilisateur avec un clic sur
+// "OK" (ex: "modification mise en attente hors-ligne") — même principe que
+// customAlert/ModalHost ci-dessus, mais s'efface tout seul après quelques secondes.
+let _toastListener=null;
+function showToast(message){ if(_toastListener)_toastListener(message); }
+function ToastHost(){
+  const [toasts,setToasts]=useState([]);
+  useEffect(()=>{
+    _toastListener=message=>{
+      const id=Math.random().toString(36).slice(2);
+      setToasts(t=>[...t,{id,message}]);
+      setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),4000);
+    };
+    return()=>{_toastListener=null;};
+  },[]);
+  if(!toasts.length)return null;
+  return(<div style={{position:"fixed",left:0,right:0,bottom:14,zIndex:9998,display:"flex",flexDirection:"column",alignItems:"center",gap:8,pointerEvents:"none",padding:"0 14px"}}>
+    {toasts.map(t=>(
+      <div key={t.id} style={{background:"rgba(20,20,20,0.92)",color:"white",padding:"10px 16px",borderRadius:10,fontSize:12.5,fontWeight:600,
+        maxWidth:420,textAlign:"center",boxShadow:"0 4px 16px rgba(0,0,0,0.3)"}}>
+        {t.message}
+      </div>
+    ))}
+  </div>);
+}
+
+// ═══ CONFLIT D'ÉDITION (voir versionConflict côté serveur) ═══
+// Compare la fiche telle qu'elle était quand l'édition a commencé ("base", qui porte
+// la "version" envoyée comme baseVersion) à la fiche telle qu'elle est VRAIMENT sur le
+// serveur maintenant ("current", renvoyé par le serveur avec le conflit) : seuls les
+// champs qui ont réellement changé entre les deux sont affichés, avec en face ce que
+// l'utilisateur est en train d'essayer d'enregistrer ("mine").
+function diffRows(base,current,mine,fields){
+  if(!base||!current)return [];
+  return fields.filter(f=>{
+    const a=base[f.key], b=current[f.key];
+    return JSON.stringify(a??null)!==JSON.stringify(b??null);
+  }).map(f=>({
+    label:f.label,
+    theirs:f.fmt?f.fmt(current[f.key]):String(current[f.key]??"(vide)"),
+    mine:f.fmt?f.fmt(mine?.[f.key]):String(mine?.[f.key]??"(vide)")
+  }));
+}
+function ConflictModal({label,modifiedBy,modifiedAt,rows,note,onForce,onReload,onCancel}){
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9990,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}
+    onClick={e=>e.target===e.currentTarget&&onCancel()}>
+    <div style={{background:"white",borderRadius:16,padding:20,maxWidth:440,width:"100%",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 10px 40px rgba(0,0,0,.35)"}}>
+      <div style={{fontSize:26,marginBottom:6}}>⚠️</div>
+      <div style={{fontWeight:800,fontSize:16,color:T.dark,marginBottom:6}}>Modifié entre-temps</div>
+      <div style={{fontSize:13,color:T.mid,marginBottom:14,lineHeight:1.5}}>
+        {label} a été modifié{modifiedBy?" par "+modifiedBy:""}{modifiedAt?" le "+modifiedAt:""} pendant que vous l'éditiez.
+        {rows.length>0?" Voici ce qui a changé :":" (Les champs modifiés ne sont pas affichables en détail ici.)"}
+      </div>
+      {rows.length>0&&<div style={{background:T.bg,borderRadius:10,padding:"10px 12px",marginBottom:16}}>
+        {rows.map((r,i)=>(
+          <div key={i} style={{marginBottom:i<rows.length-1?10:0,fontSize:12.5}}>
+            <div style={{fontWeight:700,color:T.dark,marginBottom:2}}>{r.label}</div>
+            <div style={{color:T.mid}}>Version actuelle (serveur) : <span style={{color:T.dark,fontWeight:600}}>{r.theirs}</span></div>
+            <div style={{color:T.mid}}>Vos modifications en cours : <span style={{color:T.red,fontWeight:600}}>{r.mine}</span></div>
+          </div>
+        ))}
+      </div>}
+      {note&&<div style={{fontSize:12,color:T.orange,marginBottom:16,lineHeight:1.4}}>⚠️ {note}</div>}
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        <button onClick={onForce} style={{padding:"12px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700}}>
+          Écraser avec mes modifications
+        </button>
+        <button onClick={onReload} style={{padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>
+          Charger la version actuelle (perdre mes modifications)
+        </button>
+        <button onClick={onCancel} style={{padding:"12px",background:"none",border:"none",cursor:"pointer",fontWeight:600,color:T.mid}}>
+          Annuler
+        </button>
+      </div>
+    </div>
+  </div>);
+}
+
 // ═══ DEFAULTS ═══
 const DSITES=[{id:"s1",name:"Buvette Nord",village:"Village 1",color:"#CC0000"},{id:"s2",name:"Buvette Est",village:"Village 2",color:"#1565C0"},{id:"s3",name:"Buvette Sud",village:"Village 3",color:"#2E7D32"},{id:"s4",name:"Buvette Ouest",village:"Village 4",color:"#E65100"}];
 const DCATS=[{id:"c1",name:"Boissons"},{id:"c2",name:"Bières"},{id:"c3",name:"Snacks"},{id:"c4",name:"Sandwichs"},{id:"c5",name:"Divers"}];
@@ -1027,7 +1106,12 @@ async function api(url,params){
       return{ok:false,error:"Réponse non-JSON du serveur (vérifiez les droits d'accès du déploiement Apps Script — doit être \"Tous\")"};
     }
   }
-  catch(e){return{ok:false,error:e.message};}
+  // networkError:true = la requête n'a même pas atteint/reçu de réponse du serveur
+  // (pas de réseau, DNS, coupure...) — à distinguer d'une erreur RENVOYÉE PAR le
+  // serveur (ci-dessus), qui elle ne sert à rien de rejouer telle quelle plus tard.
+  // C'est cette distinction qui permet à la file d'attente hors-ligne de savoir quand
+  // il est utile de réessayer automatiquement.
+  catch(e){return{ok:false,error:e.message,networkError:true};}
 }
 // Pour les écritures (save/delete/update/transfer) : si Google Sheets refuse ou que la
 // connexion coupe, on prévient clairement au lieu de laisser la modif disparaître en
@@ -1035,6 +1119,59 @@ async function api(url,params){
 // Vrai si l'utilisateur connecté est un compte de test (SS.get, accessible partout
 // sans avoir à faire passer une prop dans tout l'arbre de composants).
 function isTestMode(){ return SS.get("anf87_user")?.role==="test"; }
+
+// ═══ FILE D'ATTENTE HORS-LIGNE (écran Admin uniquement) ═══
+// Les modifications faites depuis Admin (produits, menus, plats, catégories, sites,
+// utilisateurs, réglages) sont peu fréquentes et jamais urgentes à la seconde — pas
+// comme une vente en cours au comptoir. Si la connexion manque au moment d'enregistrer,
+// on les garde de côté sur CET appareil et on les renvoie automatiquement dès que la
+// connexion revient, plutôt que de forcer la personne à s'en souvenir et à
+// recommencer plus tard. Les ventes et mouvements de stock, eux, gardent leur
+// fonctionnement actuel (message clair immédiat, réessai manuel) : ils doivent être
+// traités sur le moment, au comptoir, et impliquent un découpage en plusieurs
+// requêtes (photos, panier...) plus délicat à rejouer fidèlement en différé.
+const ADMIN_WRITE_ACTIONS=["saveProduct","deleteProduct","saveCombo","deleteCombo","savePlat","deletePlat",
+  "saveCategory","deleteCategory","saveSite","deleteSite","saveUser","deleteUser","saveConfig"];
+const OUTBOX_KEY="anf87_outbox";
+function getOutbox(){ return LS.get(OUTBOX_KEY)||[]; }
+let _outboxListener=null;
+function setOutbox(list){ LS.set(OUTBOX_KEY,list); if(_outboxListener)_outboxListener(list.length); }
+function queueOutbox(params){ const box=getOutbox(); box.push({params,ts:Date.now()}); setOutbox(box); }
+function adminActionLabel(action){
+  const labels={saveProduct:"Produit",deleteProduct:"Suppression d'un produit",saveCombo:"Menu",deleteCombo:"Suppression d'un menu",
+    savePlat:"Plat",deletePlat:"Suppression d'un plat",saveCategory:"Catégorie",deleteCategory:"Suppression d'une catégorie",
+    saveSite:"Site",deleteSite:"Suppression d'un site",saveUser:"Utilisateur",deleteUser:"Suppression d'un utilisateur",saveConfig:"Réglage"};
+  return labels[action]||action;
+}
+let _outboxFlushing=false;
+// Rejoue les écritures Admin mises en attente, dans l'ordre où elles ont été faites.
+// Appelée au retour de connexion et à chaque actualisation automatique.
+async function flushOutbox(url){
+  if(_outboxFlushing||!url)return;
+  if(typeof navigator!=="undefined"&&navigator.onLine===false)return;
+  let box=getOutbox();
+  if(!box.length)return;
+  _outboxFlushing=true;
+  let sent=0, failed=[];
+  try{
+    while(box.length){
+      const item=box[0];
+      const r=await api(url,item.params);
+      if(r&&r.ok){ sent++; box=box.slice(1); setOutbox(box); }
+      else if(r&&r.networkError){ break; } // toujours hors-ligne : on réessaiera plus tard
+      else {
+        // Erreur définitive (conflit détecté, fiche supprimée entre-temps...) : ne peut
+        // pas être rejouée sans intervention humaine — retirée pour ne pas bloquer les
+        // suivantes, la personne est prévenue ci-dessous.
+        failed.push(item); box=box.slice(1); setOutbox(box);
+      }
+    }
+  } finally { _outboxFlushing=false; }
+  if(sent)showToast(sent>1?`✅ ${sent} modification(s) en attente envoyées avec succès.`:"✅ Modification en attente envoyée avec succès.");
+  if(failed.length)await customAlert("⚠️ "+failed.length+" modification(s) mise(s) en attente hors-ligne n'ont pas pu être appliquées après reconnexion (peut-être modifiées entre-temps par quelqu'un d'autre, ou fiche supprimée) :\n\n"+
+    failed.map(f=>"• "+adminActionLabel(f.params.action)).join("\n")+"\n\nMerci de vérifier et de refaire ces changements si besoin dans l'écran Admin.");
+}
+
 async function apiWrite(url,params){
   if(isTestMode()){
     // Mode test : on ne contacte JAMAIS le serveur pour une écriture — l'appli se
@@ -1042,7 +1179,20 @@ async function apiWrite(url,params){
     // réellement enregistré sur Google Sheets.
     return {ok:true};
   }
+  const isAdminAction=ADMIN_WRITE_ACTIONS.indexOf(params.action)!==-1;
+  // Hors-ligne déjà connu : pas la peine d'attendre un timeout réseau pour rien, on
+  // met directement en file d'attente.
+  if(isAdminAction&&typeof navigator!=="undefined"&&navigator.onLine===false){
+    queueOutbox(params);
+    showToast("📡 Hors-ligne : la modification sera envoyée automatiquement dès le retour du réseau.");
+    return {ok:true,queued:true};
+  }
   const r=await api(url,params);
+  if(isAdminAction&&!r.ok&&r.networkError){
+    queueOutbox(params);
+    showToast("📡 Connexion indisponible : la modification a été mise en attente et sera envoyée automatiquement.");
+    return {ok:true,queued:true};
+  }
   // Garde-fou : une réponse "ok:true" mais qui ressemble à une LECTURE (un tableau
   // "products") pour une action d'ÉCRITURE signale que la requête n'a probablement
   // pas été traitée comme prévu par le serveur (le paramètre action a pu se perdre
@@ -1055,7 +1205,10 @@ async function apiWrite(url,params){
     r.ok=false;
     r.error="réponse inattendue du serveur (la requête n'a peut-être pas été traitée comme une écriture)";
   }
-  if(!r.ok){
+  // Un conflit (voir versionConflict côté serveur) n'est PAS une simple erreur réseau :
+  // l'écran appelant sait le détecter (r.conflict) et propose une résolution dédiée
+  // (ConflictModal) plutôt que la boîte de dialogue générique ci-dessous.
+  if(!r.ok&&!r.conflict){
     await customAlert("⚠️ Échec de l'enregistrement sur Google Sheets :\n"+(r.error||"erreur inconnue")+
       "\n\nVérifiez votre connexion puis réessayez. Tant que ce n'est pas enregistré côté serveur, "+
       "l'actualisation automatique peut annuler ce changement à l'écran.");
@@ -1100,6 +1253,19 @@ function App(){
   // Google Sheets pour suivre automatiquement sur tous les appareils, avec repli sur
   // localStorage tant qu'aucune synchro n'a encore eu lieu (1er lancement, hors-ligne).
   const [config,setConfig]=useState(LS.get("anf87_config")||{});
+  // Version/ModifiePar/ModifieLe de chaque clé de réglage (voir getConfigMeta côté
+  // serveur) — utilisé UNIQUEMENT par l'écran Réglages (clé/App ID SumUp) pour détecter
+  // un conflit d'édition ; "config" ci-dessus (simple valeur par clé) reste inchangé
+  // pour ne rien casser ailleurs dans l'appli.
+  const [configMeta,setConfigMeta]=useState(LS.get("anf87_config_meta")||{});
+  // File d'attente hors-ligne des modifications Admin (voir apiWrite/flushOutbox) —
+  // juste pour afficher un petit badge "X en attente" dans l'en-tête, remis à jour à
+  // chaque ajout/envoi/échec via le listener _outboxListener.
+  const [outboxCount,setOutboxCount]=useState(()=>getOutbox().length);
+  useEffect(()=>{
+    _outboxListener=setOutboxCount;
+    return()=>{_outboxListener=null;};
+  },[]);
   const sumupKey=config.sumup_key!==undefined?config.sumup_key:(LS.get("anf87_sumup_key")||"");
   const sumupAppId=config.sumup_appid!==undefined?config.sumup_appid:(LS.get("anf87_sumup_appid")||"");
   // Happy Hour : partagé sur tous les sites/appareils (comme la clé SumUp), MAIS une
@@ -1161,19 +1327,23 @@ function App(){
   },[sites]);
   const isAdmin=!users.length||currentUser?.role==="admin"||currentUser?.role==="test";
 
-  useEffect(()=>{ if(caisseUrl)syncAll(); },[caisseUrl]);
+  useEffect(()=>{ if(caisseUrl){syncAll();flushOutbox(caisseUrl);} },[caisseUrl]);
   // Panier conservé en continu (pas seulement en mémoire) : si l'appli SumUp plante
   // et redémarre entièrement notre appli, le panier en cours n'est plus perdu.
   useEffect(()=>{ LS.set("anf87_cart",cart); },[cart]);
 
   // Actualisation auto : toutes les 20s + au retour au premier plan (multi-appareils)
+  // — et on en profite pour retenter l'envoi des modifications Admin en attente
+  // (voir flushOutbox), au cas où la connexion serait revenue entre-temps.
   useEffect(()=>{
     if(!caisseUrl)return;
-    const id=setInterval(()=>{ if(document.visibilityState==="visible")syncAll(); },20000);
-    const onVis=()=>{ if(document.visibilityState==="visible")syncAll(); };
+    const id=setInterval(()=>{ if(document.visibilityState==="visible"){syncAll();flushOutbox(caisseUrl);} },20000);
+    const onVis=()=>{ if(document.visibilityState==="visible"){syncAll();flushOutbox(caisseUrl);} };
+    const onOnline=()=>flushOutbox(caisseUrl);
     document.addEventListener("visibilitychange",onVis);
     window.addEventListener("focus",onVis);
-    return()=>{clearInterval(id);document.removeEventListener("visibilitychange",onVis);window.removeEventListener("focus",onVis);};
+    window.addEventListener("online",onOnline);
+    return()=>{clearInterval(id);document.removeEventListener("visibilitychange",onVis);window.removeEventListener("focus",onVis);window.removeEventListener("online",onOnline);};
   },[caisseUrl]);
 
   async function syncAll(){
@@ -1196,6 +1366,7 @@ function App(){
       setPlats(r.plats||[]);LS.set("anf87_plats",r.plats||[]);
       setReadyPlats(r.readyPlats||[]);LS.set("anf87_ready_plats",r.readyPlats||[]);
       setConfig(r.config||{});LS.set("anf87_config",r.config||{});
+      setConfigMeta(r.configMeta||{});LS.set("anf87_config_meta",r.configMeta||{});
       if(!happyHourUserSetRef.current)setHappyHourActive((r.config||{}).happy_hour_active==="true");
       const t=new Date().toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"});
       setLastSync(t);LS.set("anf87_lastsync",t);
@@ -1684,6 +1855,10 @@ function App(){
               border:`1px solid ${happyHourActive?"#FF9500":"rgba(255,255,255,0.3)"}`,borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:"pointer",fontWeight:700}}>
             🎉{happyHourActive?" ON":""}
           </button>
+          {outboxCount>0&&<button onClick={()=>flushOutbox(caisseUrl)} title="Modification(s) Admin en attente d'envoi (hors-ligne) — cliquez pour réessayer maintenant"
+            style={{display:"flex",alignItems:"center",gap:4,background:"#FF9500",border:"1px solid #FF9500",borderRadius:8,color:"white",padding:"7px 10px",fontSize:12,cursor:"pointer",fontWeight:700}}>
+            📡 {outboxCount}
+          </button>}
           {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:700}}>↻</button>}
           {users.length>0&&<button onClick={doLogout} disabled={loggingOut} title="Déconnexion / changer d'utilisateur" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:loggingOut?"default":"pointer",fontWeight:700}}>⎋</button>}
         </div>
@@ -1694,6 +1869,7 @@ function App(){
       </div>}
 
       <ModalHost/>
+      <ToastHost/>
       {pendingCb&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",zIndex:998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
         <div style={{background:"white",borderRadius:16,padding:22,maxWidth:380,width:"100%",textAlign:"center"}}>
           <div style={{fontSize:36,marginBottom:8}}>⚠️</div>
@@ -1734,10 +1910,10 @@ function App(){
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos} plats={plats} setPlats={setPlats}
           accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits} isManager={isManager} containers={containers} setContainers={setContainers}
-          tabGroups={tabGroups} onSaveTabGroups={saveTabGroups}/>}
+          tabGroups={tabGroups} onSaveTabGroups={saveTabGroups} currentUser={currentUser}/>}
         {tab==="settings"&&<SettingsScreen caisseUrl={caisseUrl} boissonsUrl={boissonsUrl} onSync={syncAll}
           onInit={()=>api(caisseUrl,{action:"initSheets"})} currentUser={currentUser} setCU={setCU}
-          sumupKey={sumupKey} sumupAppId={sumupAppId} setConfig={setConfig} setLoggingOut={setLoggingOut}/>}
+          sumupKey={sumupKey} sumupAppId={sumupAppId} setConfig={setConfig} setLoggingOut={setLoggingOut} configMeta={configMeta} setConfigMeta={setConfigMeta}/>}
       </div>
 
       {/* ── NAVIGATION ── */}
@@ -4527,8 +4703,11 @@ function MemberCardPreview({member,boissonsUrl,onClose}){
   </div>);
 }
 
-function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portions}){
+const COMBO_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"price",label:"Prix",fmt:v=>fmt(+v||0)}];
+function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portions,currentUser}){
   const [edit,setEdit]=useState(null); // combo en cours d'édition, ou {} pour nouveau
+  const [editBase,setEditBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
+  const [conflict,setConflict]=useState(null);
   const [busy,setBusy]=useState(false);
   const [showWeekly,setShowWeekly]=useState(false);
   const [expandedAlt,setExpandedAlt]=useState(new Set()); // index des lignes dont le bloc "alternatives" est déplié
@@ -4541,12 +4720,12 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
     return s+(prod?unitCost(prod)*it.qty:0);
   },0);
 
-  const startNew=()=>setEdit({id:null,name:"",price:"",items:[],photo:""});
-  const startEdit=c=>setEdit({id:c.id,name:c.name,price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});
+  const startNew=()=>{setEdit({id:null,name:"",price:"",items:[],photo:""});setEditBase(null);};
+  const startEdit=c=>{setEdit({id:c.id,name:c.name,price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});setEditBase(c);};
   // Pré-remplit "+ Nouveau menu" avec une copie de ce menu (ingrédients, portions,
   // alternatives, quantités et photo compris) — évite de reconstruire un menu
   // similaire ingrédient par ingrédient, ex: une variante à prix différent.
-  const duplicateCombo=c=>setEdit({id:null,name:c.name+" (copie)",price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});
+  const duplicateCombo=c=>{setEdit({id:null,name:c.name+" (copie)",price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});setEditBase(null);};
 
   const addItem=()=>{
     if(!products.length)return;
@@ -4658,7 +4837,7 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
     const id=edit.id||uid();
     // Même optimisation que pour les produits/portions : photo renvoyée seulement si
     // elle a changé, sinon "__KEEP__" garde celle déjà enregistrée côté serveur.
-    const original=edit.id?combos.find(c=>c.id===edit.id):null;
+    const original=edit.id?editBase:null;
     const photoChanged=!original||edit.photo!==(original.photo||"");
     let photoParam,extra={};
     if(photoChanged){
@@ -4671,8 +4850,10 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
     const itemsStr=serializeComboItems(edit.items);
     const itemsUp=await uploadTextChunked(caisseUrl,"uploadComboItemsChunk",id,itemsStr);
     if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement du contenu du menu : "+itemsUp.error);setBusy(false);return;}
-    const r=await apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra});
-    if(r.ok){
+    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra,
+      baseVersion,modifiedBy:currentUser?.name||""});
+    const r=await doSave(original?.version||"");
+    const applyLocal=()=>{
       const newEntry={id,name:edit.name,price:+edit.price,
         items:edit.items.map(it=>{
           if(it.type==="combo")return{type:"combo",comboId:it.comboId,qty:toNum(it.qty)||1};
@@ -4681,6 +4862,21 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
         }),
         photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setCombos(prev=>[...prev.filter(c=>c.id!==id),newEntry]);
+    };
+    if(r&&r.conflict){
+      setConflict({
+        label:"ce menu",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
+        rows:diffRows(original,r.current,edit,COMBO_CONFLICT_FIELDS),
+        note:"Le contenu (ingrédients) du menu n'est pas comparé en détail ici — vérifiez-le après rechargement si besoin.",
+        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)applyLocal(); setBusy(false); setEdit(null); },
+        onReload:()=>{ setConflict(null); setCombos(prev=>[...prev.filter(c=>c.id!==id),r.current]); setEditBase(r.current); setEdit({id:r.current.id,name:r.current.name,price:r.current.price,items:r.current.items.map(it=>({...it})),photo:r.current.photo||""}); },
+        onCancel:()=>setConflict(null)
+      });
+      setBusy(false);
+      return;
+    }
+    if(r.ok){
+      applyLocal();
       setEdit(null);
     }
     setBusy(false);
@@ -4892,7 +5088,7 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
         </button>
 
         <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>setEdit(null)} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={()=>{setEdit(null);setEditBase(null);}} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
           <button onClick={save} disabled={busy||!edit.name||!edit.price||edit.items.length===0}
             style={{flex:2,padding:"11px",background:T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>
             {busy?"⏳ Envoi...":"💾 Enregistrer"}
@@ -4900,7 +5096,8 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
         </div>
       </div>
     </div>}
-    {showWeekly&&<WeeklyComboIngredients combos={combos} plats={plats} products={products} setCombos={setCombos} setPlats={setPlats} caisseUrl={caisseUrl} onClose={()=>setShowWeekly(false)}/>}
+    {conflict&&<ConflictModal {...conflict}/>}
+    {showWeekly&&<WeeklyComboIngredients combos={combos} plats={plats} products={products} setCombos={setCombos} setPlats={setPlats} caisseUrl={caisseUrl} onClose={()=>setShowWeekly(false)} currentUser={currentUser}/>}
   </div>);
 }
 
@@ -4912,8 +5109,11 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
 // illimitée que l'ancien système (menus imbriqués dans des menus) provoquait. Un
 // Plat peut se vendre seul en caisse, ou être utilisé comme ingrédient d'un Menu
 // (voir CombosAdmin, type "plat").
-function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
+const PLAT_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"price",label:"Prix",fmt:v=>fmt(+v||0)}];
+function PlatsAdmin({products,plats,setPlats,caisseUrl,portions,currentUser}){
   const [edit,setEdit]=useState(null); // plat en cours d'édition, ou {} pour nouveau
+  const [editBase,setEditBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
+  const [conflict,setConflict]=useState(null);
   const [busy,setBusy]=useState(false);
   const [expandedAlt,setExpandedAlt]=useState(new Set()); // index des lignes dont le bloc "alternatives" est déplié
 
@@ -4925,11 +5125,11 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
     return s+(prod?unitCost(prod)*toNum(it.qty):0);
   },0);
 
-  const startNew=()=>setEdit({id:null,name:"",price:"",items:[],photo:""});
-  const startEdit=p=>setEdit({id:p.id,name:p.name,price:p.price,items:p.items.map(it=>({...it})),photo:p.photo||""});
+  const startNew=()=>{setEdit({id:null,name:"",price:"",items:[],photo:""});setEditBase(null);};
+  const startEdit=p=>{setEdit({id:p.id,name:p.name,price:p.price,items:p.items.map(it=>({...it})),photo:p.photo||""});setEditBase(p);};
   // Pré-remplit "+ Nouveau plat" avec une copie de ce plat (ingrédients, portions,
   // alternatives, quantités et photo compris) — même logique que pour les menus.
-  const duplicatePlat=p=>setEdit({id:null,name:p.name+" (copie)",price:p.price,items:p.items.map(it=>({...it})),photo:p.photo||""});
+  const duplicatePlat=p=>{setEdit({id:null,name:p.name+" (copie)",price:p.price,items:p.items.map(it=>({...it})),photo:p.photo||""});setEditBase(null);};
 
   const addItem=()=>{
     if(!products.length)return;
@@ -4988,7 +5188,7 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
     const id=edit.id||uid();
     // Même optimisation que pour les produits/menus : photo renvoyée seulement si
     // elle a changé, sinon "__KEEP__" garde celle déjà enregistrée côté serveur.
-    const original=edit.id?plats.find(p=>p.id===edit.id):null;
+    const original=edit.id?editBase:null;
     const photoChanged=!original||edit.photo!==(original.photo||"");
     let photoParam,extra={};
     if(photoChanged){
@@ -5001,12 +5201,29 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
     const itemsStr=serializeComboItems(edit.items);
     const itemsUp=await uploadTextChunked(caisseUrl,"uploadPlatItemsChunk",id,itemsStr);
     if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement du contenu du plat : "+itemsUp.error);setBusy(false);return;}
-    const r=await apiWrite(caisseUrl,{action:"savePlat",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra});
-    if(r.ok){
+    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"savePlat",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra,
+      baseVersion,modifiedBy:currentUser?.name||""});
+    const r=await doSave(original?.version||"");
+    const applyLocal=()=>{
       const newEntry={id,name:edit.name,price:+edit.price,
         items:edit.items.map(it=>({type:"product",productId:it.productId,qty:toNum(it.qty),portionId:it.portionId||"",alternates:it.alternates||[]})),
         photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setPlats(prev=>[...prev.filter(p=>p.id!==id),newEntry]);
+    };
+    if(r&&r.conflict){
+      setConflict({
+        label:"ce plat",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
+        rows:diffRows(original,r.current,edit,PLAT_CONFLICT_FIELDS),
+        note:"Le contenu (ingrédients) du plat n'est pas comparé en détail ici — vérifiez-le après rechargement si besoin.",
+        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)applyLocal(); setBusy(false); setEdit(null); },
+        onReload:()=>{ setConflict(null); setPlats(prev=>[...prev.filter(p=>p.id!==id),r.current]); setEditBase(r.current); setEdit({id:r.current.id,name:r.current.name,price:r.current.price,items:r.current.items.map(it=>({...it})),photo:r.current.photo||""}); },
+        onCancel:()=>setConflict(null)
+      });
+      setBusy(false);
+      return;
+    }
+    if(r.ok){
+      applyLocal();
       setEdit(null);
     }
     setBusy(false);
@@ -5140,7 +5357,7 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
         </button>
 
         <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>setEdit(null)} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={()=>{setEdit(null);setEditBase(null);}} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annuler</button>
           <button onClick={save} disabled={busy||!edit.name||!edit.price||edit.items.length===0}
             style={{flex:2,padding:"11px",background:"#00A86B",color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>
             {busy?"⏳ Envoi...":"💾 Enregistrer"}
@@ -5148,6 +5365,7 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions}){
         </div>
       </div>
     </div>}
+    {conflict&&<ConflictModal {...conflict}/>}
   </div>);
 }
 
@@ -6200,7 +6418,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
 }
 
 // ═══ ADMIN ═══
-function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,plats,setPlats,accompaniments,setAccompaniments,deposits,isManager,containers,setContainers,tabGroups,onSaveTabGroups}){
+function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onSaveCats,onSaveUsers,caisseUrl,boissonsUrl,portions,setPortions,combos,setCombos,plats,setPlats,accompaniments,setAccompaniments,deposits,isManager,containers,setContainers,tabGroups,onSaveTabGroups,currentUser}){
   const [tab,setTab]=useState("products");
   const allTabs=[["products","🏷 Produits"],["plats","🍴 Plats"],["combos","🍽 Menus"],["cats","📂 Catégories"],["sites","📍 Sites"],["users","👥 Utilisateurs"],["cartes","🍺 Cartes Boissons"],["happyhour","🕐 Happy Hour"],["tabgroups","⚏ Onglets caisse"]];
   // "happyhour" et "tabgroups" restent visibles pour un manager (comme "cartes") — seuls
@@ -6216,15 +6434,15 @@ function AdminScreen({products,sites,categories,users,onSaveProd,onSaveSites,onS
       ))}
     </div>
     <div style={{flex:1,overflow:"hidden"}}>
-      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits} containers={containers} setContainers={setContainers}/>}
-      {tab==="plats"&&<PlatsAdmin products={products} plats={plats} setPlats={setPlats} caisseUrl={caisseUrl} portions={portions}/>}
-      {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} plats={plats} setPlats={setPlats} caisseUrl={caisseUrl} portions={portions}/>}
+      {tab==="products"&&<ProductsAdmin products={products} categories={categories} sites={sites} onSave={onSaveProd} caisseUrl={caisseUrl} portions={portions} setPortions={setPortions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} deposits={deposits} containers={containers} setContainers={setContainers} currentUser={currentUser}/>}
+      {tab==="plats"&&<PlatsAdmin products={products} plats={plats} setPlats={setPlats} caisseUrl={caisseUrl} portions={portions} currentUser={currentUser}/>}
+      {tab==="combos"&&<CombosAdmin products={products} combos={combos} setCombos={setCombos} plats={plats} setPlats={setPlats} caisseUrl={caisseUrl} portions={portions} currentUser={currentUser}/>}
       {tab==="cartes"&&<CardsAdmin boissonsUrl={boissonsUrl}/>}
       {tab==="happyhour"&&<HappyHourAdmin caisseUrl={caisseUrl}/>}
       {tab==="tabgroups"&&<TabGroupsAdmin categories={categories} combos={combos} plats={plats} tabGroups={tabGroups} onSave={onSaveTabGroups}/>}
-      {!isManager&&tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl}/>}
-      {!isManager&&tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl} products={products} onSaveProducts={onSaveProd}/>}
-      {!isManager&&tab==="users"&&<UsersAdmin users={users} onSave={onSaveUsers} caisseUrl={caisseUrl}/>}
+      {!isManager&&tab==="cats"&&<CatsAdmin categories={categories} onSave={onSaveCats} caisseUrl={caisseUrl} currentUser={currentUser}/>}
+      {!isManager&&tab==="sites"&&<SitesAdmin sites={sites} onSave={onSaveSites} caisseUrl={caisseUrl} products={products} onSaveProducts={onSaveProd} currentUser={currentUser}/>}
+      {!isManager&&tab==="users"&&<UsersAdmin users={users} onSave={onSaveUsers} caisseUrl={caisseUrl} currentUser={currentUser}/>}
     </div>
   </div>);
 }
@@ -6378,7 +6596,7 @@ function ProdForm({data,setData,onSubmit,label,categories,products,sites,handleP
 }
 
 // ═══ DÉTAIL VALEUR STOCK / MARGE POTENTIELLE (bandeau Admin → Produits) ═══
-function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,flattenProd,onSave,onClose,containers,setContainers}){
+function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,flattenProd,onSave,onClose,containers,setContainers,currentUser}){
   const [siteFilter,setSiteFilter]=useState("all"); // "all" ou un id de site
   const [busyId,setBusyId]=useState(null);
 
@@ -6392,7 +6610,12 @@ function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,
     const upd=products.map(x=>x.id===p.id?{...x,costPrice:newCost}:x);
     onSave(upd);
     if(caisseUrl){
-      await apiWrite(caisseUrl,{action:"saveProduct",id:p.id,...flattenProd({...p,costPrice:newCost},sites),photo:"__KEEP__"});
+      const r=await apiWrite(caisseUrl,{action:"saveProduct",id:p.id,...flattenProd({...p,costPrice:newCost},sites),photo:"__KEEP__",
+        baseVersion:p.version||"",modifiedBy:currentUser?.name||""});
+      if(r&&r.conflict){
+        await customAlert("⚠️ Ce produit a été modifié entre-temps par "+(r.modifiedBy||"quelqu'un d'autre")+" — la version à jour a été rechargée, merci de réessayer si besoin.");
+        onSave(products.map(x=>x.id===r.current.id?r.current:x));
+      }
     }
     setBusyId(null);
   };
@@ -6469,7 +6692,7 @@ function StockValueDetailModal({mode,products,sites,caisseUrl,unitCost,unitSell,
 // ═══ CHANGER RAPIDEMENT LES PRODUITS INTERCHANGEABLES D'UN MENU (ex: quel jambon
 // utiliser cette semaine) — sans repasser par toute la configuration du menu. Les
 // produits actuellement EN STOCK sont mis en avant en premier. ═══
-function WeeklyComboIngredients({combos,plats,products,setCombos,setPlats,caisseUrl,onClose}){
+function WeeklyComboIngredients({combos,plats,products,setCombos,setPlats,caisseUrl,onClose,currentUser}){
   const [busyKey,setBusyKey]=useState(null); // "comboId-itemIdx" en cours de bascule
 
   const totalStock=p=>Object.values(p.stock||{}).reduce((a,b)=>a+(+b||0),0);
@@ -6490,10 +6713,13 @@ function WeeklyComboIngredients({combos,plats,products,setCombos,setPlats,caisse
     const isPlat=!!combo.__isPlat;
     const itemsUp=await uploadTextChunked(caisseUrl,isPlat?"uploadPlatItemsChunk":"uploadComboItemsChunk",combo.id,itemsStr);
     if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement : "+itemsUp.error);setBusyKey(null);return;}
-    const r=await apiWrite(caisseUrl,{action:isPlat?"savePlat":"saveCombo",id:combo.id,name:combo.name,price:combo.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:"__KEEP__"});
+    const r=await apiWrite(caisseUrl,{action:isPlat?"savePlat":"saveCombo",id:combo.id,name:combo.name,price:combo.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:"__KEEP__",
+      baseVersion:combo.version||"",modifiedBy:currentUser?.name||""});
     if(r.ok){
       if(isPlat)setPlats(prev=>prev.map(c=>c.id===combo.id?{...c,items:newItems}:c));
       else setCombos(prev=>prev.map(c=>c.id===combo.id?{...c,items:newItems}:c));
+    } else if(r.conflict){
+      await customAlert("⚠️ "+(isPlat?"Ce plat a":"Ce menu a")+" été modifié entre-temps par "+(r.modifiedBy||"quelqu'un d'autre")+" — rechargez la page Admin avant de réessayer.");
     }
     setBusyKey(null);
   };
@@ -6544,8 +6770,26 @@ function WeeklyComboIngredients({combos,plats,products,setCombos,setPlats,caisse
   </div>);
 }
 
-function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions,accompaniments,setAccompaniments,deposits,containers,setContainers}){
+const PRODUCT_CONFLICT_FIELDS=[
+  {key:"name",label:"Nom"},
+  {key:"price",label:"Prix",fmt:v=>fmt(+v||0)},
+  {key:"cat",label:"Catégorie"},
+  {key:"emoji",label:"Emoji"},
+  {key:"barcode",label:"Code-barres"},
+  {key:"drink",label:"Compte pour la carte Boissons",fmt:v=>v?"Oui":"Non"},
+  {key:"sellByVolume",label:"Vente au volume",fmt:v=>v?"Oui":"Non"},
+  {key:"costPrice",label:"Prix d'achat TTC",fmt:v=>fmt(+v||0)},
+  {key:"happyPrice",label:"Prix Happy Hour",fmt:v=>fmt(+v||0)},
+  {key:"siteAvailability",label:"Sites de vente"},
+  {key:"showInContainerBar",label:"Affiché dans la barre de contenants",fmt:v=>v!==false?"Oui":"Non"}
+];
+function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions,accompaniments,setAccompaniments,deposits,containers,setContainers,currentUser}){
   const [edit,setEdit]=useState(null);
+  // Instantané du produit tel qu'il était à l'OUVERTURE du formulaire d'édition —
+  // sert de référence (baseVersion + comparaison) en cas de conflit ; "edit" lui-même
+  // change à chaque frappe et ne peut donc pas servir de point de comparaison fixe.
+  const [editBase,setEditBase]=useState(null);
+  const [conflict,setConflict]=useState(null);
   const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
   const [portionsFor,setPortionsFor]=useState(null); // produit dont on gère les portions
   const [accompFor,setAccompFor]=useState(null); // produit dont on gère les accompagnements
@@ -6583,7 +6827,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
     setSaving(false);
   };
-  const saveEdit=async()=>{if(saving)return;setSaving(true);const original=products.find(p=>p.id===edit.id);const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
+  const saveEdit=async()=>{if(saving)return;setSaving(true);const original=editBase||products.find(p=>p.id===edit.id);const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
     if(caisseUrl){
       // Si la photo n'a pas changé, on ne la renvoie pas du tout — c'est de loin le
       // champ le plus lourd (plusieurs dizaines de Ko envoyés en petits morceaux), pas
@@ -6598,7 +6842,20 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       }else{
         photoParam="__KEEP__"; // indique au serveur de garder la photo déjà enregistrée telle quelle
       }
-      await apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites),photo:photoParam,...extra});
+      const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites),photo:photoParam,...extra,
+        baseVersion,modifiedBy:currentUser?.name||""});
+      const r=await doSave(original?.version||"");
+      if(r&&r.conflict){
+        setConflict({
+          label:"ce produit",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
+          rows:diffRows(original,r.current,edit,PRODUCT_CONFLICT_FIELDS),
+          onForce:async()=>{ setConflict(null); setSaving(true); await doSave(r.current.version); setSaving(false); setEdit(null); },
+          onReload:()=>{ setConflict(null); onSave(products.map(p=>p.id===r.current.id?r.current:p)); setEditBase(r.current); setEdit({...r.current}); },
+          onCancel:()=>{ setConflict(null); onSave(products); }
+        });
+        setSaving(false);
+        return;
+      }
     }
     setSaving(false);setEdit(null);};
   const delProd=async(id)=>{if(!(await customConfirm("Supprimer ?"))||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
@@ -6627,7 +6884,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       </button>
     </div>
     {valueDetail&&<StockValueDetailModal mode={valueDetail} products={products} sites={sites} caisseUrl={caisseUrl}
-      unitCost={unitCost} unitSell={unitSell} flattenProd={flattenProd} onSave={onSave} onClose={()=>setValueDetail(null)} containers={containers} setContainers={setContainers}/>}
+      unitCost={unitCost} unitSell={unitSell} flattenProd={flattenProd} onSave={onSave} onClose={()=>setValueDetail(null)} containers={containers} setContainers={setContainers} currentUser={currentUser}/>}
     <ProdForm data={newP} setData={setNewP} onSubmit={addProd} label="+ Nouveau produit" categories={categories} products={products} sites={sites} handlePhoto={handlePhoto} busy={saving}/>
     {[...categories.filter(c=>products.some(p=>p.cat===c.name)),
       ...(products.some(p=>!categories.some(c=>c.name===p.cat))?[{name:"Autres"}]:[])]
@@ -6659,7 +6916,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
                 Marge {fmt(margeUnit)}{margePct!=null?` (${margePct.toFixed(0)}%)`:""}
               </div>}
               <div style={{display:"flex",gap:5,width:"100%",marginTop:2}}>
-                <button onClick={()=>setEdit({...p})} style={{flex:1,padding:"5px 0",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,cursor:"pointer",fontSize:11}}>✏️</button>
+                <button onClick={()=>{setEdit({...p});setEditBase(p);}} style={{flex:1,padding:"5px 0",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,cursor:"pointer",fontSize:11}}>✏️</button>
                 <button onClick={()=>duplicateProduct(p)} title="Dupliquer ce produit (pré-remplit le formulaire en haut)" style={{flex:1,padding:"5px 0",background:"#F0F4FF",border:`1px solid ${T.blue}`,borderRadius:6,cursor:"pointer",fontSize:11}}>📋</button>
                 <button onClick={()=>delProd(p.id)} style={{flex:1,padding:"5px 0",background:"#FFF0F0",border:"none",borderRadius:6,cursor:"pointer",color:T.red,fontSize:11}}>🗑</button>
               </div>
@@ -6672,9 +6929,10 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       <div style={{background:T.card,borderRadius:18,padding:22,width:"100%",maxWidth:400,maxHeight:"90vh",overflowY:"auto"}}>
         <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>✏️ Modifier {edit.name}</div>
         <ProdForm data={edit} setData={setEdit} onSubmit={saveEdit} label="💾 Enregistrer" categories={categories} products={products} sites={sites} handlePhoto={handlePhoto} onManagePortions={p=>setPortionsFor(p)} onManageAccompaniments={p=>setAccompFor(p)} busy={saving}/>
-        <button onClick={()=>setEdit(null)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:6}}>Annuler</button>
+        <button onClick={()=>{setEdit(null);setEditBase(null);}} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:6}}>Annuler</button>
       </div>
     </div>}
+    {conflict&&<ConflictModal {...conflict}/>}
     {portionsFor&&<PortionsManager product={portionsFor} products={products} portions={portions} setPortions={setPortions} caisseUrl={caisseUrl} onClose={()=>setPortionsFor(null)}/>}
     {accompFor&&<AccompanimentsManager product={accompFor} products={products} portions={portions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} caisseUrl={caisseUrl} onClose={()=>setAccompFor(null)}/>}
   </div>);
@@ -6887,14 +7145,30 @@ function PortionsManager({product,products,portions,setPortions,caisseUrl,onClos
     </div>
   </div>);
 }
-function CatsAdmin({categories,onSave,caisseUrl}){
+function CatsAdmin({categories,onSave,caisseUrl,currentUser}){
   const [newName,setNewName]=useState("");
   const [editId,setEditId]=useState(null);const [editName,setEditName]=useState("");
+  const [editBase,setEditBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
+  const [conflict,setConflict]=useState(null);
   const [busy,setBusy]=useState(false); // anti double-clic
   const add=async()=>{if(!newName.trim()||busy)return;setBusy(true);const id="c"+uid();const arr=[...categories,{id,name:newName.trim()}];
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id,name:newName.trim()});setNewName("");setBusy(false);};
-  const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=categories.map(c=>c.id===editId?{...c,name:editName}:c);
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id:editId,name:editName});setEditId(null);setBusy(false);};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id,name:newName.trim(),modifiedBy:currentUser?.name||""});setNewName("");setBusy(false);};
+  const saveEdit=async()=>{if(busy)return;setBusy(true);
+    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveCategory",id:editId,name:editName,baseVersion,modifiedBy:currentUser?.name||""});
+    const r=await doSave(editBase?.version||"");
+    if(r&&r.conflict){
+      setConflict({
+        label:"cette catégorie",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
+        rows:diffRows(editBase,r.current,{name:editName},[{key:"name",label:"Nom"}]),
+        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)onSave(categories.map(c=>c.id===editId?{...c,name:editName}:c)); setBusy(false); setEditId(null); },
+        onReload:()=>{ setConflict(null); onSave(categories.map(c=>c.id===r.current.id?r.current:c)); setEditBase(r.current); setEditName(r.current.name); },
+        onCancel:()=>setConflict(null)
+      });
+      setBusy(false);
+      return;
+    }
+    const arr=categories.map(c=>c.id===editId?{...c,name:editName}:c);
+    onSave(arr);setEditId(null);setBusy(false);};
   const del=async(id)=>{if(!(await customConfirm("Supprimer cette catégorie ?"))||busy)return;setBusy(true);
     onSave(categories.filter(c=>c.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteCategory",id});setBusy(false);};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
@@ -6910,41 +7184,72 @@ function CatsAdmin({categories,onSave,caisseUrl}){
       {editId===c.id?<>
         <input value={editName} onChange={e=>setEditName(e.target.value)} style={{flex:1,padding:"8px 10px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:14,outline:"none"}}/>
         <button onClick={saveEdit} disabled={busy} style={{padding:"8px 12px",background:busy?"#ccc":T.green,color:"white",border:"none",borderRadius:8,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳":"✓"}</button>
-        <button onClick={()=>setEditId(null)} style={{padding:"8px 12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer"}}>✕</button>
+        <button onClick={()=>{setEditId(null);setEditBase(null);}} style={{padding:"8px 12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer"}}>✕</button>
       </>:<>
         <div style={{flex:1,fontSize:14,fontWeight:600,color:T.dark}}>📂 {c.name}</div>
-        <button onClick={()=>{setEditId(c.id);setEditName(c.name);}} style={{padding:"6px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:12}}>✏️</button>
+        <button onClick={()=>{setEditId(c.id);setEditName(c.name);setEditBase(c);}} style={{padding:"6px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:12}}>✏️</button>
         <button onClick={()=>del(c.id)} disabled={busy} style={{padding:"6px 9px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:busy?"default":"pointer",color:T.red}}>🗑</button>
       </>}
     </div>)}
+    {conflict&&<ConflictModal {...conflict}/>}
   </div>);
 }
 
-function SitesAdmin({sites,onSave,caisseUrl,products,onSaveProducts}){
+const SITE_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"village",label:"Village"},{key:"color",label:"Couleur"},
+  {key:"active",label:"Actif",fmt:v=>v!==false?"Oui":"Non"},{key:"isSalesPoint",label:"Point de vente",fmt:v=>v!==false?"Oui":"Non"}];
+function SitesAdmin({sites,onSave,caisseUrl,products,onSaveProducts,currentUser}){
   const [availFor,setAvailFor]=useState(null); // site dont on gère les produits disponibles
   const [newS,setNewS]=useState({name:"",village:"",color:"#CC0000",isSalesPoint:true});
   const [editS,setEditS]=useState(null);
+  const [editSBase,setEditSBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
+  const [conflict,setConflict]=useState(null);
   const [busy,setBusy]=useState(false); // anti double-clic
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const add=async()=>{if(!newS.name||busy)return;setBusy(true);const id="s"+uid().slice(-4);const entry={...newS,id,active:true};const arr=[...sites,entry];
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS,active:true});setNewS({name:"",village:"",color:"#CC0000",isSalesPoint:true});setBusy(false);
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id,...newS,active:true,modifiedBy:currentUser?.name||""});setNewS({name:"",village:"",color:"#CC0000",isSalesPoint:true});setBusy(false);
     setAvailFor(entry); // propose immédiatement de choisir les produits disponibles sur ce nouveau site
   };
-  const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=sites.map(s=>s.id===editS.id?editS:s);
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color,active:editS.active!==false,isSalesPoint:editS.isSalesPoint!==false});setBusy(false);setEditS(null);};
+  const saveEdit=async()=>{if(busy)return;setBusy(true);
+    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color,active:editS.active!==false,isSalesPoint:editS.isSalesPoint!==false,baseVersion,modifiedBy:currentUser?.name||""});
+    const r=await doSave(editSBase?.version||"");
+    if(r&&r.conflict){
+      setConflict({
+        label:"ce site",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
+        rows:diffRows(editSBase,r.current,editS,SITE_CONFLICT_FIELDS),
+        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)onSave(sites.map(s=>s.id===editS.id?editS:s)); setBusy(false); setEditS(null); },
+        onReload:()=>{ setConflict(null); onSave(sites.map(s=>s.id===r.current.id?r.current:s)); setEditSBase(r.current); setEditS({...r.current}); },
+        onCancel:()=>setConflict(null)
+      });
+      setBusy(false);
+      return;
+    }
+    const arr=sites.map(s=>s.id===editS.id?editS:s);
+    onSave(arr);setBusy(false);setEditS(null);};
   const del=async(id)=>{if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteSite",id});setBusy(false);};
   const toggleActive=async(s)=>{
     if(busy)return;setBusy(true);
     const updated={...s,active:s.active===false};
     onSave(sites.map(x=>x.id===s.id?updated:x));
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:s.id,name:s.name,village:s.village,color:s.color,active:updated.active,isSalesPoint:s.isSalesPoint!==false});
+    if(caisseUrl){
+      const r=await apiWrite(caisseUrl,{action:"saveSite",id:s.id,name:s.name,village:s.village,color:s.color,active:updated.active,isSalesPoint:s.isSalesPoint!==false,baseVersion:s.version||"",modifiedBy:currentUser?.name||""});
+      if(r&&r.conflict){
+        await customAlert("⚠️ Ce site a été modifié entre-temps par "+(r.modifiedBy||"quelqu'un d'autre")+" — la version à jour a été rechargée, merci de réessayer si besoin.");
+        onSave(sites.map(x=>x.id===r.current.id?r.current:x));
+      }
+    }
     setBusy(false);
   };
   const toggleSalesPoint=async(s)=>{
     if(busy)return;setBusy(true);
     const updated={...s,isSalesPoint:s.isSalesPoint===false};
     onSave(sites.map(x=>x.id===s.id?updated:x));
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"saveSite",id:s.id,name:s.name,village:s.village,color:s.color,active:s.active!==false,isSalesPoint:updated.isSalesPoint});
+    if(caisseUrl){
+      const r=await apiWrite(caisseUrl,{action:"saveSite",id:s.id,name:s.name,village:s.village,color:s.color,active:s.active!==false,isSalesPoint:updated.isSalesPoint,baseVersion:s.version||"",modifiedBy:currentUser?.name||""});
+      if(r&&r.conflict){
+        await customAlert("⚠️ Ce site a été modifié entre-temps par "+(r.modifiedBy||"quelqu'un d'autre")+" — la version à jour a été rechargée, merci de réessayer si besoin.");
+        onSave(sites.map(x=>x.id===r.current.id?r.current:x));
+      }
+    }
     setBusy(false);
   };
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
@@ -6991,7 +7296,7 @@ function SitesAdmin({sites,onSave,caisseUrl,products,onSaveProducts}){
           style={{padding:"5px 9px",background:isArchived?"#E8F5E9":T.bg,border:`1px solid ${isArchived?"#A5D6A7":T.border}`,borderRadius:7,cursor:busy?"default":"pointer",fontSize:11,color:isArchived?"#2E7D32":T.dark}}>
           {isArchived?"↩️ Réactiver":"📦 Archiver"}
         </button>
-        <button onClick={()=>setEditS({...s})} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
+        <button onClick={()=>{setEditS({...s});setEditSBase(s);}} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
         <button onClick={()=>del(s.id)} disabled={busy} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:busy?"default":"pointer",color:T.red}}>🗑</button>
       </div>);
     })}
@@ -7009,18 +7314,19 @@ function SitesAdmin({sites,onSave,caisseUrl,products,onSaveProducts}){
           <span style={{fontSize:12,color:T.dark}}>Point de vente (décochez pour un lieu de stockage pur)</span>
         </label>
         <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>setEditS(null)} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={()=>{setEditS(null);setEditSBase(null);}} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
           <button onClick={saveEdit} disabled={busy} style={{flex:2,padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Enregistrer"}</button>
         </div>
       </div>
     </div>}
-    {availFor&&<SiteProductsAvailability site={availFor} sites={sites} products={products} onSaveProducts={onSaveProducts} caisseUrl={caisseUrl} onClose={()=>setAvailFor(null)}/>}
+    {conflict&&<ConflictModal {...conflict}/>}
+    {availFor&&<SiteProductsAvailability site={availFor} sites={sites} products={products} onSaveProducts={onSaveProducts} caisseUrl={caisseUrl} onClose={()=>setAvailFor(null)} currentUser={currentUser}/>}
   </div>);
 }
 
 // ═══ CHOIX DES PRODUITS DISPONIBLES SUR UN SITE (proposé à la création d'un site,
 // et accessible à tout moment via le bouton "🏷 Produits") ═══
-function SiteProductsAvailability({site,sites,products,onSaveProducts,caisseUrl,onClose}){
+function SiteProductsAvailability({site,sites,products,onSaveProducts,caisseUrl,onClose,currentUser}){
   // Choix faits en LOCAL, sans rien enregistrer tant qu'on n'a pas cliqué sur
   // "Enregistrer" — évite un appel réseau (et son temps d'attente) à chaque case
   // cochée, surtout gênant avec beaucoup de produits.
@@ -7050,14 +7356,24 @@ function SiteProductsAvailability({site,sites,products,onSaveProducts,caisseUrl,
     const changed=local.filter((p,i)=>p.siteAvailability!==products[i].siteAvailability);
     if(changed.length===0){onClose();return;}
     setSaving(true);
+    const conflicted=[];
+    let finalProducts=local;
     for(const prod of changed){
-      if(caisseUrl)await apiWrite(caisseUrl,{action:"saveProduct",id:prod.id,name:prod.name,price:prod.price,costPrice:prod.costPrice||0,cat:prod.cat,emoji:prod.emoji,
+      if(!caisseUrl)continue;
+      const r=await apiWrite(caisseUrl,{action:"saveProduct",id:prod.id,name:prod.name,price:prod.price,costPrice:prod.costPrice||0,cat:prod.cat,emoji:prod.emoji,
         barcode:prod.barcode||"",drink:prod.drink,sellByVolume:prod.sellByVolume,unit:prod.unit||"",baseQty:prod.baseQty||1,
         presets:prod.presets||"",containers:prod.containers||"",color:prod.color||"",returnFor:prod.returnFor||"",happyPrice:prod.happyPrice||0,
-        siteAvailability:prod.siteAvailability,photo:"__KEEP__"});
+        siteAvailability:prod.siteAvailability,photo:"__KEEP__",baseVersion:prod.version||"",modifiedBy:currentUser?.name||""});
+      if(r&&r.conflict){
+        conflicted.push(prod.name);
+        finalProducts=finalProducts.map(x=>x.id===r.current.id?r.current:x);
+      }
     }
-    onSaveProducts(local);
+    onSaveProducts(finalProducts);
     setSaving(false);
+    if(conflicted.length>0){
+      await customAlert("⚠️ Modifié entre-temps par quelqu'un d'autre, non enregistré pour : "+conflicted.join(", ")+". La version à jour a été rechargée — recommencez pour ces produits si besoin.");
+    }
     onClose();
   };
 
@@ -7114,17 +7430,35 @@ function SiteProductsAvailability({site,sites,products,onSaveProducts,caisseUrl,
   </div>);
 }
 
-function UsersAdmin({users,onSave,caisseUrl}){
+const USER_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"pin",label:"Code PIN"},
+  {key:"role",label:"Rôle",fmt:v=>({admin:"Admin",manager:"Manager",cashier:"Caissier",test:"Test"})[v]||v}];
+function UsersAdmin({users,onSave,caisseUrl,currentUser}){
   const [newU,setNewU]=useState({name:"",pin:"",role:"cashier"});
   const [editU,setEditU]=useState(null);
+  const [editUBase,setEditUBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
+  const [conflict,setConflict]=useState(null);
   const [busy,setBusy]=useState(false); // anti double-clic
   const [showNewPin,setShowNewPin]=useState(false);
   const [showEditPin,setShowEditPin]=useState(false);
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const add=async()=>{if(!newU.name||!newU.pin||busy)return;setBusy(true);const id="u"+uid();const arr=[...users,{...newU,id}];
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id,...newU});setNewU({name:"",pin:"",role:"cashier"});setBusy(false);};
-  const saveEdit=async()=>{if(busy)return;setBusy(true);const arr=users.map(u=>u.id===editU.id?editU:u);
-    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role});setBusy(false);setEditU(null);};
+    onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id,...newU,modifiedBy:currentUser?.name||""});setNewU({name:"",pin:"",role:"cashier"});setBusy(false);};
+  const saveEdit=async()=>{if(busy)return;setBusy(true);
+    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role,baseVersion,modifiedBy:currentUser?.name||""});
+    const r=await doSave(editUBase?.version||"");
+    if(r&&r.conflict){
+      setConflict({
+        label:"cet utilisateur",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
+        rows:diffRows(editUBase,r.current,editU,USER_CONFLICT_FIELDS),
+        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)onSave(users.map(u=>u.id===editU.id?editU:u)); setBusy(false); setEditU(null); },
+        onReload:()=>{ setConflict(null); onSave(users.map(u=>u.id===r.current.id?r.current:u)); setEditUBase(r.current); setEditU({...r.current}); },
+        onCancel:()=>setConflict(null)
+      });
+      setBusy(false);
+      return;
+    }
+    const arr=users.map(u=>u.id===editU.id?editU:u);
+    onSave(arr);setBusy(false);setEditU(null);};
   const del=async(id)=>{if(users.length<=1){await customAlert("Impossible de supprimer le dernier utilisateur");return;}
     if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);onSave(users.filter(u=>u.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteUser",id});setBusy(false);};
   const roleLabel={admin:"🔑 Admin",manager:"🗂 Manager",cashier:"💳 Caissier",test:"🧪 Test"};
@@ -7148,7 +7482,7 @@ function UsersAdmin({users,onSave,caisseUrl}){
         <div style={{fontSize:14,fontWeight:700,color:T.dark}}>{u.name}</div>
         <div style={{fontSize:12,color:T.mid}}>{roleLabel[u.role]||u.role} • PIN: {"●".repeat(u.pin?.length||4)}</div>
       </div>
-      <button onClick={()=>{setEditU({...u});setShowEditPin(false);}} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
+      <button onClick={()=>{setEditU({...u});setEditUBase(u);setShowEditPin(false);}} style={{padding:"5px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,cursor:"pointer",fontSize:11}}>✏️</button>
       <button onClick={()=>del(u.id)} disabled={busy} style={{padding:"5px 8px",background:"#FFF0F0",border:"none",borderRadius:7,cursor:busy?"default":"pointer",color:T.red}}>🗑</button>
     </div>)}
     {editU&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
@@ -7164,11 +7498,12 @@ function UsersAdmin({users,onSave,caisseUrl}){
           <option value="admin">Admin</option><option value="manager">Manager</option><option value="cashier">Caissier</option><option value="test">Test</option>
         </select>
         <div style={{display:"flex",gap:8}}>
-          <button onClick={()=>setEditU(null)} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
+          <button onClick={()=>{setEditU(null);setEditUBase(null);}} disabled={busy} style={{flex:1,padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:busy?"default":"pointer",fontWeight:600}}>Annuler</button>
           <button onClick={saveEdit} disabled={busy} style={{flex:2,padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>{busy?"⏳ Enregistrement...":"Enregistrer"}</button>
         </div>
       </div>
     </div>}
+    {conflict&&<ConflictModal {...conflict}/>}
   </div>);
 }
 
@@ -7186,9 +7521,18 @@ function MyProfile({currentUser,setCU,caisseUrl}){
     if(!name.trim())return;
     setBusy(true);
     const updated={...currentUser,name:name.trim(),pin:(pin.trim()||currentUser.pin)};
-    const r=await apiWrite(caisseUrl,{action:"saveUser",id:currentUser.id,name:updated.name,pin:updated.pin,role:currentUser.role});
-    if(r.ok){
-      setCU(updated);SS.set("anf87_user",updated);
+    // baseVersion : si un admin a modifié cette même fiche (depuis Utilisateurs) entre
+    // le moment où cette page a été ouverte et maintenant, on ne veut pas écraser son
+    // changement en silence — plus simple ici qu'un vrai écran de conflit (pas de
+    // formulaire ouvert longtemps), on recharge juste la version à jour et on prévient.
+    const r=await apiWrite(caisseUrl,{action:"saveUser",id:currentUser.id,name:updated.name,pin:updated.pin,role:currentUser.role,baseVersion:currentUser.version||"",modifiedBy:currentUser.name});
+    if(r&&r.conflict){
+      await customAlert("⚠️ Votre profil a été modifié entre-temps par "+(r.modifiedBy||"un administrateur")+" — la version à jour a été rechargée, merci de réessayer si besoin.");
+      setCU(r.current);SS.set("anf87_user",r.current);
+      setName(r.current.name);setPin("");
+    } else if(r.ok){
+      const withVersion={...updated,version:r.version||updated.version};
+      setCU(withVersion);SS.set("anf87_user",withVersion);
       setMsg("✅ Profil mis à jour");setPin("");setEditing(false);
     }
     setBusy(false);
@@ -7221,9 +7565,17 @@ function MyProfile({currentUser,setCU,caisseUrl}){
   </div>);
 }
 
-function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,sumupKey,sumupAppId,setConfig,setLoggingOut}){
+function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,sumupKey,sumupAppId,setConfig,setLoggingOut,configMeta}){
   const [cu,setCu]=useState(caisseUrl);const [bu,setBu]=useState(boissonsUrl);const [msg,setMsg]=useState("");
   const [sk,setSk]=useState(sumupKey||"");const [said,setSaid]=useState(sumupAppId||"");
+  // Valeurs/versions telles qu'à l'ouverture de l'écran — sert de référence pour
+  // détecter un conflit d'édition (voir ProductsAdmin) ; sk/said eux-mêmes changent à
+  // chaque frappe et ne peuvent donc pas servir de point de comparaison fixe.
+  const [skBase]=useState(sumupKey||"");
+  const [saidBase]=useState(sumupAppId||"");
+  const [skVersion,setSkVersion]=useState(configMeta?.sumup_key?.version||"");
+  const [saidVersion,setSaidVersion]=useState(configMeta?.sumup_appid?.version||"");
+  const [conflict,setConflict]=useState(null);
   const [initBusy,setInitBusy]=useState(false); // anti double-clic sur l'initialisation
   const [migrateBusy,setMigrateBusy]=useState(false); // anti double-clic sur la migration Plats
   const [migrateMsg,setMigrateMsg]=useState("");
@@ -7296,8 +7648,42 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
     if(savingConfig||!caisseUrl)return;
     setSavingConfig(true);setSumupMsg("");
     const skT=sk.trim(),saidT=said.trim();
-    const r1=await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_key",value:skT});
-    const r2=await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_appid",value:saidT});
+    const r1=await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_key",value:skT,baseVersion:skVersion,modifiedBy:currentUser?.name||""});
+    const r2=await apiWrite(caisseUrl,{action:"saveConfig",key:"sumup_appid",value:saidT,baseVersion:saidVersion,modifiedBy:currentUser?.name||""});
+    if(r1&&r1.ok)setSkVersion(r1.version||skVersion);
+    if(r2&&r2.ok)setSaidVersion(r2.version||saidVersion);
+    const conflicts=[];
+    if(r1&&r1.conflict)conflicts.push({key:"sumup_key",label:"Clé Affiliate SumUp",mine:skT,r:r1});
+    if(r2&&r2.conflict)conflicts.push({key:"sumup_appid",label:"App ID SumUp",mine:saidT,r:r2});
+    if(conflicts.length){
+      setSavingConfig(false);
+      setConflict({
+        label:conflicts.length>1?"les réglages SumUp":conflicts[0].label,
+        modifiedBy:conflicts[0].r.modifiedBy,modifiedAt:conflicts[0].r.modifiedAt,
+        rows:conflicts.map(c=>({label:c.label,theirs:c.r.current.value||"(vide)",mine:c.mine||"(vide)"})),
+        onForce:async()=>{
+          setConflict(null);setSavingConfig(true);
+          for(const c of conflicts){
+            const rf=await apiWrite(caisseUrl,{action:"saveConfig",key:c.key,value:c.mine,baseVersion:c.r.current.version,modifiedBy:currentUser?.name||""});
+            if(rf&&rf.ok){ if(c.key==="sumup_key")setSkVersion(rf.version);else setSaidVersion(rf.version); }
+          }
+          setConfig(prev=>({...prev,sumup_key:skT,sumup_appid:saidT}));
+          LS.set("anf87_sumup_key",skT);LS.set("anf87_sumup_appid",saidT);
+          setSavingConfig(false);setEditingSumup(false);
+          setSumupMsg("✅ Enregistré sur Google Sheets — visible sur tous vos appareils à leur prochaine synchro.");
+          setTimeout(()=>setSumupMsg(""),6000);
+        },
+        onReload:()=>{
+          setConflict(null);
+          conflicts.forEach(c=>{
+            if(c.key==="sumup_key"){setSk(c.r.current.value||"");setSkVersion(c.r.current.version);}
+            else{setSaid(c.r.current.value||"");setSaidVersion(c.r.current.version);}
+          });
+        },
+        onCancel:()=>setConflict(null)
+      });
+      return;
+    }
     setSavingConfig(false);
     if(!r1?.ok||!r2?.ok){
       setSumupMsg("❌ Échec de l'enregistrement ("+(r1?.error||r2?.error||"connexion")+") — réessayez.");
@@ -7340,6 +7726,7 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:16}}>⚙️ Configuration</div>
     {currentUser&&<MyProfile currentUser={currentUser} setCU={setCU} caisseUrl={caisseUrl}/>}
+    {conflict&&<ConflictModal {...conflict}/>}
     <div style={{background:T.card,borderRadius:12,padding:16,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
         <div style={{fontWeight:700,fontSize:14,color:T.dark}}>URL Script Caisse (Google Sheets produits/ventes)</div>
