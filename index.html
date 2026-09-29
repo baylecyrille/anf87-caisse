@@ -582,6 +582,40 @@ function ConflictModal({label,modifiedBy,modifiedAt,rows,note,onForce,onReload,o
   </div>);
 }
 
+// ═══ LISTE DES ACTIONS HORS-LIGNE EN ATTENTE (voir apiWrite/flushOutbox) — ouverte en
+// cliquant sur le badge 📡 de l'en-tête, plutôt que de relancer l'envoi à l'aveugle. ═══
+function PendingOutboxModal({caisseUrl,onClose}){
+  const [retrying,setRetrying]=useState(false);
+  const items=getOutbox();
+  const retry=async()=>{ setRetrying(true); await flushOutbox(caisseUrl); setRetrying(false); };
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:14}}
+    onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div style={{background:T.card,borderRadius:18,padding:18,width:"100%",maxWidth:420,maxHeight:"80vh",display:"flex",flexDirection:"column"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <div style={{fontWeight:800,fontSize:16,color:T.dark}}>📡 Actions en attente</div>
+        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid}}>✕</button>
+      </div>
+      <div style={{fontSize:12,color:T.mid,marginBottom:10,lineHeight:1.4}}>
+        {items.length===0?"Tout a été envoyé — rien n'est en attente.":
+          "Pas encore envoyées à Google Sheets faute de connexion. Elles partiront automatiquement, dans l'ordre, dès le retour du réseau."}
+      </div>
+      <div style={{overflowY:"auto",flex:1,marginBottom:12}}>
+        {items.map((it,i)=>(
+          <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderBottom:`1px solid ${T.border}`}}>
+            <span style={{fontSize:13,fontWeight:600,color:T.dark}}>{i+1}. {actionLabel(it)}</span>
+            <span style={{fontSize:11,color:T.mid,flexShrink:0,marginLeft:8}}>{it.ts?new Date(it.ts).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}):""}</span>
+          </div>
+        ))}
+        {items.length===0&&<div style={{textAlign:"center",color:T.mid,fontSize:28,padding:24}}>✅</div>}
+      </div>
+      <button onClick={retry} disabled={retrying||items.length===0}
+        style={{width:"100%",padding:"11px",background:retrying||items.length===0?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:retrying||items.length===0?"default":"pointer",fontWeight:700}}>
+        {retrying?"⏳ Envoi...":"🔄 Réessayer maintenant"}
+      </button>
+    </div>
+  </div>);
+}
+
 // ═══ DEFAULTS ═══
 const DSITES=[{id:"s1",name:"Buvette Nord",village:"Village 1",color:"#CC0000"},{id:"s2",name:"Buvette Est",village:"Village 2",color:"#1565C0"},{id:"s3",name:"Buvette Sud",village:"Village 3",color:"#2E7D32"},{id:"s4",name:"Buvette Ouest",village:"Village 4",color:"#E65100"}];
 const DCATS=[{id:"c1",name:"Boissons"},{id:"c2",name:"Bières"},{id:"c3",name:"Snacks"},{id:"c4",name:"Sandwichs"},{id:"c5",name:"Divers"}];
@@ -1301,6 +1335,7 @@ function App(){
   // juste pour afficher un petit badge "X en attente" dans l'en-tête, remis à jour à
   // chaque ajout/envoi/échec via le listener _outboxListener.
   const [outboxCount,setOutboxCount]=useState(()=>getOutbox().length);
+  const [showOutbox,setShowOutbox]=useState(false); // liste détaillée (voir PendingOutboxModal), ouverte via le badge
   useEffect(()=>{
     _outboxListener=setOutboxCount;
     return()=>{_outboxListener=null;};
@@ -1902,20 +1937,22 @@ function App(){
           </div>
           <SiteSelector sites={salesSites} siteId={siteId} onChange={id=>{setSiteId(id);LS.set("anf87_site",id);}} big align="left"/>
         </div>
-        <div style={{display:"flex",alignItems:"center",gap:6}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
           <button onClick={toggleHappyHour} title={happyHourActive?"Désactiver le Happy Hour":"Activer le Happy Hour"}
             style={{display:"flex",alignItems:"center",gap:5,background:happyHourActive?"#FF9500":"rgba(255,255,255,0.18)",
               border:`1px solid ${happyHourActive?"#FF9500":"rgba(255,255,255,0.3)"}`,borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:"pointer",fontWeight:700}}>
             🎉{happyHourActive?" ON":""}
           </button>
-          {outboxCount>0&&<button onClick={()=>flushOutbox(caisseUrl)} title="Action(s) en attente d'envoi (hors-ligne) — cliquez pour réessayer maintenant"
+          {outboxCount>0&&<button onClick={()=>setShowOutbox(true)} title="Voir les actions en attente d'envoi (hors-ligne)"
             style={{display:"flex",alignItems:"center",gap:4,background:"#FF9500",border:"1px solid #FF9500",borderRadius:8,color:"white",padding:"7px 10px",fontSize:12,cursor:"pointer",fontWeight:700}}>
             📡 {outboxCount}
           </button>}
           {caisseUrl&&<button onClick={syncAll} title="Synchroniser avec Google Sheets" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 12px",fontSize:13,cursor:"pointer",fontWeight:700}}>↻</button>}
-          {users.length>0&&<button onClick={doLogout} disabled={loggingOut} title="Déconnexion / changer d'utilisateur" style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:loggingOut?"default":"pointer",fontWeight:700}}>⎋</button>}
+          {users.length>0&&<button onClick={doLogout} disabled={loggingOut} title="Déconnexion / changer d'utilisateur"
+            style={{background:"rgba(255,255,255,0.18)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:loggingOut?"default":"pointer",fontWeight:700,marginLeft:6}}>⎋</button>}
         </div>
       </div>
+      {showOutbox&&<PendingOutboxModal caisseUrl={caisseUrl} onClose={()=>setShowOutbox(false)}/>}
 
       {isTestMode()&&<div style={{background:"#FF9500",color:"white",textAlign:"center",padding:"6px 10px",fontSize:12,fontWeight:700,flexShrink:0}}>
         🧪 Mode test — rien n'est enregistré sur Google Sheets
