@@ -1120,32 +1120,44 @@ async function api(url,params){
 // sans avoir à faire passer une prop dans tout l'arbre de composants).
 function isTestMode(){ return SS.get("anf87_user")?.role==="test"; }
 
-// ═══ FILE D'ATTENTE HORS-LIGNE (écran Admin uniquement) ═══
-// Les modifications faites depuis Admin (produits, menus, plats, catégories, sites,
-// utilisateurs, réglages) sont peu fréquentes et jamais urgentes à la seconde — pas
-// comme une vente en cours au comptoir. Si la connexion manque au moment d'enregistrer,
-// on les garde de côté sur CET appareil et on les renvoie automatiquement dès que la
-// connexion revient, plutôt que de forcer la personne à s'en souvenir et à
-// recommencer plus tard. Les ventes et mouvements de stock, eux, gardent leur
-// fonctionnement actuel (message clair immédiat, réessai manuel) : ils doivent être
-// traités sur le moment, au comptoir, et impliquent un découpage en plusieurs
-// requêtes (photos, panier...) plus délicat à rejouer fidèlement en différé.
-const ADMIN_WRITE_ACTIONS=["saveProduct","deleteProduct","saveCombo","deleteCombo","savePlat","deletePlat",
-  "saveCategory","deleteCategory","saveSite","deleteSite","saveUser","deleteUser","saveConfig"];
+// ═══ FILE D'ATTENTE HORS-LIGNE (toutes les écritures : ventes, stock, Admin...) ═══
+// Si la connexion manque au moment d'enregistrer une action (vente, mouvement de
+// stock, contenant, modification Admin...), on ne bloque plus la personne avec une
+// erreur : l'état local (déjà mis à jour de façon optimiste par chaque écran, AVANT
+// même d'essayer le réseau) reste tel quel, et l'action est gardée de côté sur CET
+// appareil pour être renvoyée automatiquement dès que la connexion revient (retour
+// réseau, actualisation périodique, ou relance manuelle via le badge 📡). Seules les
+// vraies erreurs renvoyées PAR le serveur (fiche supprimée, conflit de version...)
+// restent signalées tout de suite : elles ne peuvent pas être "rejouées" telles
+// quelles sans qu'un humain tranche.
 const OUTBOX_KEY="anf87_outbox";
 function getOutbox(){ return LS.get(OUTBOX_KEY)||[]; }
 let _outboxListener=null;
 function setOutbox(list){ LS.set(OUTBOX_KEY,list); if(_outboxListener)_outboxListener(list.length); }
-function queueOutbox(params){ const box=getOutbox(); box.push({params,ts:Date.now()}); setOutbox(box); }
-function adminActionLabel(action){
+// job = {kind:"write",params} pour un envoi normal (l'immense majorité des cas), ou
+// {kind:"chunked",chunkAction,chunkId,chunkField,chunksField,text,restParams} pour un
+// texte encore NON découpé (ex: articles d'une grosse vente) qui devra être redécoupé
+// en morceaux pour de vrai au moment de l'envoi réel (voir flushOutbox) — jamais
+// renvoyé brut, bien trop long pour tenir dans une seule requête.
+function queueOutbox(job){ const box=getOutbox(); box.push({...job,ts:Date.now()}); setOutbox(box); }
+function actionLabel(item){
+  if(item.kind==="chunked")return item.chunkAction==="uploadSaleItemsChunk"?"Vente":"Envoi";
+  const action=item.params?.action;
   const labels={saveProduct:"Produit",deleteProduct:"Suppression d'un produit",saveCombo:"Menu",deleteCombo:"Suppression d'un menu",
     savePlat:"Plat",deletePlat:"Suppression d'un plat",saveCategory:"Catégorie",deleteCategory:"Suppression d'une catégorie",
-    saveSite:"Site",deleteSite:"Suppression d'un site",saveUser:"Utilisateur",deleteUser:"Suppression d'un utilisateur",saveConfig:"Réglage"};
-  return labels[action]||action;
+    saveSite:"Site",deleteSite:"Suppression d'un site",saveUser:"Utilisateur",deleteUser:"Suppression d'un utilisateur",saveConfig:"Réglage",
+    saveSale:"Vente",updateSale:"Modification d'une vente",deleteSale:"Suppression d'une vente",
+    adjustDeposit:"Consigne",adjustReadyCombo:"Stock de menus prêts",adjustReadyPlat:"Stock de plats prêts",
+    updateStock:"Mouvement de stock",openContainer:"Ouverture d'un contenant",closeContainer:"Fin d'un contenant",
+    adjustContainer:"Correction d'un contenant",setReserveCount:"Réserve",addToReserve:"Réserve",transferStock:"Transfert de stock",
+    saveAccompaniment:"Accompagnement",deleteAccompaniment:"Suppression d'un accompagnement",savePortion:"Palier de vente",
+    deletePortion:"Suppression d'un palier",saveTabGroups:"Regroupement d'onglets",saveProductOrder:"Ordre des produits",
+    logHappyHour:"Journal Happy Hour"};
+  return labels[action]||action||"Action";
 }
 let _outboxFlushing=false;
-// Rejoue les écritures Admin mises en attente, dans l'ordre où elles ont été faites.
-// Appelée au retour de connexion et à chaque actualisation automatique.
+// Rejoue les actions mises en attente, dans l'ordre où elles ont été faites. Appelée
+// au retour de connexion et à chaque actualisation automatique.
 async function flushOutbox(url){
   if(_outboxFlushing||!url)return;
   if(typeof navigator!=="undefined"&&navigator.onLine===false)return;
@@ -1156,7 +1168,18 @@ async function flushOutbox(url){
   try{
     while(box.length){
       const item=box[0];
-      const r=await api(url,item.params);
+      let r;
+      if(item.kind==="chunked"){
+        // Texte trop long pour une seule requête (ex: liste d'articles d'une grosse
+        // vente) : on le redécoupe pour de vrai maintenant qu'on a le réseau, puis on
+        // envoie l'action finale avec la référence aux morceaux envoyés.
+        const up=await uploadTextChunked(url,item.chunkAction,item.chunkId,item.text);
+        r=(up.ok&&!up.deferred)?await api(url,{...item.restParams,[item.chunkField]:up.param,[item.chunksField]:up.chunks||0}):{ok:false,networkError:true};
+      }else{
+        // Ancien format ({params,ts} sans "kind", éventuellement encore présent sur
+        // l'appareil depuis une version précédente) traité comme un envoi normal.
+        r=await api(url,item.params);
+      }
       if(r&&r.ok){ sent++; box=box.slice(1); setOutbox(box); }
       else if(r&&r.networkError){ break; } // toujours hors-ligne : on réessaiera plus tard
       else {
@@ -1167,30 +1190,47 @@ async function flushOutbox(url){
       }
     }
   } finally { _outboxFlushing=false; }
-  if(sent)showToast(sent>1?`✅ ${sent} modification(s) en attente envoyées avec succès.`:"✅ Modification en attente envoyée avec succès.");
-  if(failed.length)await customAlert("⚠️ "+failed.length+" modification(s) mise(s) en attente hors-ligne n'ont pas pu être appliquées après reconnexion (peut-être modifiées entre-temps par quelqu'un d'autre, ou fiche supprimée) :\n\n"+
-    failed.map(f=>"• "+adminActionLabel(f.params.action)).join("\n")+"\n\nMerci de vérifier et de refaire ces changements si besoin dans l'écran Admin.");
+  if(sent)showToast(sent>1?`✅ ${sent} action(s) en attente envoyées avec succès.`:"✅ Action en attente envoyée avec succès.");
+  if(failed.length)await customAlert("⚠️ "+failed.length+" action(s) mise(s) en attente hors-ligne n'ont pas pu être appliquée(s) après reconnexion (peut-être modifiée(s)/supprimée(s) entre-temps) :\n\n"+
+    failed.map(f=>"• "+actionLabel(f)).join("\n")+"\n\nMerci de vérifier et de refaire ces actions si besoin.");
 }
 
-async function apiWrite(url,params){
+// chunkMeta (optionnel, 3e argument) : à fournir UNIQUEMENT quand le texte à envoyer
+// (ex: liste d'articles d'une grosse vente) est trop long pour tenir dans une seule
+// requête — {chunkAction,chunkId,chunkField,chunksField,text,restParams}. Dans ce cas
+// "params" est ignoré : si on est en ligne, le texte est réellement découpé ici même
+// (comme avant) ; sinon (ou si ça échoue en cours de route), toute l'action est mise en
+// file d'attente pour être redécoupée au moment de l'envoi réel (voir flushOutbox) —
+// jamais renvoyée brute, bien trop longue pour une requête.
+async function apiWrite(url,params,chunkMeta){
   if(isTestMode()){
     // Mode test : on ne contacte JAMAIS le serveur pour une écriture — l'appli se
     // comporte normalement côté interface (état local mis à jour), mais rien n'est
     // réellement enregistré sur Google Sheets.
     return {ok:true};
   }
-  const isAdminAction=ADMIN_WRITE_ACTIONS.indexOf(params.action)!==-1;
-  // Hors-ligne déjà connu : pas la peine d'attendre un timeout réseau pour rien, on
-  // met directement en file d'attente.
-  if(isAdminAction&&typeof navigator!=="undefined"&&navigator.onLine===false){
-    queueOutbox(params);
-    showToast("📡 Hors-ligne : la modification sera envoyée automatiquement dès le retour du réseau.");
+  const offline=typeof navigator!=="undefined"&&navigator.onLine===false;
+  if(chunkMeta){
+    if(!offline){
+      const up=await uploadTextChunked(url,chunkMeta.chunkAction,chunkMeta.chunkId,chunkMeta.text);
+      if(up.ok){ params={...chunkMeta.restParams,[chunkMeta.chunkField]:up.param,[chunkMeta.chunksField]:up.chunks||0}; chunkMeta=null; }
+    }
+    if(chunkMeta){
+      queueOutbox({kind:"chunked",...chunkMeta});
+      showToast("📡 "+(offline?"Hors-ligne":"Connexion indisponible")+" : l'action a été mise en attente et sera envoyée automatiquement.");
+      return {ok:true,queued:true};
+    }
+  }else if(offline){
+    // Hors-ligne déjà connu : pas la peine d'attendre un timeout réseau pour rien, on
+    // met directement en file d'attente.
+    queueOutbox({kind:"write",params});
+    showToast("📡 Hors-ligne : l'action sera envoyée automatiquement dès le retour du réseau.");
     return {ok:true,queued:true};
   }
   const r=await api(url,params);
-  if(isAdminAction&&!r.ok&&r.networkError){
-    queueOutbox(params);
-    showToast("📡 Connexion indisponible : la modification a été mise en attente et sera envoyée automatiquement.");
+  if(!r.ok&&r.networkError){
+    queueOutbox({kind:"write",params});
+    showToast("📡 Connexion indisponible : l'action a été mise en attente et sera envoyée automatiquement.");
     return {ok:true,queued:true};
   }
   // Garde-fou : une réponse "ok:true" mais qui ressemble à une LECTURE (un tableau
@@ -1199,9 +1239,8 @@ async function apiWrite(url,params){
   // en route) — sans ce contrôle, ça passerait pour un succès alors que rien n'a
   // été enregistré, et l'actualisation automatique donnerait l'impression d'avoir
   // "effacé" la modification.
-  const isWriteAction=params&&typeof params.action==="string"&&params.action!=="getAll"&&params.action!=="getSales";
   const looksLikeReadResponse=r&&r.ok&&Array.isArray(r.products);
-  if(r.ok&&isWriteAction&&looksLikeReadResponse){
+  if(r.ok&&looksLikeReadResponse){
     r.ok=false;
     r.error="réponse inattendue du serveur (la requête n'a peut-être pas été traitée comme une écriture)";
   }
@@ -1258,7 +1297,7 @@ function App(){
   // un conflit d'édition ; "config" ci-dessus (simple valeur par clé) reste inchangé
   // pour ne rien casser ailleurs dans l'appli.
   const [configMeta,setConfigMeta]=useState(LS.get("anf87_config_meta")||{});
-  // File d'attente hors-ligne des modifications Admin (voir apiWrite/flushOutbox) —
+  // File d'attente hors-ligne (ventes, stock, Admin... — voir apiWrite/flushOutbox) —
   // juste pour afficher un petit badge "X en attente" dans l'en-tête, remis à jour à
   // chaque ajout/envoi/échec via le listener _outboxListener.
   const [outboxCount,setOutboxCount]=useState(()=>getOutbox().length);
@@ -1327,19 +1366,26 @@ function App(){
   },[sites]);
   const isAdmin=!users.length||currentUser?.role==="admin"||currentUser?.role==="test";
 
-  useEffect(()=>{ if(caisseUrl){syncAll();flushOutbox(caisseUrl);} },[caisseUrl]);
+  // On envoie d'abord la file d'attente PUIS on resynchronise (jamais l'inverse) :
+  // sinon une synchro qui arriverait avant l'envoi d'une vente/mouvement de stock
+  // encore en attente réafficherait momentanément l'ancien stock (celui d'avant
+  // cette vente), le temps que l'envoi en attente reparte et qu'une synchro
+  // suivante corrige à nouveau l'affichage.
+  useEffect(()=>{ if(caisseUrl){flushOutbox(caisseUrl).then(syncAll);} },[caisseUrl]);
   // Panier conservé en continu (pas seulement en mémoire) : si l'appli SumUp plante
   // et redémarre entièrement notre appli, le panier en cours n'est plus perdu.
   useEffect(()=>{ LS.set("anf87_cart",cart); },[cart]);
 
   // Actualisation auto : toutes les 20s + au retour au premier plan (multi-appareils)
-  // — et on en profite pour retenter l'envoi des modifications Admin en attente
-  // (voir flushOutbox), au cas où la connexion serait revenue entre-temps.
+  // — et on en profite pour retenter l'envoi des actions en attente (voir
+  // flushOutbox), au cas où la connexion serait revenue entre-temps. Toujours
+  // flushOutbox AVANT syncAll (voir plus haut) pour ne pas réafficher un instant des
+  // données serveur pas encore au courant d'une vente/mouvement encore en attente.
   useEffect(()=>{
     if(!caisseUrl)return;
-    const id=setInterval(()=>{ if(document.visibilityState==="visible"){syncAll();flushOutbox(caisseUrl);} },20000);
-    const onVis=()=>{ if(document.visibilityState==="visible"){syncAll();flushOutbox(caisseUrl);} };
-    const onOnline=()=>flushOutbox(caisseUrl);
+    const id=setInterval(()=>{ if(document.visibilityState==="visible"){flushOutbox(caisseUrl).then(syncAll);} },20000);
+    const onVis=()=>{ if(document.visibilityState==="visible"){flushOutbox(caisseUrl).then(syncAll);} };
+    const onOnline=()=>flushOutbox(caisseUrl).then(syncAll);
     document.addEventListener("visibilitychange",onVis);
     window.addEventListener("focus",onVis);
     window.addEventListener("online",onOnline);
@@ -1790,12 +1836,19 @@ function App(){
       // vente reçoit de toute façon son propre identifiant définitif côté serveur).
       const itemsJson=JSON.stringify(stockEntries);
       const tempSaleId=uid();
-      const itemsUp=await uploadTextChunked(caisseUrl,"uploadSaleItemsChunk",tempSaleId,itemsJson);
-      if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement de la vente : "+itemsUp.error);return;}
-      const saleResult=await apiWrite(caisseUrl,{action:"saveSale",site:siteId,siteName:site.name,id:tempSaleId,
+      const saleRestParams={action:"saveSale",site:siteId,siteName:site.name,id:tempSaleId,
         total:total.toFixed(2),payment:JSON.stringify(payment),
-        items:itemsUp.param,itemsChunks:itemsUp.chunks||0,readyCombos:readyCombosStr,comboLines:comboLinesStr,readyPlats:readyPlatsStr,
-        member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""});
+        readyCombos:readyCombosStr,comboLines:comboLinesStr,readyPlats:readyPlatsStr,
+        member,nbItems:cartCount,caissier:currentUser?.name||"",splitPart:splitPart?"Oui":""};
+      // Une vente doit pouvoir être enregistrée même hors-ligne (voir apiWrite ci-dessus)
+      // — contrairement aux écrans Admin, qui eux ont besoin d'une connexion immédiate
+      // pour découper un texte long. Si la liste d'articles est trop longue pour une
+      // seule requête, on la confie telle quelle (3e argument, chunkMeta) à apiWrite,
+      // qui la découpera pour de vrai maintenant si on est en ligne, ou au moment de
+      // l'envoi réel si la vente doit être mise en attente.
+      const saleResult=itemsJson.length>=1500
+        ? await apiWrite(caisseUrl,null,{chunkAction:"uploadSaleItemsChunk",chunkId:tempSaleId,chunkField:"items",chunksField:"itemsChunks",text:itemsJson,restParams:saleRestParams})
+        : await apiWrite(caisseUrl,{...saleRestParams,items:itemsJson,itemsChunks:0});
       if(saleResult?.stockWarning){
         await customAlert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
       }
@@ -1855,7 +1908,7 @@ function App(){
               border:`1px solid ${happyHourActive?"#FF9500":"rgba(255,255,255,0.3)"}`,borderRadius:8,color:"white",padding:"7px 10px",fontSize:13,cursor:"pointer",fontWeight:700}}>
             🎉{happyHourActive?" ON":""}
           </button>
-          {outboxCount>0&&<button onClick={()=>flushOutbox(caisseUrl)} title="Modification(s) Admin en attente d'envoi (hors-ligne) — cliquez pour réessayer maintenant"
+          {outboxCount>0&&<button onClick={()=>flushOutbox(caisseUrl)} title="Action(s) en attente d'envoi (hors-ligne) — cliquez pour réessayer maintenant"
             style={{display:"flex",alignItems:"center",gap:4,background:"#FF9500",border:"1px solid #FF9500",borderRadius:8,color:"white",padding:"7px 10px",fontSize:12,cursor:"pointer",fontWeight:700}}>
             📡 {outboxCount}
           </button>}
