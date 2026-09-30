@@ -4240,6 +4240,11 @@ function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,cai
   // ── B. Comparaison multi-sites, produit par produit, groupée par catégorie repliable ──
   const [collapsedCatsB,setCollapsedCatsB]=useState(new Set());
   const catsB=[...new Set(products.map(p=>p.cat))].sort((a,b)=>a.localeCompare(b,"fr"));
+  // Le site actuellement sélectionné (boutons en haut de l'onglet) apparaît en 1ère
+  // colonne du tableau de comparaison — plus pratique pour s'y retrouver que l'ordre
+  // fixe des sites, qui n'a aucun rapport avec ce qu'on regarde en ce moment.
+  const selectedSiteB=sites.find(s=>s.id===siteId);
+  const sitesB=selectedSiteB?[selectedSiteB,...sites.filter(s=>s.id!==siteId)]:sites;
   const cellColor=(p,sId)=>{
     if(!isAvailableAtSite(p,sId))return null; // pas vendu sur ce site
     const s=p.stock[sId]||0;
@@ -4326,7 +4331,7 @@ function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,cai
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
             <thead><tr>
               <td></td>
-              {sites.map(s=><td key={s.id} style={{textAlign:"center",color:T.mid,fontWeight:600,padding:"0 4px 6px"}}>{s.name}</td>)}
+              {sitesB.map(s=><td key={s.id} style={{textAlign:"center",color:T.mid,fontWeight:600,padding:"0 4px 6px"}}>{s.name}</td>)}
             </tr></thead>
             <tbody>
               {catProducts.map((p,pi)=>(<tr key={p.id} style={{background:pi%2===1?"#00000006":"transparent"}}>
@@ -4336,7 +4341,7 @@ function StockDashboard({products,sites,siteId,setSiteId,containers,deposits,cai
                     <span style={{fontWeight:600,color:T.dark}}>{p.name}</span>
                   </div>
                 </td>
-                {sites.map(s=>{
+                {sitesB.map(s=>{
                   const style=cellColor(p,s.id);
                   return(<td key={s.id} style={{padding:"3px 4px",textAlign:"center"}}>
                     {style?<span style={{display:"inline-block",minWidth:28,padding:"3px 0",borderRadius:6,background:style.bg,color:style.color,fontWeight:700}}>{p.stock[s.id]||0}</span>
