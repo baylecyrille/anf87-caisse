@@ -999,6 +999,23 @@ const serializeComboItems=items=>items.map(it=>{
   const alts=[...new Set((it.alternates||[]).filter(a=>a&&a!==it.productId))];
   return it.productId+":"+toNum(it.qty)+":"+(it.portionId||"")+":"+alts.join("|");
 }).join(",");
+// Reconstruit le multiplicateur de portion (×2, ×0.5...) affiché dans le formulaire
+// d'édition d'un Menu/Plat à partir de la quantité réellement enregistrée (qty =
+// taille de la portion × multiplicateur) — portionMult n'est qu'une aide de saisie
+// côté client, jamais envoyée au serveur ni reçue en retour (voir serializeComboItems
+// ci-dessus, qui n'écrit que la quantité finale), donc sans ce recalcul le champ "×"
+// retombait toujours à 1 à la réouverture d'un ingrédient existant, même quand la
+// vraie quantité enregistrée (elle, correcte) correspondait à ×2, ×3... C'était le
+// bug "les quantités sont remplacées par 1 dans le champ" : le champ affiché mentait,
+// et un admin qui changeait ensuite de portion en se fiant à ce "×1" erroné écrasait
+// la vraie quantité par la taille d'une seule portion.
+const restorePortionMult=(items,portions)=>(items||[]).map(it=>{
+  if(!it.portionId)return{...it};
+  const po=(portions||[]).find(p=>p.id.toString()===it.portionId.toString());
+  if(!po||!(po.size>0))return{...it};
+  const mult=Math.round((toNum(it.qty)/po.size)*10000)/10000;
+  return{...it,portionMult:mult};
+});
 // Comme flattenComboItems, mais en tenant compte du stock de menu DÉJÀ PRÉPARÉ pour
 // les menus imbriqués : sépare ce qui doit être décompté du stock "prêt" d'un
 // sous-menu (comboConsumption) de ce qu'il faut réellement assembler à partir des
@@ -1606,7 +1623,10 @@ function App(){
       // boissons s'il contient une boisson — sans ça, un menu tout prêt (donc sans
       // comboItems à inspecter directement) ne pouvait jamais être payé/offert via la
       // carte, contrairement au même menu assemblé à la volée juste en dessous.
-      const containsDrinkReady=flattenComboItems(combo,combos,plats).some(fi=>{
+      // combo.drink = case "Carte Boissons" cochée manuellement en Admin → rend le
+      // menu offrable même s'il ne contient aucun produit marqué boisson (OU logique :
+      // n'enlève jamais l'éligibilité automatique d'un menu qui en contient déjà une).
+      const containsDrinkReady=combo.drink||flattenComboItems(combo,combos,plats).some(fi=>{
         const prod=products.find(p=>p.id.toString()===fi.productId.toString());
         return prod?.drink;
       });
@@ -1652,8 +1672,9 @@ function App(){
     const nestedPlatConsumption=Object.entries(platConsumptionByPlat).map(([platId,qty])=>({platId,qty}));
     // Un menu contenant au moins une boisson est éligible à la carte boissons
     // offertes (comme un produit boisson classique) — la valeur totale du menu
-    // devient alors offrable.
-    const containsDrink=items.some(it=>it.prod.drink);
+    // devient alors offrable. Ou si la case "Carte Boissons" a été cochée
+    // manuellement en Admin (voir CombosAdmin), même sans produit boisson inclus.
+    const containsDrink=combo.drink||items.some(it=>it.prod.drink);
     setCart(prev=>{
       const ex=prev.find(i=>i.pid===combo.id&&i.isCombo&&!i.fromReadyStock);
       if(ex)return prev.map(i=>i===ex?{...i,qty:i.qty+1}:i);
@@ -1672,8 +1693,9 @@ function App(){
     if(ready>alreadyReadyInCart){
       // Même correctif que pour les menus tout prêts : un Plat vendu depuis le stock
       // déjà préparé doit rester éligible à la carte boissons s'il contient une
-      // boisson (ex: un plateau prêt avec une bière incluse).
-      const containsDrinkReady=flattenComboItems(plat,combos,plats).some(fi=>{
+      // boisson (ex: un plateau prêt avec une bière incluse), ou si la case "Carte
+      // Boissons" a été cochée manuellement en Admin (voir PlatsAdmin).
+      const containsDrinkReady=plat.drink||flattenComboItems(plat,combos,plats).some(fi=>{
         const prod=products.find(p=>p.id.toString()===fi.productId.toString());
         return prod?.drink;
       });
@@ -1702,7 +1724,7 @@ function App(){
       const prodName=products.find(p=>p.id.toString()===insuffisantId.toString())?.name||"?";
       await customAlert("⚠️ Stock insuffisant pour ce plat (\""+prodName+"\").");return;
     }
-    const containsDrink=items.some(it=>it.prod.drink);
+    const containsDrink=plat.drink||items.some(it=>it.prod.drink);
     setCart(prev=>{
       const ex=prev.find(i=>i.pid===plat.id&&i.isCombo&&!i.fromReadyStock&&i.isPlat);
       if(ex)return prev.map(i=>i===ex?{...i,qty:i.qty+1}:i);
@@ -2594,8 +2616,9 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
           // Un menu contenant au moins une boisson est éligible à la carte boissons
           // offertes exactement comme un produit boisson classique (voir
           // addComboToCart) — même calcul ici, pour que ce soit visible sur la tuile
-          // AVANT l'ajout au panier, pas seulement découvert à l'encaissement.
-          const containsDrink=resolved.productItems.some(it=>{
+          // AVANT l'ajout au panier, pas seulement découvert à l'encaissement. Ou si
+          // la case "Carte Boissons" a été cochée manuellement en Admin.
+          const containsDrink=combo.drink||resolved.productItems.some(it=>{
             const prod=products.find(p=>p.id.toString()===it.productId.toString());
             return prod?.drink;
           });
@@ -2653,8 +2676,9 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             return prod&&(prod.stock[siteId]||0)>=neededByProduct[p2];
           });
           // Même règle que pour un menu (voir buildComboTile) : un plat contenant au
-          // moins une boisson est éligible à la carte boissons offertes.
-          const containsDrink=flat.some(it=>{
+          // moins une boisson est éligible à la carte boissons offertes, ou si la
+          // case "Carte Boissons" a été cochée manuellement en Admin.
+          const containsDrink=plat.drink||flat.some(it=>{
             const prod=products.find(p=>p.id.toString()===it.productId.toString());
             return prod?.drink;
           });
@@ -4904,7 +4928,7 @@ function MemberCardPreview({member,boissonsUrl,onClose}){
   </div>);
 }
 
-const COMBO_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"price",label:"Prix",fmt:v=>fmt(+v||0)}];
+const COMBO_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"price",label:"Prix",fmt:v=>fmt(+v||0)},{key:"drink",label:"Carte Boissons",fmt:v=>v?"Oui":"Non"}];
 function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portions,currentUser}){
   const [edit,setEdit]=useState(null); // combo en cours d'édition, ou {} pour nouveau
   const [editBase,setEditBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
@@ -4921,12 +4945,13 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
     return s+(prod?unitCost(prod)*it.qty:0);
   },0);
 
-  const startNew=()=>{setEdit({id:null,name:"",price:"",items:[],photo:""});setEditBase(null);};
-  const startEdit=c=>{setEdit({id:c.id,name:c.name,price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});setEditBase(c);};
+  const startNew=()=>{setEdit({id:null,name:"",price:"",items:[],photo:"",drink:false});setEditBase(null);};
+  const startEdit=c=>{setEdit({id:c.id,name:c.name,price:c.price,items:restorePortionMult(c.items,portions),photo:c.photo||"",drink:!!c.drink});setEditBase(c);};
   // Pré-remplit "+ Nouveau menu" avec une copie de ce menu (ingrédients, portions,
-  // alternatives, quantités et photo compris) — évite de reconstruire un menu
-  // similaire ingrédient par ingrédient, ex: une variante à prix différent.
-  const duplicateCombo=c=>{setEdit({id:null,name:c.name+" (copie)",price:c.price,items:c.items.map(it=>({...it})),photo:c.photo||""});setEditBase(null);};
+  // alternatives, quantités, photo et case "Carte Boissons" compris) — évite de
+  // reconstruire un menu similaire ingrédient par ingrédient, ex: une variante à prix
+  // différent.
+  const duplicateCombo=c=>{setEdit({id:null,name:c.name+" (copie)",price:c.price,items:restorePortionMult(c.items,portions),photo:c.photo||"",drink:!!c.drink});setEditBase(null);};
 
   const addItem=()=>{
     if(!products.length)return;
@@ -5051,7 +5076,7 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
     const itemsStr=serializeComboItems(edit.items);
     const itemsUp=await uploadTextChunked(caisseUrl,"uploadComboItemsChunk",id,itemsStr);
     if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement du contenu du menu : "+itemsUp.error);setBusy(false);return;}
-    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra,
+    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,drink:edit.drink?"1":"",...extra,
       baseVersion,modifiedBy:currentUser?.name||""});
     const applyLocal=()=>{
       const newEntry={id,name:edit.name,price:+edit.price,
@@ -5060,14 +5085,15 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
           if(it.type==="plat")return{type:"plat",platId:it.platId,qty:toNum(it.qty)||1};
           return{type:"product",productId:it.productId,qty:toNum(it.qty),portionId:it.portionId||"",alternates:it.alternates||[]};
         }),
-        photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
+        photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||""),
+        drink:!!edit.drink};
       setCombos(prev=>[...prev.filter(c=>c.id!==id),newEntry]);
     };
     const{conflicted,result}=await attemptSave({
       doSave,base:original,mine:edit,fields:COMBO_CONFLICT_FIELDS,label:"ce menu",
       note:"Le contenu (ingrédients) du menu n'est pas comparé en détail ici — vérifiez-le après rechargement si besoin.",
       applyLocal,
-      loadServerRecord:cur=>{setCombos(prev=>[...prev.filter(c=>c.id!==id),cur]);setEditBase(cur);setEdit({id:cur.id,name:cur.name,price:cur.price,items:cur.items.map(it=>({...it})),photo:cur.photo||""});},
+      loadServerRecord:cur=>{setCombos(prev=>[...prev.filter(c=>c.id!==id),cur]);setEditBase(cur);setEdit({id:cur.id,name:cur.name,price:cur.price,items:restorePortionMult(cur.items,portions),photo:cur.photo||"",drink:!!cur.drink});},
       exitEdit:()=>setEdit(null),
       setBusy
     });
@@ -5151,6 +5177,13 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Photo du menu</label>
         {edit.photo&&<img src={edit.photo} style={{width:50,height:50,borderRadius:8,objectFit:"cover",marginBottom:6,display:"block"}}/>}
         <input type="file" accept="image/*" onChange={handlePhoto} style={{fontSize:12,color:T.mid,marginBottom:12}}/>
+
+        <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer",marginBottom:12}}>
+          <input type="checkbox" checked={!!edit.drink} onChange={e=>setEdit({...edit,drink:e.target.checked})}/> 🍺 Carte Boissons
+        </label>
+        <div style={{background:"#FFF8E1",borderRadius:10,padding:"8px 10px",marginBottom:12,fontSize:11,color:"#8A6D00"}}>
+          Cochez pour rendre ce menu offrable via la carte boissons même s'il ne contient pas de produit marqué "Carte Boissons". S'il contient déjà une boisson, il reste offrable automatiquement, coché ou non.
+        </div>
 
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:6}}>Produits inclus</label>
         {edit.items.map((it,idx)=>{
@@ -5305,7 +5338,7 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
 // illimitée que l'ancien système (menus imbriqués dans des menus) provoquait. Un
 // Plat peut se vendre seul en caisse, ou être utilisé comme ingrédient d'un Menu
 // (voir CombosAdmin, type "plat").
-const PLAT_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"price",label:"Prix",fmt:v=>fmt(+v||0)}];
+const PLAT_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"price",label:"Prix",fmt:v=>fmt(+v||0)},{key:"drink",label:"Carte Boissons",fmt:v=>v?"Oui":"Non"}];
 function PlatsAdmin({products,plats,setPlats,caisseUrl,portions,currentUser}){
   const [edit,setEdit]=useState(null); // plat en cours d'édition, ou {} pour nouveau
   const [editBase,setEditBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
@@ -5321,11 +5354,12 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions,currentUser}){
     return s+(prod?unitCost(prod)*toNum(it.qty):0);
   },0);
 
-  const startNew=()=>{setEdit({id:null,name:"",price:"",items:[],photo:""});setEditBase(null);};
-  const startEdit=p=>{setEdit({id:p.id,name:p.name,price:p.price,items:p.items.map(it=>({...it})),photo:p.photo||""});setEditBase(p);};
+  const startNew=()=>{setEdit({id:null,name:"",price:"",items:[],photo:"",drink:false});setEditBase(null);};
+  const startEdit=p=>{setEdit({id:p.id,name:p.name,price:p.price,items:restorePortionMult(p.items,portions),photo:p.photo||"",drink:!!p.drink});setEditBase(p);};
   // Pré-remplit "+ Nouveau plat" avec une copie de ce plat (ingrédients, portions,
-  // alternatives, quantités et photo compris) — même logique que pour les menus.
-  const duplicatePlat=p=>{setEdit({id:null,name:p.name+" (copie)",price:p.price,items:p.items.map(it=>({...it})),photo:p.photo||""});setEditBase(null);};
+  // alternatives, quantités, photo et case "Carte Boissons" compris) — même logique
+  // que pour les menus.
+  const duplicatePlat=p=>{setEdit({id:null,name:p.name+" (copie)",price:p.price,items:restorePortionMult(p.items,portions),photo:p.photo||"",drink:!!p.drink});setEditBase(null);};
 
   const addItem=()=>{
     if(!products.length)return;
@@ -5397,19 +5431,20 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions,currentUser}){
     const itemsStr=serializeComboItems(edit.items);
     const itemsUp=await uploadTextChunked(caisseUrl,"uploadPlatItemsChunk",id,itemsStr);
     if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement du contenu du plat : "+itemsUp.error);setBusy(false);return;}
-    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"savePlat",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra,
+    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"savePlat",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,drink:edit.drink?"1":"",...extra,
       baseVersion,modifiedBy:currentUser?.name||""});
     const applyLocal=()=>{
       const newEntry={id,name:edit.name,price:+edit.price,
         items:edit.items.map(it=>({type:"product",productId:it.productId,qty:toNum(it.qty),portionId:it.portionId||"",alternates:it.alternates||[]})),
-        photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
+        photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||""),
+        drink:!!edit.drink};
       setPlats(prev=>[...prev.filter(p=>p.id!==id),newEntry]);
     };
     const{conflicted,result}=await attemptSave({
       doSave,base:original,mine:edit,fields:PLAT_CONFLICT_FIELDS,label:"ce plat",
       note:"Le contenu (ingrédients) du plat n'est pas comparé en détail ici — vérifiez-le après rechargement si besoin.",
       applyLocal,
-      loadServerRecord:cur=>{setPlats(prev=>[...prev.filter(p=>p.id!==id),cur]);setEditBase(cur);setEdit({id:cur.id,name:cur.name,price:cur.price,items:cur.items.map(it=>({...it})),photo:cur.photo||""});},
+      loadServerRecord:cur=>{setPlats(prev=>[...prev.filter(p=>p.id!==id),cur]);setEditBase(cur);setEdit({id:cur.id,name:cur.name,price:cur.price,items:restorePortionMult(cur.items,portions),photo:cur.photo||"",drink:!!cur.drink});},
       exitEdit:()=>setEdit(null),
       setBusy
     });
@@ -5478,6 +5513,13 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions,currentUser}){
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>Photo du plat</label>
         {edit.photo&&<img src={edit.photo} style={{width:50,height:50,borderRadius:8,objectFit:"cover",marginBottom:6,display:"block"}}/>}
         <input type="file" accept="image/*" onChange={handlePhoto} style={{fontSize:12,color:T.mid,marginBottom:12}}/>
+
+        <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer",marginBottom:12}}>
+          <input type="checkbox" checked={!!edit.drink} onChange={e=>setEdit({...edit,drink:e.target.checked})}/> 🍺 Carte Boissons
+        </label>
+        <div style={{background:"#FFF8E1",borderRadius:10,padding:"8px 10px",marginBottom:12,fontSize:11,color:"#8A6D00"}}>
+          Cochez pour rendre ce plat offrable via la carte boissons même s'il ne contient pas de produit marqué "Carte Boissons". S'il contient déjà une boisson, il reste offrable automatiquement, coché ou non.
+        </div>
 
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:6}}>Produits inclus</label>
         {edit.items.map((it,idx)=>{

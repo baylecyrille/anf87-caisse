@@ -639,7 +639,7 @@ function uploadPortionPhotoChunk(e){
 
 function getCombosData(ss){
   var sh=ss.getSheetByName("Combos"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,8).getValues().filter(r=>r[0]).map(r=>{
+  return sh.getRange(2,1,sh.getLastRow()-1,9).getValues().filter(r=>r[0]).map(r=>{
     var items=(r[3]||"").toString().split(",").map(function(pair){
       var parts=pair.split(":");
       // 4e partie optionnelle : autres produits interchangeables pour cet
@@ -661,7 +661,7 @@ function getCombosData(ss){
       }
       return{type:"product",productId:refId,qty:numQty(parts[1])||1,portionId:(parts[2]||"").trim(),alternates:alternates};
     }).filter(function(it){return it.type==="combo"?it.comboId:(it.type==="plat"?it.platId:it.productId);});
-    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||"",
+    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||"",drink:!!r[8],
       version:(r[5]||"").toString(),modifiedBy:(r[6]||"").toString(),modifiedAt:(r[7]||"").toString()};
   });
 }
@@ -674,6 +674,13 @@ function getCombosData(ss){
 // "current" en cas de conflit diffèrent. Centralisé ici pour ne plus maintenir deux
 // copies quasi identiques (c'était une source d'oublis : un correctif fait sur l'une
 // sans penser à le reporter sur l'autre).
+// Colonne 9 "Offrable" (carte boissons, case à cocher en Admin pour un Menu/Plat) —
+// ajoutée APRÈS les colonnes Version/ModifiePar/ModifieLe existantes (6/7/8), jamais
+// insérée avant : ça évite de devoir décaler ces 3 colonnes (et tout le code qui
+// s'appuie sur leur position fixe) sur les feuilles Combos/Plats déjà en service.
+function ensureDrinkCol(sh){
+  if(!sh.getRange(1,9).getValue())sh.getRange(1,9).setValue("Offrable");
+}
 function saveComboOrPlat(e,sheetName,cachePrefix,getData,versionCol,itemsErrorLabel){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,sheetName), p=e.parameter;
   if(sh.getLastRow()<=1){
@@ -681,6 +688,12 @@ function saveComboOrPlat(e,sheetName,cachePrefix,getData,versionCol,itemsErrorLa
     sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
   }
   ensureVersionCols(sh,versionCol);
+  ensureDrinkCol(sh);
+  // Carte Boissons cochée manuellement en Admin (CombosAdmin/PlatsAdmin) — rend le
+  // Menu/Plat offrable même sans produit marqué boisson parmi ses ingrédients ;
+  // l'éligibilité automatique (contient déjà une boisson) reste par ailleurs
+  // inchangée côté client (voir addComboToCart/addPlatToCart dans index.html).
+  var drinkFlag=p.drink==="1"||p.drink===true||p.drink==="true";
   var photo=(p.photo||"").toString().trim();
   if(photo==="__CHUNKED__"){
     var total=+p.photoChunks||0;
@@ -720,11 +733,13 @@ function saveComboOrPlat(e,sheetName,cachePrefix,getData,versionCol,itemsErrorLa
     if(photo==="__KEEP__")row[4]=sh.getRange(rowNum,5).getValue(); // photo inchangée, non renvoyée
     if(row[4]==="__KEEP__")row[4]=sh.getRange(rowNum,5).getValue(); // garde-fou : jamais la valeur littérale
     sh.getRange(rowNum,1,1,5).setValues([row]);
+    sh.getRange(rowNum,9).setValue(drinkFlag);
     var newVersion=stampVersion(sh,rowNum,versionCol,p.modifiedBy);
     return{ok:true,action:"updated",version:newVersion};
   }
   if(photo==="__KEEP__")row[4]=""; // création : rien à garder
   sh.appendRow(row);
+  sh.getRange(sh.getLastRow(),9).setValue(drinkFlag);
   var newVersion2=stampVersion(sh,sh.getLastRow(),versionCol,p.modifiedBy);
   return{ok:true,action:"created",version:newVersion2};
 }
@@ -750,13 +765,13 @@ function uploadSaleItemsChunk(e){
 // référence jamais un autre Plat ni un Menu — uniquement des produits bruts) ──
 function getPlatsData(ss){
   var sh=ss.getSheetByName("Plats"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,8).getValues().filter(r=>r[0]).map(r=>{
+  return sh.getRange(2,1,sh.getLastRow()-1,9).getValues().filter(r=>r[0]).map(r=>{
     var items=(r[3]||"").toString().split(",").map(function(pair){
       var parts=pair.split(":");
       var alternates=(parts[3]||"").split("|").map(function(a){return a.trim();}).filter(Boolean);
       return{type:"product",productId:(parts[0]||"").trim(),qty:numQty(parts[1])||1,portionId:(parts[2]||"").trim(),alternates:alternates};
     }).filter(function(it){return it.productId;});
-    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||"",
+    return{id:r[0],name:r[1],price:+r[2]||0,items:items,photo:r[4]||"",drink:!!r[8],
       version:(r[5]||"").toString(),modifiedBy:(r[6]||"").toString(),modifiedAt:(r[7]||"").toString()};
   });
 }
@@ -802,6 +817,7 @@ function migrateToPlats(){
     platsSh.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
     platsSh.getRange(1,1,1,5).setFontWeight("bold"); platsSh.setFrozenRows(1);
   }
+  ensureDrinkCol(platsSh);
   var migratedIds={};
   toMigrate.forEach(function(c){
     var itemsStr=c.items.map(function(it){
@@ -809,6 +825,7 @@ function migrateToPlats(){
       return it.productId+":"+it.qty+":"+(it.portionId||"")+":"+alts;
     }).join(",");
     platsSh.appendRow([c.id,c.name,c.price,itemsStr,c.photo||""]);
+    platsSh.getRange(platsSh.getLastRow(),9).setValue(!!c.drink); // conserve la case "Carte Boissons" lors de la migration
     migratedIds[c.id]=true;
   });
   // Retire les menus migrés de la feuille Combos (ils vivent désormais dans Plats),
