@@ -2338,6 +2338,13 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
   const [dragId,setDragId]=useState(null);
   const [dragOverId,setDragOverId]=useState(null);
   const dragIdRef=useRef(null),dragOverIdRef=useRef(null);
+  // Référence de la grille scrollable + défilement automatique quand le doigt
+  // approche du haut/bas pendant un glisser — sans ça, impossible de déplacer une
+  // tuile au-delà de ce qui tient à l'écran sur un catalogue un peu long (il fallait
+  // lâcher, faire défiler à la main, puis reprendre le geste).
+  const gridRef=useRef(null);
+  const scrollDirRef=useRef(0); // -1 haut, 0 aucun, 1 bas
+  const scrollIntervalRef=useRef(null);
   const reorderTo=(sourceId,targetId)=>{
     // Les Plats (préfixe "plat-", voir platEntries plus bas) doivent aussi faire partie
     // de la liste des IDs déplaçables — sans ça, reorderTo() abandonnait silencieusement
@@ -2360,16 +2367,29 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
   const startDrag=pid=>{
     if(!reorderMode)return;
     dragIdRef.current=pid.toString();setDragId(pid.toString());
+    const EDGE=60,SPEED=12; // zone de déclenchement (px) et vitesse de défilement (px/tick)
+    if(scrollIntervalRef.current)clearInterval(scrollIntervalRef.current);
+    scrollDirRef.current=0;
+    scrollIntervalRef.current=setInterval(()=>{
+      if(scrollDirRef.current&&gridRef.current)gridRef.current.scrollTop+=scrollDirRef.current*SPEED;
+    },16);
     const move=ev=>{
       const pt=ev.touches?ev.touches[0]:ev;
       const el=document.elementFromPoint(pt.clientX,pt.clientY);
       const wrapper=el&&el.closest&&el.closest("[data-pid]");
       const overId=wrapper?wrapper.getAttribute("data-pid"):null;
       dragOverIdRef.current=overId;setDragOverId(overId);
+      if(gridRef.current){
+        const rect=gridRef.current.getBoundingClientRect();
+        if(pt.clientY<rect.top+EDGE)scrollDirRef.current=-1;
+        else if(pt.clientY>rect.bottom-EDGE)scrollDirRef.current=1;
+        else scrollDirRef.current=0;
+      }
     };
     const end=()=>{
       document.removeEventListener("pointermove",move);
       document.removeEventListener("pointerup",end);
+      clearInterval(scrollIntervalRef.current);scrollIntervalRef.current=null;scrollDirRef.current=0;
       if(dragOverIdRef.current&&dragIdRef.current&&dragOverIdRef.current!==dragIdRef.current){
         reorderTo(dragIdRef.current,dragOverIdRef.current);
       }
@@ -2416,8 +2436,16 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         </div>
       </div>
 
+      {/* Bandeaux d'état — au-dessus de la grille, donc toujours visibles même en
+          scrollant, contrairement à un simple changement de couleur d'un bouton
+          perdu dans l'en-tête (facile à manquer en plein rush). */}
+      {happyHourActive&&<div style={{flexShrink:0,background:"#FF9500",color:"white",fontSize:12,fontWeight:800,
+        padding:"7px 12px",textAlign:"center"}}>🎉 HAPPY HOUR EN COURS — tarifs réduits affichés sur les tuiles</div>}
+      {reorderMode&&<div style={{flexShrink:0,background:"#FFF3E0",color:"#E65100",fontSize:12,fontWeight:700,
+        padding:"7px 12px",textAlign:"center"}}>↕ Maintenez une tuile puis glissez-la pour la déplacer — appuyez sur ✓ pour terminer</div>}
+
       {/* Grille produits */}
-      <div style={{flex:1,overflowY:"auto",padding:10,display:"grid",
+      <div ref={gridRef} style={{flex:1,overflowY:"auto",padding:10,display:"grid",
         gridTemplateColumns:`repeat(${cols},1fr)`,gap:9,alignContent:"start"}}>
         {(()=>{
         const buildProductTile=(p)=>{
@@ -2563,6 +2591,15 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             const prod=products.find(p=>p.id.toString()===pid.toString());
             return prod&&(prod.stock[siteId]||0)>=neededByProduct[pid];
           });
+          // Un menu contenant au moins une boisson est éligible à la carte boissons
+          // offertes exactement comme un produit boisson classique (voir
+          // addComboToCart) — même calcul ici, pour que ce soit visible sur la tuile
+          // AVANT l'ajout au panier, pas seulement découvert à l'encaissement.
+          const containsDrink=resolved.productItems.some(it=>{
+            const prod=products.find(p=>p.id.toString()===it.productId.toString());
+            return prod?.drink;
+          });
+          const lowReady=ready>0&&ready<=2;
           return(<div key={cid} data-pid={cid} onPointerDown={()=>startDrag(cid)}
             style={{position:"relative",touchAction:reorderMode?"none":"auto",
               opacity:dragId===cid?0.35:1,
@@ -2579,8 +2616,11 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             {combo.photo?<>
               <img src={combo.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
               <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0) 38%,rgba(0,0,0,0.8) 100%)"}}/>
-              <div style={{position:"absolute",top:6,left:6,background:"#5856D6",color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍽 Menu</div>
-              {ready>0?<div style={{position:"absolute",top:6,right:6,background:T.green,color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>{ready} prêt{ready>1?"s":""}</div>
+              <div style={{position:"absolute",top:6,left:6,display:"flex",flexDirection:"column",gap:3,alignItems:"flex-start"}}>
+                <div style={{background:"#5856D6",color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍽 Menu</div>
+                {containsDrink&&stockOk&&<div style={{background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
+              </div>
+              {ready>0?<div style={{position:"absolute",top:6,right:6,background:lowReady?T.orange:T.green,color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>{lowReady?"⚠ ":""}{ready} prêt{ready>1?"s":""}</div>
                 :!stockOk&&<div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>RUPTURE</div>}
               <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
                 <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{combo.name}</div>
@@ -2589,9 +2629,10 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             </>:<>
               <div style={{fontSize:36,marginBottom:6}}>🍽</div>
               <div style={{fontSize:10,color:"#5856D6",fontWeight:700,marginBottom:2}}>Menu</div>
+              {containsDrink&&stockOk&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
               <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:3,lineHeight:1.2}}>{combo.name}</div>
               <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(combo.price)}</div>
-              <div style={{fontSize:10,fontWeight:600,color:stockOk?T.green:"#FF3B30",marginTop:3}}>{ready>0?`${ready} prêt${ready>1?"s":""}`:stockOk?"✓ dispo":"RUPTURE"}</div>
+              <div style={{fontSize:10,fontWeight:600,color:ready>0?(lowReady?T.orange:T.green):(stockOk?T.green:"#FF3B30"),marginTop:3}}>{ready>0?`${lowReady?"⚠ ":""}${ready} prêt${ready>1?"s":""}`:stockOk?"✓ dispo":"RUPTURE"}</div>
             </>}
           </button>
           {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
@@ -2611,6 +2652,13 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             const prod=products.find(p=>p.id.toString()===p2.toString());
             return prod&&(prod.stock[siteId]||0)>=neededByProduct[p2];
           });
+          // Même règle que pour un menu (voir buildComboTile) : un plat contenant au
+          // moins une boisson est éligible à la carte boissons offertes.
+          const containsDrink=flat.some(it=>{
+            const prod=products.find(p=>p.id.toString()===it.productId.toString());
+            return prod?.drink;
+          });
+          const lowReady=ready>0&&ready<=2;
           return(<div key={pid} data-pid={pid} onPointerDown={()=>startDrag(pid)}
             style={{position:"relative",touchAction:reorderMode?"none":"auto",
               opacity:dragId===pid?0.35:1,
@@ -2627,8 +2675,11 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             {plat.photo?<>
               <img src={plat.photo} style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover"}}/>
               <div style={{position:"absolute",inset:0,background:"linear-gradient(180deg,rgba(0,0,0,0) 38%,rgba(0,0,0,0.8) 100%)"}}/>
-              <div style={{position:"absolute",top:6,left:6,background:"#00A86B",color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍴 Plat</div>
-              {ready>0?<div style={{position:"absolute",top:6,right:6,background:T.green,color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>{ready} prêt{ready>1?"s":""}</div>
+              <div style={{position:"absolute",top:6,left:6,display:"flex",flexDirection:"column",gap:3,alignItems:"flex-start"}}>
+                <div style={{background:"#00A86B",color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍴 Plat</div>
+                {containsDrink&&stockOk&&<div style={{background:T.orange,color:"white",fontSize:9,fontWeight:800,padding:"2px 6px",borderRadius:6}}>🍺 Offrable</div>}
+              </div>
+              {ready>0?<div style={{position:"absolute",top:6,right:6,background:lowReady?T.orange:T.green,color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>{lowReady?"⚠ ":""}{ready} prêt{ready>1?"s":""}</div>
                 :!stockOk&&<div style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,0.55)",color:"white",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:6}}>RUPTURE</div>}
               <div style={{position:"absolute",left:8,right:8,bottom:6,textAlign:"left"}}>
                 <div style={{fontSize:12,fontWeight:800,color:"white",textShadow:"0 1px 3px rgba(0,0,0,0.85)",lineHeight:1.2,marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{plat.name}</div>
@@ -2637,9 +2688,10 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
             </>:<>
               <div style={{fontSize:36,marginBottom:6}}>🍴</div>
               <div style={{fontSize:10,color:"#00A86B",fontWeight:700,marginBottom:2}}>Plat</div>
+              {containsDrink&&stockOk&&<div style={{fontSize:10,color:T.orange,fontWeight:700,marginBottom:2}}>🍺 Offrable</div>}
               <div style={{fontSize:12,fontWeight:700,color:T.dark,marginBottom:3,lineHeight:1.2}}>{plat.name}</div>
               <div style={{fontSize:13,fontWeight:800,color:T.red}}>{fmt(plat.price)}</div>
-              <div style={{fontSize:10,fontWeight:600,color:stockOk?T.green:"#FF3B30",marginTop:3}}>{ready>0?`${ready} prêt${ready>1?"s":""}`:stockOk?"✓ dispo":"RUPTURE"}</div>
+              <div style={{fontSize:10,fontWeight:600,color:ready>0?(lowReady?T.orange:T.green):(stockOk?T.green:"#FF3B30"),marginTop:3}}>{ready>0?`${lowReady?"⚠ ":""}${ready} prêt${ready>1?"s":""}`:stockOk?"✓ dispo":"RUPTURE"}</div>
             </>}
           </button>
           {reorderMode&&<div style={{position:"absolute",top:4,right:4,width:24,height:24,borderRadius:6,background:"rgba(0,0,0,0.6)",
