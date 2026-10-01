@@ -582,6 +582,60 @@ function ConflictModal({label,modifiedBy,modifiedAt,rows,note,onForce,onReload,o
   </div>);
 }
 
+// ═══ DÉTECTION DE CONFLIT MUTUALISÉE (voir versionConflict côté serveur) — même
+// squelette qui était recopié dans chaque écran Admin (Produits, Menus, Plats,
+// Catégories, Sites, Utilisateurs, Portions) : un apiWrite avec le baseVersion de la
+// fiche telle qu'elle était à l'ouverture de l'édition, et si le serveur répond un
+// conflit, une ConflictModal proposant de forcer / recharger / annuler. Centralisé ici
+// pour qu'un futur correctif à ce mécanisme n'ait plus besoin d'être recopié à chaque
+// écran (et ne risque plus d'en oublier un au passage). ═══
+function useConflictSave(){
+  const [conflict,setConflict]=useState(null);
+  // doSave(baseVersion) : l'appel apiWrite déjà préparé par l'écran appelant (action,
+  //   champs, id...), baseVersion en paramètre.
+  // base : l'instantané ("editBase") pris au moment où l'édition a commencé.
+  // mine/fields : pour le détail champ par champ (voir diffRows) — fields omis ou vide
+  //   = pas de détail affiché (cas d'un conflit sur un contenu non comparable, ex. les
+  //   ingrédients d'un menu).
+  // label/note : textes affichés dans la fenêtre de conflit.
+  // applyLocal() : met à jour l'état local après un enregistrement réussi (initial OU
+  //   forcé) — ne reçoit aucun argument, capture ses propres valeurs dans le composant
+  //   appelant (exactement comme avant cette factorisation).
+  // loadServerRecord(record) : appelé avec la fiche telle qu'elle est VRAIMENT sur le
+  //   serveur ("Charger la version actuelle") — à charge de l'appelant de remettre à
+  //   jour sa liste ET son formulaire d'édition avec ce record.
+  // exitEdit() : appelé après un "Forcer" (que ça réussisse ou non, comme c'était déjà
+  //   le cas avant) — typiquement pour refermer le formulaire d'édition.
+  // setBusy(bool) : optionnel — pour rebasculer l'indicateur "en cours" du composant
+  //   pendant le nouvel envoi déclenché par "Forcer".
+  const attemptSave=async({doSave,base,mine,fields,label,note,applyLocal,loadServerRecord,exitEdit,setBusy})=>{
+    const r=await doSave(base?.version||"");
+    if(r&&r.conflict){
+      setConflict({
+        label,modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,note,
+        rows:fields&&fields.length?diffRows(base,r.current,mine,fields):[],
+        onForce:async()=>{
+          setConflict(null); if(setBusy)setBusy(true);
+          const r2=await doSave(r.current.version);
+          if(r2&&r2.ok&&applyLocal)applyLocal();
+          if(setBusy)setBusy(false);
+          if(exitEdit)exitEdit();
+        },
+        onReload:()=>{ setConflict(null); if(loadServerRecord)loadServerRecord(r.current); },
+        onCancel:()=>setConflict(null)
+      });
+      return {conflicted:true};
+    }
+    // Avant, chaque écran appliquait la mise à jour locale sans vérifier si l'envoi
+    // avait réellement réussi (seul un conflit était détecté) — un vrai échec serveur
+    // (hors conflit, déjà signalé par l'alerte générique d'apiWrite) laissait quand
+    // même la fiche modifiée à l'écran. On ne l'applique maintenant que si r.ok.
+    if(r&&r.ok&&applyLocal)applyLocal();
+    return {conflicted:false,result:r};
+  };
+  return {conflict,attemptSave};
+}
+
 // ═══ LISTE DES ACTIONS HORS-LIGNE EN ATTENTE (voir apiWrite/flushOutbox) — ouverte en
 // cliquant sur le badge 📡 de l'en-tête, plutôt que de relancer l'envoi à l'aveugle. ═══
 function PendingOutboxModal({caisseUrl,onClose}){
@@ -4802,7 +4856,7 @@ const COMBO_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"price",label:"Prix",
 function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portions,currentUser}){
   const [edit,setEdit]=useState(null); // combo en cours d'édition, ou {} pour nouveau
   const [editBase,setEditBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
-  const [conflict,setConflict]=useState(null);
+  const {conflict,attemptSave}=useConflictSave();
   const [busy,setBusy]=useState(false);
   const [showWeekly,setShowWeekly]=useState(false);
   const [expandedAlt,setExpandedAlt]=useState(new Set()); // index des lignes dont le bloc "alternatives" est déplié
@@ -4947,7 +5001,6 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
     if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement du contenu du menu : "+itemsUp.error);setBusy(false);return;}
     const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveCombo",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra,
       baseVersion,modifiedBy:currentUser?.name||""});
-    const r=await doSave(original?.version||"");
     const applyLocal=()=>{
       const newEntry={id,name:edit.name,price:+edit.price,
         items:edit.items.map(it=>{
@@ -4958,29 +5011,25 @@ function CombosAdmin({products,combos,setCombos,plats,setPlats,caisseUrl,portion
         photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setCombos(prev=>[...prev.filter(c=>c.id!==id),newEntry]);
     };
-    if(r&&r.conflict){
-      setConflict({
-        label:"ce menu",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
-        rows:diffRows(original,r.current,edit,COMBO_CONFLICT_FIELDS),
-        note:"Le contenu (ingrédients) du menu n'est pas comparé en détail ici — vérifiez-le après rechargement si besoin.",
-        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)applyLocal(); setBusy(false); setEdit(null); },
-        onReload:()=>{ setConflict(null); setCombos(prev=>[...prev.filter(c=>c.id!==id),r.current]); setEditBase(r.current); setEdit({id:r.current.id,name:r.current.name,price:r.current.price,items:r.current.items.map(it=>({...it})),photo:r.current.photo||""}); },
-        onCancel:()=>setConflict(null)
-      });
-      setBusy(false);
-      return;
-    }
-    if(r.ok){
-      applyLocal();
-      setEdit(null);
-    }
+    const{conflicted,result}=await attemptSave({
+      doSave,base:original,mine:edit,fields:COMBO_CONFLICT_FIELDS,label:"ce menu",
+      note:"Le contenu (ingrédients) du menu n'est pas comparé en détail ici — vérifiez-le après rechargement si besoin.",
+      applyLocal,
+      loadServerRecord:cur=>{setCombos(prev=>[...prev.filter(c=>c.id!==id),cur]);setEditBase(cur);setEdit({id:cur.id,name:cur.name,price:cur.price,items:cur.items.map(it=>({...it})),photo:cur.photo||""});},
+      exitEdit:()=>setEdit(null),
+      setBusy
+    });
+    if(!conflicted&&result?.ok)setEdit(null);
     setBusy(false);
   };
 
   const del=async id=>{
     if(!(await customConfirm("Supprimer ce menu ?")))return;
+    if(caisseUrl){
+      const r=await apiWrite(caisseUrl,{action:"deleteCombo",id});
+      if(!r.ok)return; // l'alerte générique d'apiWrite a déjà prévenu — la carte reste affichée
+    }
     setCombos(prev=>prev.filter(c=>c.id!==id));
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteCombo",id});
   };
 
   const prodName=pid=>products.find(p=>p.id.toString()===pid.toString())?.name||"(produit supprimé)";
@@ -5208,7 +5257,7 @@ const PLAT_CONFLICT_FIELDS=[{key:"name",label:"Nom"},{key:"price",label:"Prix",f
 function PlatsAdmin({products,plats,setPlats,caisseUrl,portions,currentUser}){
   const [edit,setEdit]=useState(null); // plat en cours d'édition, ou {} pour nouveau
   const [editBase,setEditBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
-  const [conflict,setConflict]=useState(null);
+  const {conflict,attemptSave}=useConflictSave();
   const [busy,setBusy]=useState(false);
   const [expandedAlt,setExpandedAlt]=useState(new Set()); // index des lignes dont le bloc "alternatives" est déplié
 
@@ -5298,36 +5347,31 @@ function PlatsAdmin({products,plats,setPlats,caisseUrl,portions,currentUser}){
     if(!itemsUp.ok){await customAlert("⚠️ Échec de l'enregistrement du contenu du plat : "+itemsUp.error);setBusy(false);return;}
     const doSave=baseVersion=>apiWrite(caisseUrl,{action:"savePlat",id,name:edit.name,price:+edit.price,items:itemsUp.param,itemsChunks:itemsUp.chunks||0,photo:photoParam,...extra,
       baseVersion,modifiedBy:currentUser?.name||""});
-    const r=await doSave(original?.version||"");
     const applyLocal=()=>{
       const newEntry={id,name:edit.name,price:+edit.price,
         items:edit.items.map(it=>({type:"product",productId:it.productId,qty:toNum(it.qty),portionId:it.portionId||"",alternates:it.alternates||[]})),
         photo:photoChanged?(photoParam==="__CHUNKED__"?edit.photo:photoParam):(original?.photo||"")};
       setPlats(prev=>[...prev.filter(p=>p.id!==id),newEntry]);
     };
-    if(r&&r.conflict){
-      setConflict({
-        label:"ce plat",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
-        rows:diffRows(original,r.current,edit,PLAT_CONFLICT_FIELDS),
-        note:"Le contenu (ingrédients) du plat n'est pas comparé en détail ici — vérifiez-le après rechargement si besoin.",
-        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)applyLocal(); setBusy(false); setEdit(null); },
-        onReload:()=>{ setConflict(null); setPlats(prev=>[...prev.filter(p=>p.id!==id),r.current]); setEditBase(r.current); setEdit({id:r.current.id,name:r.current.name,price:r.current.price,items:r.current.items.map(it=>({...it})),photo:r.current.photo||""}); },
-        onCancel:()=>setConflict(null)
-      });
-      setBusy(false);
-      return;
-    }
-    if(r.ok){
-      applyLocal();
-      setEdit(null);
-    }
+    const{conflicted,result}=await attemptSave({
+      doSave,base:original,mine:edit,fields:PLAT_CONFLICT_FIELDS,label:"ce plat",
+      note:"Le contenu (ingrédients) du plat n'est pas comparé en détail ici — vérifiez-le après rechargement si besoin.",
+      applyLocal,
+      loadServerRecord:cur=>{setPlats(prev=>[...prev.filter(p=>p.id!==id),cur]);setEditBase(cur);setEdit({id:cur.id,name:cur.name,price:cur.price,items:cur.items.map(it=>({...it})),photo:cur.photo||""});},
+      exitEdit:()=>setEdit(null),
+      setBusy
+    });
+    if(!conflicted&&result?.ok)setEdit(null);
     setBusy(false);
   };
 
   const del=async id=>{
     if(!(await customConfirm("Supprimer ce plat ?\n\nS'il est utilisé comme ingrédient d'un menu, ce menu deviendra invalide (à corriger ensuite dans Admin → Menus)."))) return;
+    if(caisseUrl){
+      const r=await apiWrite(caisseUrl,{action:"deletePlat",id});
+      if(!r.ok)return; // l'alerte générique d'apiWrite a déjà prévenu — la fiche reste affichée
+    }
     setPlats(prev=>prev.filter(p=>p.id!==id));
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"deletePlat",id});
   };
 
   const itemLabel=it=>{
@@ -6884,7 +6928,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
   // sert de référence (baseVersion + comparaison) en cas de conflit ; "edit" lui-même
   // change à chaque frappe et ne peut donc pas servir de point de comparaison fixe.
   const [editBase,setEditBase]=useState(null);
-  const [conflict,setConflict]=useState(null);
+  const {conflict,attemptSave}=useConflictSave();
   const [newP,setNewP]=useState({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
   const [portionsFor,setPortionsFor]=useState(null); // produit dont on gère les portions
   const [accompFor,setAccompFor]=useState(null); // produit dont on gère les accompagnements
@@ -6922,39 +6966,39 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     setNewP({name:"",price:"",costPrice:"",cat:categories[0]?.name||"Boissons",emoji:"🏷",photo:"",barcode:"",drink:false,sellByVolume:false,unit:"",baseQty:1,presets:"",containers:"",color:"#FF9F0A"});
     setSaving(false);
   };
-  const saveEdit=async()=>{if(saving)return;setSaving(true);const original=editBase||products.find(p=>p.id===edit.id);const arr=products.map(p=>p.id===edit.id?edit:p);onSave(arr);
-    if(caisseUrl){
-      // Si la photo n'a pas changé, on ne la renvoie pas du tout — c'est de loin le
-      // champ le plus lourd (plusieurs dizaines de Ko envoyés en petits morceaux), pas
-      // la peine de la retransmettre juste parce qu'on a modifié le code-barres.
-      const photoChanged=edit.photo!==(original?.photo||"");
-      let photoParam,extra={};
-      if(photoChanged){
-        const up=await uploadPhotoIfNeeded(edit.id,edit.photo);
-        if(!up.ok){await customAlert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLes autres modifications ont été enregistrées, réessayez d'ajouter la photo ensuite.");}
-        photoParam=up.ok?up.photoParam:(edit.photo?"__CHUNKED__":"");
-        extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
-      }else{
-        photoParam="__KEEP__"; // indique au serveur de garder la photo déjà enregistrée telle quelle
-      }
-      const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites),photo:photoParam,...extra,
-        baseVersion,modifiedBy:currentUser?.name||""});
-      const r=await doSave(original?.version||"");
-      if(r&&r.conflict){
-        setConflict({
-          label:"ce produit",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
-          rows:diffRows(original,r.current,edit,PRODUCT_CONFLICT_FIELDS),
-          onForce:async()=>{ setConflict(null); setSaving(true); await doSave(r.current.version); setSaving(false); setEdit(null); },
-          onReload:()=>{ setConflict(null); onSave(products.map(p=>p.id===r.current.id?r.current:p)); setEditBase(r.current); setEdit({...r.current}); },
-          onCancel:()=>{ setConflict(null); onSave(products); }
-        });
-        setSaving(false);
-        return;
-      }
+  const saveEdit=async()=>{if(saving)return;setSaving(true);const original=editBase||products.find(p=>p.id===edit.id);
+    if(!caisseUrl){onSave(products.map(p=>p.id===edit.id?edit:p));setSaving(false);setEdit(null);return;}
+    // Si la photo n'a pas changé, on ne la renvoie pas du tout — c'est de loin le
+    // champ le plus lourd (plusieurs dizaines de Ko envoyés en petits morceaux), pas
+    // la peine de la retransmettre juste parce qu'on a modifié le code-barres.
+    const photoChanged=edit.photo!==(original?.photo||"");
+    let photoParam,extra={};
+    if(photoChanged){
+      const up=await uploadPhotoIfNeeded(edit.id,edit.photo);
+      if(!up.ok){await customAlert("⚠️ Échec de l'envoi de la photo : "+up.error+"\n\nLes autres modifications ont été enregistrées, réessayez d'ajouter la photo ensuite.");}
+      photoParam=up.ok?up.photoParam:(edit.photo?"__CHUNKED__":"");
+      extra=up.ok&&up.photoChunks?{photoChunks:up.photoChunks}:{};
+    }else{
+      photoParam="__KEEP__"; // indique au serveur de garder la photo déjà enregistrée telle quelle
     }
-    setSaving(false);setEdit(null);};
-  const delProd=async(id)=>{if(!(await customConfirm("Supprimer ?"))||saving)return;setSaving(true);onSave(products.filter(p=>p.id!==id));
-    if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteProduct",id});setSaving(false);};
+    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveProduct",id:edit.id,...flattenProd(edit,sites),photo:photoParam,...extra,
+      baseVersion,modifiedBy:currentUser?.name||""});
+    const{conflicted,result}=await attemptSave({
+      doSave,base:original,mine:edit,fields:PRODUCT_CONFLICT_FIELDS,label:"ce produit",
+      applyLocal:()=>onSave(products.map(p=>p.id===edit.id?edit:p)),
+      loadServerRecord:cur=>{onSave(products.map(p=>p.id===cur.id?cur:p));setEditBase(cur);setEdit({...cur});},
+      exitEdit:()=>setEdit(null),
+      setBusy:setSaving
+    });
+    setSaving(false);
+    if(!conflicted&&result?.ok)setEdit(null);
+  };
+  const delProd=async(id)=>{if(!(await customConfirm("Supprimer ?"))||saving)return;setSaving(true);
+    if(caisseUrl){
+      const r=await apiWrite(caisseUrl,{action:"deleteProduct",id});
+      if(!r.ok){setSaving(false);return;} // l'alerte générique d'apiWrite a déjà prévenu — la fiche reste affichée
+    }
+    onSave(products.filter(p=>p.id!==id));setSaving(false);};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
     drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,siteAvailability:p.siteAvailability||"",showInContainerBar:p.showInContainerBar!==false,...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
@@ -7028,7 +7072,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
       </div>
     </div>}
     {conflict&&<ConflictModal {...conflict}/>}
-    {portionsFor&&<PortionsManager product={portionsFor} products={products} portions={portions} setPortions={setPortions} caisseUrl={caisseUrl} onClose={()=>setPortionsFor(null)}/>}
+    {portionsFor&&<PortionsManager product={portionsFor} products={products} portions={portions} setPortions={setPortions} caisseUrl={caisseUrl} onClose={()=>setPortionsFor(null)} currentUser={currentUser}/>}
     {accompFor&&<AccompanimentsManager product={accompFor} products={products} portions={portions} accompaniments={accompaniments} setAccompaniments={setAccompaniments} caisseUrl={caisseUrl} onClose={()=>setAccompFor(null)}/>}
   </div>);
 }
@@ -7112,10 +7156,18 @@ function AccompanimentsManager({product,products,portions,accompaniments,setAcco
   </div>);
 }
 
-function PortionsManager({product,products,portions,setPortions,caisseUrl,onClose}){
+const PORTION_CONFLICT_FIELDS=[
+  {key:"name",label:"Nom"},
+  {key:"size",label:"Taille",fmt:v=>+v||0},
+  {key:"price",label:"Prix",fmt:v=>fmt(+v||0)},
+  {key:"happyPrice",label:"Prix Happy Hour",fmt:v=>fmt(+v||0)}
+];
+function PortionsManager({product,products,portions,setPortions,caisseUrl,onClose,currentUser}){
   const myPortions=portions.filter(po=>po.productId.toString()===product.id.toString());
   const [form,setForm]=useState({name:"",size:"",price:"",photo:"",happyPrice:""});
   const [editingId,setEditingId]=useState(null);
+  const [editBase,setEditBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
+  const {conflict,attemptSave}=useConflictSave();
   const [busy,setBusy]=useState(false);
   const [copyFrom,setCopyFrom]=useState("");
   // Autres produits ayant déjà des portions configurées, pour pouvoir copier leur
@@ -7148,8 +7200,8 @@ function PortionsManager({product,products,portions,setPortions,caisseUrl,onClos
     resizePhotoFile(f).then(url=>setForm(prev=>({...prev,photo:url})));
   };
 
-  const startEdit=po=>{setEditingId(po.id);setForm({name:po.name,size:po.size,price:po.price,photo:po.photo||"",happyPrice:po.happyPrice||""});};
-  const resetForm=()=>{setEditingId(null);setForm({name:"",size:"",price:"",photo:"",happyPrice:""});};
+  const startEdit=po=>{setEditingId(po.id);setEditBase(po);setForm({name:po.name,size:po.size,price:po.price,photo:po.photo||"",happyPrice:po.happyPrice||""});};
+  const resetForm=()=>{setEditingId(null);setEditBase(null);setForm({name:"",size:"",price:"",photo:"",happyPrice:""});};
 
   const save=async()=>{
     if(!form.name||!form.size||!form.price)return;
@@ -7157,7 +7209,7 @@ function PortionsManager({product,products,portions,setPortions,caisseUrl,onClos
     const id=editingId||uid();
     // Même optimisation que pour les produits : on ne renvoie la photo que si elle a
     // changé — sinon "__KEEP__" indique au serveur de garder celle déjà enregistrée.
-    const original=editingId?myPortions.find(po=>po.id===editingId):null;
+    const original=editingId?(editBase||myPortions.find(po=>po.id===editingId)):null;
     const photoChanged=!original||form.photo!==(original.photo||"");
     let photoParam,extra={};
     if(photoChanged){
@@ -7167,13 +7219,25 @@ function PortionsManager({product,products,portions,setPortions,caisseUrl,onClos
     }else{
       photoParam="__KEEP__";
     }
-    const r=await apiWrite(caisseUrl,{action:"savePortion",id,productId:product.id,name:form.name,size:+form.size,price:+form.price,happyPrice:+form.happyPrice||0,photo:photoParam,...extra});
-    if(r.ok){
-      const newEntry={id,productId:product.id,name:form.name,size:+form.size,price:+form.price,happyPrice:+form.happyPrice||0,
-        photo:photoChanged?(photoParam==="__CHUNKED__"?form.photo:photoParam):(original?.photo||"")};
-      setPortions(prev=>[...prev.filter(po=>po.id!==id),newEntry]);
-      resetForm();
+    const newEntry={id,productId:product.id,name:form.name,size:+form.size,price:+form.price,happyPrice:+form.happyPrice||0,
+      photo:photoChanged?(photoParam==="__CHUNKED__"?form.photo:photoParam):(original?.photo||"")};
+    if(!editingId){
+      // Nouvelle portion : rien à écraser, pas de conflit possible — on garde le
+      // chemin simple d'avant (pas besoin de passer par useConflictSave).
+      const r=await apiWrite(caisseUrl,{action:"savePortion",id,productId:product.id,name:form.name,size:+form.size,price:+form.price,happyPrice:+form.happyPrice||0,photo:photoParam,...extra,modifiedBy:currentUser?.name||""});
+      if(r.ok){setPortions(prev=>[...prev.filter(po=>po.id!==id),newEntry]);resetForm();}
+      setBusy(false);
+      return;
     }
+    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"savePortion",id,productId:product.id,name:form.name,size:+form.size,price:+form.price,happyPrice:+form.happyPrice||0,photo:photoParam,...extra,baseVersion,modifiedBy:currentUser?.name||""});
+    const{conflicted,result}=await attemptSave({
+      doSave,base:original,mine:{name:form.name,size:+form.size,price:+form.price,happyPrice:+form.happyPrice||0},fields:PORTION_CONFLICT_FIELDS,label:"cette portion",
+      applyLocal:()=>setPortions(prev=>[...prev.filter(po=>po.id!==id),newEntry]),
+      loadServerRecord:cur=>{setPortions(prev=>[...prev.filter(po=>po.id!==cur.id),cur]);setEditBase(cur);setForm({name:cur.name,size:cur.size,price:cur.price,photo:cur.photo||"",happyPrice:cur.happyPrice||""});},
+      exitEdit:resetForm,
+      setBusy
+    });
+    if(!conflicted&&result?.ok)resetForm();
     setBusy(false);
   };
 
@@ -7238,34 +7302,35 @@ function PortionsManager({product,products,portions,setPortions,caisseUrl,onClos
 
       <button onClick={onClose} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,marginTop:14}}>Fermer</button>
     </div>
+    {conflict&&<ConflictModal {...conflict}/>}
   </div>);
 }
 function CatsAdmin({categories,onSave,caisseUrl,currentUser}){
   const [newName,setNewName]=useState("");
   const [editId,setEditId]=useState(null);const [editName,setEditName]=useState("");
   const [editBase,setEditBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
-  const [conflict,setConflict]=useState(null);
+  const {conflict,attemptSave}=useConflictSave();
   const [busy,setBusy]=useState(false); // anti double-clic
   const add=async()=>{if(!newName.trim()||busy)return;setBusy(true);const id="c"+uid();const arr=[...categories,{id,name:newName.trim()}];
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveCategory",id,name:newName.trim(),modifiedBy:currentUser?.name||""});setNewName("");setBusy(false);};
   const saveEdit=async()=>{if(busy)return;setBusy(true);
-    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveCategory",id:editId,name:editName,baseVersion,modifiedBy:currentUser?.name||""});
-    const r=await doSave(editBase?.version||"");
-    if(r&&r.conflict){
-      setConflict({
-        label:"cette catégorie",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
-        rows:diffRows(editBase,r.current,{name:editName},[{key:"name",label:"Nom"}]),
-        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)onSave(categories.map(c=>c.id===editId?{...c,name:editName}:c)); setBusy(false); setEditId(null); },
-        onReload:()=>{ setConflict(null); onSave(categories.map(c=>c.id===r.current.id?r.current:c)); setEditBase(r.current); setEditName(r.current.name); },
-        onCancel:()=>setConflict(null)
-      });
-      setBusy(false);
-      return;
-    }
-    const arr=categories.map(c=>c.id===editId?{...c,name:editName}:c);
-    onSave(arr);setEditId(null);setBusy(false);};
+    const{conflicted,result}=await attemptSave({
+      doSave:baseVersion=>apiWrite(caisseUrl,{action:"saveCategory",id:editId,name:editName,baseVersion,modifiedBy:currentUser?.name||""}),
+      base:editBase,mine:{name:editName},fields:[{key:"name",label:"Nom"}],label:"cette catégorie",
+      applyLocal:()=>onSave(categories.map(c=>c.id===editId?{...c,name:editName}:c)),
+      loadServerRecord:cur=>{onSave(categories.map(c=>c.id===cur.id?cur:c));setEditBase(cur);setEditName(cur.name);},
+      exitEdit:()=>setEditId(null),
+      setBusy
+    });
+    setBusy(false);
+    if(!conflicted&&result?.ok)setEditId(null);
+  };
   const del=async(id)=>{if(!(await customConfirm("Supprimer cette catégorie ?"))||busy)return;setBusy(true);
-    onSave(categories.filter(c=>c.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteCategory",id});setBusy(false);};
+    if(caisseUrl){
+      const r=await apiWrite(caisseUrl,{action:"deleteCategory",id});
+      if(!r.ok){setBusy(false);return;} // l'alerte générique d'apiWrite a déjà prévenu — la fiche reste affichée
+    }
+    onSave(categories.filter(c=>c.id!==id));setBusy(false);};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:T.card,borderRadius:12,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
       <div style={{fontWeight:700,fontSize:14,color:T.dark,marginBottom:10}}>+ Nouvelle catégorie</div>
@@ -7297,7 +7362,7 @@ function SitesAdmin({sites,onSave,caisseUrl,products,onSaveProducts,currentUser}
   const [newS,setNewS]=useState({name:"",village:"",color:"#CC0000",isSalesPoint:true});
   const [editS,setEditS]=useState(null);
   const [editSBase,setEditSBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
-  const [conflict,setConflict]=useState(null);
+  const {conflict,attemptSave}=useConflictSave();
   const [busy,setBusy]=useState(false); // anti double-clic
   const inp={width:"100%",padding:"9px 11px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,outline:"none",marginBottom:7};
   const add=async()=>{if(!newS.name||busy)return;setBusy(true);const id="s"+uid().slice(-4);const entry={...newS,id,active:true};const arr=[...sites,entry];
@@ -7305,22 +7370,23 @@ function SitesAdmin({sites,onSave,caisseUrl,products,onSaveProducts,currentUser}
     setAvailFor(entry); // propose immédiatement de choisir les produits disponibles sur ce nouveau site
   };
   const saveEdit=async()=>{if(busy)return;setBusy(true);
-    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color,active:editS.active!==false,isSalesPoint:editS.isSalesPoint!==false,baseVersion,modifiedBy:currentUser?.name||""});
-    const r=await doSave(editSBase?.version||"");
-    if(r&&r.conflict){
-      setConflict({
-        label:"ce site",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
-        rows:diffRows(editSBase,r.current,editS,SITE_CONFLICT_FIELDS),
-        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)onSave(sites.map(s=>s.id===editS.id?editS:s)); setBusy(false); setEditS(null); },
-        onReload:()=>{ setConflict(null); onSave(sites.map(s=>s.id===r.current.id?r.current:s)); setEditSBase(r.current); setEditS({...r.current}); },
-        onCancel:()=>setConflict(null)
-      });
-      setBusy(false);
-      return;
+    const{conflicted,result}=await attemptSave({
+      doSave:baseVersion=>apiWrite(caisseUrl,{action:"saveSite",id:editS.id,name:editS.name,village:editS.village,color:editS.color,active:editS.active!==false,isSalesPoint:editS.isSalesPoint!==false,baseVersion,modifiedBy:currentUser?.name||""}),
+      base:editSBase,mine:editS,fields:SITE_CONFLICT_FIELDS,label:"ce site",
+      applyLocal:()=>onSave(sites.map(s=>s.id===editS.id?editS:s)),
+      loadServerRecord:cur=>{onSave(sites.map(s=>s.id===cur.id?cur:s));setEditSBase(cur);setEditS({...cur});},
+      exitEdit:()=>setEditS(null),
+      setBusy
+    });
+    setBusy(false);
+    if(!conflicted&&result?.ok)setEditS(null);
+  };
+  const del=async(id)=>{if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);
+    if(caisseUrl){
+      const r=await apiWrite(caisseUrl,{action:"deleteSite",id});
+      if(!r.ok){setBusy(false);return;} // l'alerte générique d'apiWrite a déjà prévenu — la fiche reste affichée
     }
-    const arr=sites.map(s=>s.id===editS.id?editS:s);
-    onSave(arr);setBusy(false);setEditS(null);};
-  const del=async(id)=>{if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);onSave(sites.filter(s=>s.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteSite",id});setBusy(false);};
+    onSave(sites.filter(s=>s.id!==id));setBusy(false);};
   const toggleActive=async(s)=>{
     if(busy)return;setBusy(true);
     const updated={...s,active:s.active===false};
@@ -7531,7 +7597,7 @@ function UsersAdmin({users,onSave,caisseUrl,currentUser}){
   const [newU,setNewU]=useState({name:"",pin:"",role:"cashier"});
   const [editU,setEditU]=useState(null);
   const [editUBase,setEditUBase]=useState(null); // instantané au moment de l'édition — voir ProductsAdmin
-  const [conflict,setConflict]=useState(null);
+  const {conflict,attemptSave}=useConflictSave();
   const [busy,setBusy]=useState(false); // anti double-clic
   const [showNewPin,setShowNewPin]=useState(false);
   const [showEditPin,setShowEditPin]=useState(false);
@@ -7539,23 +7605,24 @@ function UsersAdmin({users,onSave,caisseUrl,currentUser}){
   const add=async()=>{if(!newU.name||!newU.pin||busy)return;setBusy(true);const id="u"+uid();const arr=[...users,{...newU,id}];
     onSave(arr);if(caisseUrl)await apiWrite(caisseUrl,{action:"saveUser",id,...newU,modifiedBy:currentUser?.name||""});setNewU({name:"",pin:"",role:"cashier"});setBusy(false);};
   const saveEdit=async()=>{if(busy)return;setBusy(true);
-    const doSave=baseVersion=>apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role,baseVersion,modifiedBy:currentUser?.name||""});
-    const r=await doSave(editUBase?.version||"");
-    if(r&&r.conflict){
-      setConflict({
-        label:"cet utilisateur",modifiedBy:r.modifiedBy,modifiedAt:r.modifiedAt,
-        rows:diffRows(editUBase,r.current,editU,USER_CONFLICT_FIELDS),
-        onForce:async()=>{ setConflict(null); setBusy(true); const r2=await doSave(r.current.version); if(r2&&r2.ok)onSave(users.map(u=>u.id===editU.id?editU:u)); setBusy(false); setEditU(null); },
-        onReload:()=>{ setConflict(null); onSave(users.map(u=>u.id===r.current.id?r.current:u)); setEditUBase(r.current); setEditU({...r.current}); },
-        onCancel:()=>setConflict(null)
-      });
-      setBusy(false);
-      return;
-    }
-    const arr=users.map(u=>u.id===editU.id?editU:u);
-    onSave(arr);setBusy(false);setEditU(null);};
+    const{conflicted,result}=await attemptSave({
+      doSave:baseVersion=>apiWrite(caisseUrl,{action:"saveUser",id:editU.id,name:editU.name,pin:editU.pin,role:editU.role,baseVersion,modifiedBy:currentUser?.name||""}),
+      base:editUBase,mine:editU,fields:USER_CONFLICT_FIELDS,label:"cet utilisateur",
+      applyLocal:()=>onSave(users.map(u=>u.id===editU.id?editU:u)),
+      loadServerRecord:cur=>{onSave(users.map(u=>u.id===cur.id?cur:u));setEditUBase(cur);setEditU({...cur});},
+      exitEdit:()=>setEditU(null),
+      setBusy
+    });
+    setBusy(false);
+    if(!conflicted&&result?.ok)setEditU(null);
+  };
   const del=async(id)=>{if(users.length<=1){await customAlert("Impossible de supprimer le dernier utilisateur");return;}
-    if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);onSave(users.filter(u=>u.id!==id));if(caisseUrl)await apiWrite(caisseUrl,{action:"deleteUser",id});setBusy(false);};
+    if(!(await customConfirm("Supprimer ?"))||busy)return;setBusy(true);
+    if(caisseUrl){
+      const r=await apiWrite(caisseUrl,{action:"deleteUser",id});
+      if(!r.ok){setBusy(false);return;} // l'alerte générique d'apiWrite a déjà prévenu — la fiche reste affichée
+    }
+    onSave(users.filter(u=>u.id!==id));setBusy(false);};
   const roleLabel={admin:"🔑 Admin",manager:"🗂 Manager",cashier:"💳 Caissier",test:"🧪 Test"};
   return(<div style={{height:"100%",overflowY:"auto",padding:"14px"}}>
     <div style={{background:"#E3F2FD",borderRadius:12,padding:12,marginBottom:14,fontSize:13,color:"#1565C0"}}>ℹ️ <strong>Admin</strong> : accès complet. <strong>Caissier</strong> : accès caisse uniquement. Si aucun utilisateur, connexion libre.</div>

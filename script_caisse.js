@@ -229,6 +229,39 @@ function safeDecodeItems(raw){
 function getOrCreate(ss,name){
   var s=ss.getSheetByName(name); if(!s)s=ss.insertSheet(name); return s;
 }
+// Cherche, dans la colonne A d'une feuille, la ligne dont la valeur vaut "id" (comparée
+// en texte) — motif qui revenait, copié-collé à l'identique, dans une quinzaine de
+// fonctions (deleteX, et la partie "est-ce une création ou une mise à jour ?" de chaque
+// saveX). Renvoie le numéro de ligne RÉEL (1-based, en-tête comprise — donc utilisable
+// tel quel dans getRange(row,...)), ou -1 si la feuille est vide ou si l'ID est introuvable.
+function findRowById(sh,id){
+  if(!sh||sh.getLastRow()<=1)return -1;
+  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
+  var idStr=id.toString();
+  for(var i=0;i<ids.length;i++){ if(ids[i][0].toString()===idStr)return i+2; }
+  return -1;
+}
+// Suppression par ID, commune à Produits/Sites/Categories/Utilisateurs/Combos/Plats/
+// Portions/Accompagnements — ces 8 fonctions ne différaient que par le nom de la feuille.
+function deleteRowById(sh,id){
+  var row=findRowById(sh,id);
+  if(row<0)return{ok:false,error:"Non trouvé"};
+  sh.deleteRow(row);
+  return{ok:true};
+}
+// Les 7 actions uploadXChunk (photo produit, photo/contenu de menu, détail de vente,
+// photo/contenu de plat, photo de portion) sont strictement identiques à l'exception du
+// préfixe de clé de cache utilisé — un même petit morceau de texte (base64 ou JSON), mis
+// en cache 10 min en attendant que tous les morceaux d'un même envoi soient arrivés (voir
+// saveProduct/saveComboOrPlat/savePortion/saveSale pour le réassemblage). Centralisé ici ;
+// on garde une fonction par action (même nom qu'avant) pour que le "switch" de doGet et
+// les clés déjà en cache côté client n'aient pas à changer.
+function uploadChunkGeneric(e,keyPrefix){
+  var p=e.parameter;
+  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
+  CacheService.getScriptCache().put(keyPrefix+"_"+p.id+"_"+p.idx, p.chunk, 600);
+  return{ok:true};
+}
 // Convertit une quantité stockée en nombre, en tolérant une virgule française
 // résiduelle ("0,5") au cas où une donnée aurait été enregistrée avant la
 // correction du champ de saisie côté client — évite qu'un ancien Plat/Menu casse
@@ -269,6 +302,7 @@ function ensureAllVersionCols(ss){
   var sites=ss.getSheetByName("Sites"); if(sites)ensureVersionCols(sites,7);
   var users=ss.getSheetByName("Utilisateurs"); if(users)ensureVersionCols(users,8);
   var cfg=ss.getSheetByName("Config"); if(cfg)ensureVersionCols(cfg,3);
+  var portions=ss.getSheetByName("Portions"); if(portions)ensureVersionCols(portions,8);
 }
 // Renvoie {modifiedBy,modifiedAt} si un conflit est détecté sur la ligne "row" (1-based,
 // en-tête comprise), null sinon (pas de conflit, ou pas de vérification possible/demandée).
@@ -530,28 +564,24 @@ function saveAccompaniment(e){
     sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
   }
   var row=[p.id,p.productId,p.assocId,+p.qty||1,p.portionId||""];
-  if(sh.getLastRow()>1){
-    var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      sh.getRange(i+2,1,1,5).setValues([row]);
-      return{ok:true,action:"updated"};
-    }}
+  var rowNum=findRowById(sh,p.id);
+  if(rowNum>=0){
+    sh.getRange(rowNum,1,1,5).setValues([row]);
+    return{ok:true,action:"updated"};
   }
   sh.appendRow(row);
   return{ok:true,action:"created"};
 }
 function deleteAccompaniment(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Accompagnements"), id=e.parameter.id;
-  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Non trouvé"};
-  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}
-  return{ok:false,error:"Non trouvé"};
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Accompagnements");
+  return deleteRowById(sh,e.parameter.id);
 }
 
 function getPortionsData(ss){
   var sh=ss.getSheetByName("Portions"); if(!sh||sh.getLastRow()<=1)return [];
-  return sh.getRange(2,1,sh.getLastRow()-1,7).getValues().filter(r=>r[0]&&r[1])
-    .map(r=>({id:r[0],productId:r[1],name:r[2],size:+r[3]||0,price:+r[4]||0,photo:r[5]||"",happyPrice:+r[6]||0}));
+  return sh.getRange(2,1,sh.getLastRow()-1,10).getValues().filter(r=>r[0]&&r[1])
+    .map(r=>({id:r[0],productId:r[1],name:r[2],size:+r[3]||0,price:+r[4]||0,photo:r[5]||"",happyPrice:+r[6]||0,
+      version:(r[7]||"").toString(),modifiedBy:(r[8]||"").toString(),modifiedAt:(r[9]||"").toString()}));
 }
 
 // Crée ou met à jour une portion de vente (demi, pichet, taille de gobelet...).
@@ -561,6 +591,11 @@ function savePortion(e){
     sh.getRange(1,1,1,7).setValues([["ID","ProduitID","Nom","TailleCl","Prix","Photo","PrixHappyHour"]]);
     sh.getRange(1,1,1,7).setFontWeight("bold"); sh.setFrozenRows(1);
   }
+  // Mêmes colonnes Version/ModifiePar/ModifieLe que les 7 autres entités éditées
+  // depuis l'Admin (voir ensureAllVersionCols) — pour que deux admins qui modifient la
+  // même portion en même temps soient prévenus, au lieu que le dernier enregistré
+  // écrase silencieusement l'autre.
+  ensureVersionCols(sh,8);
   var photo=(p.photo||"").toString().trim();
   if(photo==="__CHUNKED__"){
     var total=+p.photoChunks||0;
@@ -574,33 +609,32 @@ function savePortion(e){
     for(var c2=0;c2<total;c2++)cache.remove("portionphoto_"+p.id+"_"+c2);
   }
   var row=[p.id,p.productId,p.name||"",+p.size||0,+p.price||0,photo,+p.happyPrice||0];
-  if(sh.getLastRow()>1){
-    var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      if(photo==="__KEEP__")row[5]=sh.getRange(i+2,6).getValue(); // photo inchangée, non renvoyée
-      if(row[5]==="__KEEP__")row[5]=sh.getRange(i+2,6).getValue(); // garde-fou : jamais la valeur littérale
-      sh.getRange(i+2,1,1,7).setValues([row]);
-      return{ok:true,action:"updated"};
-    }}
+  var rowNum=findRowById(sh,p.id);
+  if(rowNum>=0){
+    var conflict=versionConflict(sh,rowNum,8,p.baseVersion);
+    if(conflict){
+      var cur=getPortionsData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+      return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+    }
+    if(photo==="__KEEP__")row[5]=sh.getRange(rowNum,6).getValue(); // photo inchangée, non renvoyée
+    if(row[5]==="__KEEP__")row[5]=sh.getRange(rowNum,6).getValue(); // garde-fou : jamais la valeur littérale
+    sh.getRange(rowNum,1,1,7).setValues([row]);
+    var newVersion=stampVersion(sh,rowNum,8,p.modifiedBy);
+    return{ok:true,action:"updated",version:newVersion};
   }
   if(photo==="__KEEP__")row[5]=""; // création : rien à garder
   sh.appendRow(row);
-  return{ok:true,action:"created"};
+  var newVersion2=stampVersion(sh,sh.getLastRow(),8,p.modifiedBy);
+  return{ok:true,action:"created",version:newVersion2};
 }
 function deletePortion(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Portions"), id=e.parameter.id;
-  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Non trouvé"};
-  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}
-  return{ok:false,error:"Non trouvé"};
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Portions");
+  return deleteRowById(sh,e.parameter.id);
 }
 // Même mécanisme que uploadPhotoChunk (voir plus bas), sous une clé de cache dédiée
 // pour ne jamais entrer en collision avec les morceaux de photo produit.
 function uploadPortionPhotoChunk(e){
-  var p=e.parameter;
-  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
-  CacheService.getScriptCache().put("portionphoto_"+p.id+"_"+p.idx, p.chunk, 600);
-  return{ok:true};
+  return uploadChunkGeneric(e,"portionphoto");
 }
 
 function getCombosData(ss){
@@ -632,87 +666,84 @@ function getCombosData(ss){
   });
 }
 
-// Crée ou met à jour un combo/menu (plusieurs produits différents en une vente).
-function saveCombo(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Combos"), p=e.parameter;
+// Combos (Menus) et Plats partagent EXACTEMENT la même structure de feuille (ID/Nom/
+// Prix/Contenu/Photo + Version/ModifiePar/ModifieLe) et la même logique d'enregistrement
+// (réassemblage de la photo et du contenu envoyés en plusieurs morceaux, détection de
+// conflit, création ou mise à jour) — seuls le nom de la feuille, le préfixe des clés de
+// cache utilisées pour les morceaux, et la fonction de lecture appelée pour renvoyer
+// "current" en cas de conflit diffèrent. Centralisé ici pour ne plus maintenir deux
+// copies quasi identiques (c'était une source d'oublis : un correctif fait sur l'une
+// sans penser à le reporter sur l'autre).
+function saveComboOrPlat(e,sheetName,cachePrefix,getData,versionCol,itemsErrorLabel){
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,sheetName), p=e.parameter;
   if(sh.getLastRow()<=1){
     sh.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
     sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
   }
-  ensureVersionCols(sh,6);
+  ensureVersionCols(sh,versionCol);
   var photo=(p.photo||"").toString().trim();
   if(photo==="__CHUNKED__"){
     var total=+p.photoChunks||0;
     var cache=CacheService.getScriptCache(), parts=[];
     for(var c=0;c<total;c++){
-      var part=cache.get("combophoto_"+p.id+"_"+c);
+      var part=cache.get(cachePrefix+"photo_"+p.id+"_"+c);
       if(part===null)return{ok:false,error:"Photo incomplète (morceau "+(c+1)+"/"+total+" manquant ou expiré), réessayez."};
       parts.push(part);
     }
     photo=parts.join("");
-    for(var c2=0;c2<total;c2++)cache.remove("combophoto_"+p.id+"_"+c2);
+    for(var c2=0;c2<total;c2++)cache.remove(cachePrefix+"photo_"+p.id+"_"+c2);
   }
-  // Le contenu du menu (ingrédients, alternatives, portions, menus imbriqués...)
-  // peut devenir trop long pour tenir dans une seule URL une fois tout cumulé — dans
-  // ce cas, envoyé en plusieurs morceaux (même mécanisme que les photos) plutôt que
-  // de risquer un échec silencieux de la requête.
+  // Le contenu (ingrédients, alternatives, portions, menus imbriqués...) peut devenir
+  // trop long pour tenir dans une seule URL une fois tout cumulé — dans ce cas, envoyé
+  // en plusieurs morceaux (même mécanisme que les photos) plutôt que de risquer un
+  // échec silencieux de la requête.
   var items=p.items||"";
   if(items==="__CHUNKED__"){
     var totalI=+p.itemsChunks||0;
     var cacheI=CacheService.getScriptCache(), partsI=[];
     for(var ci=0;ci<totalI;ci++){
-      var partI=cacheI.get("comboitems_"+p.id+"_"+ci);
-      if(partI===null)return{ok:false,error:"Contenu du menu incomplet (morceau "+(ci+1)+"/"+totalI+" manquant ou expiré), réessayez."};
+      var partI=cacheI.get(cachePrefix+"items_"+p.id+"_"+ci);
+      if(partI===null)return{ok:false,error:"Contenu "+itemsErrorLabel+" incomplet (morceau "+(ci+1)+"/"+totalI+" manquant ou expiré), réessayez."};
       partsI.push(partI);
     }
     items=partsI.join("");
-    for(var ci2=0;ci2<totalI;ci2++)cacheI.remove("comboitems_"+p.id+"_"+ci2);
+    for(var ci2=0;ci2<totalI;ci2++)cacheI.remove(cachePrefix+"items_"+p.id+"_"+ci2);
   }
   var row=[p.id,p.name||"",+p.price||0,items,photo];
-  if(sh.getLastRow()>1){
-    var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      var conflict=versionConflict(sh,i+2,6,p.baseVersion);
-      if(conflict){
-        var cur=getCombosData(ss).find(function(x){return x.id.toString()===p.id.toString();});
-        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
-      }
-      if(photo==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // photo inchangée, non renvoyée
-      if(row[4]==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // garde-fou : jamais la valeur littérale
-      sh.getRange(i+2,1,1,5).setValues([row]);
-      var newVersion=stampVersion(sh,i+2,6,p.modifiedBy);
-      return{ok:true,action:"updated",version:newVersion};
-    }}
+  var rowNum=findRowById(sh,p.id);
+  if(rowNum>=0){
+    var conflict=versionConflict(sh,rowNum,versionCol,p.baseVersion);
+    if(conflict){
+      var cur=getData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+      return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+    }
+    if(photo==="__KEEP__")row[4]=sh.getRange(rowNum,5).getValue(); // photo inchangée, non renvoyée
+    if(row[4]==="__KEEP__")row[4]=sh.getRange(rowNum,5).getValue(); // garde-fou : jamais la valeur littérale
+    sh.getRange(rowNum,1,1,5).setValues([row]);
+    var newVersion=stampVersion(sh,rowNum,versionCol,p.modifiedBy);
+    return{ok:true,action:"updated",version:newVersion};
   }
   if(photo==="__KEEP__")row[4]=""; // création : rien à garder
   sh.appendRow(row);
-  var newVersion2=stampVersion(sh,sh.getLastRow(),6,p.modifiedBy);
+  var newVersion2=stampVersion(sh,sh.getLastRow(),versionCol,p.modifiedBy);
   return{ok:true,action:"created",version:newVersion2};
 }
+// Crée ou met à jour un combo/menu (plusieurs produits différents en une vente).
+function saveCombo(e){
+  return saveComboOrPlat(e,"Combos","combo",getCombosData,6,"du menu");
+}
 function deleteCombo(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Combos"), id=e.parameter.id;
-  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Non trouvé"};
-  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}
-  return{ok:false,error:"Non trouvé"};
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Combos");
+  return deleteRowById(sh,e.parameter.id);
 }
 function uploadComboPhotoChunk(e){
-  var p=e.parameter;
-  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
-  CacheService.getScriptCache().put("combophoto_"+p.id+"_"+p.idx, p.chunk, 600);
-  return{ok:true};
+  return uploadChunkGeneric(e,"combophoto");
 }
 function uploadComboItemsChunk(e){
-  var p=e.parameter;
-  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
-  CacheService.getScriptCache().put("comboitems_"+p.id+"_"+p.idx, p.chunk, 600);
-  return{ok:true};
+  return uploadChunkGeneric(e,"comboitems");
 }
 function uploadSaleItemsChunk(e){
-  var p=e.parameter;
-  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
-  CacheService.getScriptCache().put("saleitems_"+p.id+"_"+p.idx, p.chunk, 600);
-  return{ok:true};
+  return uploadChunkGeneric(e,"saleitems");
 }
 
 // ── Plats (identiques à Combos dans leur structure, mais leur "Contenu" ne
@@ -730,75 +761,17 @@ function getPlatsData(ss){
   });
 }
 function savePlat(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=getOrCreate(ss,"Plats"), p=e.parameter;
-  if(sh.getLastRow()<=1){
-    sh.getRange(1,1,1,5).setValues([["ID","Nom","Prix","Contenu","Photo"]]);
-    sh.getRange(1,1,1,5).setFontWeight("bold"); sh.setFrozenRows(1);
-  }
-  ensureVersionCols(sh,6);
-  var photo=(p.photo||"").toString().trim();
-  if(photo==="__CHUNKED__"){
-    var total=+p.photoChunks||0;
-    var cache=CacheService.getScriptCache(), parts=[];
-    for(var c=0;c<total;c++){
-      var part=cache.get("platphoto_"+p.id+"_"+c);
-      if(part===null)return{ok:false,error:"Photo incomplète (morceau "+(c+1)+"/"+total+" manquant ou expiré), réessayez."};
-      parts.push(part);
-    }
-    photo=parts.join("");
-    for(var c2=0;c2<total;c2++)cache.remove("platphoto_"+p.id+"_"+c2);
-  }
-  var items=p.items||"";
-  if(items==="__CHUNKED__"){
-    var totalI=+p.itemsChunks||0;
-    var cacheI=CacheService.getScriptCache(), partsI=[];
-    for(var ci=0;ci<totalI;ci++){
-      var partI=cacheI.get("platitems_"+p.id+"_"+ci);
-      if(partI===null)return{ok:false,error:"Contenu du plat incomplet (morceau "+(ci+1)+"/"+totalI+" manquant ou expiré), réessayez."};
-      partsI.push(partI);
-    }
-    items=partsI.join("");
-    for(var ci2=0;ci2<totalI;ci2++)cacheI.remove("platitems_"+p.id+"_"+ci2);
-  }
-  var row=[p.id,p.name||"",+p.price||0,items,photo];
-  if(sh.getLastRow()>1){
-    var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      var conflict=versionConflict(sh,i+2,6,p.baseVersion);
-      if(conflict){
-        var cur=getPlatsData(ss).find(function(x){return x.id.toString()===p.id.toString();});
-        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
-      }
-      if(photo==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue();
-      if(row[4]==="__KEEP__")row[4]=sh.getRange(i+2,5).getValue(); // garde-fou : jamais la valeur littérale
-      sh.getRange(i+2,1,1,5).setValues([row]);
-      var newVersion=stampVersion(sh,i+2,6,p.modifiedBy);
-      return{ok:true,action:"updated",version:newVersion};
-    }}
-  }
-  if(photo==="__KEEP__")row[4]="";
-  sh.appendRow(row);
-  var newVersion2=stampVersion(sh,sh.getLastRow(),6,p.modifiedBy);
-  return{ok:true,action:"created",version:newVersion2};
+  return saveComboOrPlat(e,"Plats","plat",getPlatsData,6,"du plat");
 }
 function deletePlat(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Plats"), id=e.parameter.id;
-  if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Non trouvé"};
-  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}
-  return{ok:false,error:"Non trouvé"};
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Plats");
+  return deleteRowById(sh,e.parameter.id);
 }
 function uploadPlatPhotoChunk(e){
-  var p=e.parameter;
-  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
-  CacheService.getScriptCache().put("platphoto_"+p.id+"_"+p.idx, p.chunk, 600);
-  return{ok:true};
+  return uploadChunkGeneric(e,"platphoto");
 }
 function uploadPlatItemsChunk(e){
-  var p=e.parameter;
-  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
-  CacheService.getScriptCache().put("platitems_"+p.id+"_"+p.idx, p.chunk, 600);
-  return{ok:true};
+  return uploadChunkGeneric(e,"platitems");
 }
 // Migration en un clic depuis Config : convertit chaque Menu (Combo) qui n'est
 // utilisé QUE comme ingrédient d'un autre Menu (jamais vendu directement en tant
@@ -955,12 +928,10 @@ function getUsersData(ss){
 function saveProductOrder(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), p=e.parameter;
   if(!sh||sh.getLastRow()<=1||!p.userId)return{ok:false,error:"Utilisateur introuvable"};
-  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.userId.toString()){
-    sh.getRange(i+2,5).setValue(p.order||"");
-    return{ok:true};
-  }}
-  return{ok:false,error:"Utilisateur introuvable"};
+  var row=findRowById(sh,p.userId);
+  if(row<0)return{ok:false,error:"Utilisateur introuvable"};
+  sh.getRange(row,5).setValue(p.order||"");
+  return{ok:true};
 }
 // Sauvegarde les regroupements d'onglets personnalisés de l'écran caisse (JSON, ex:
 // '[{"name":"Repas","cats":["Plats","Menus","Snacks"]}]') pour un utilisateur donné
@@ -971,12 +942,10 @@ function saveTabGroups(e){
   // Installations existantes créées avant l'ajout de cette colonne : on la crée à la
   // volée si besoin, sans toucher aux 6 colonnes déjà en place.
   if(!sh.getRange(1,7).getValue())sh.getRange(1,7).setValue("GroupesOnglets").setFontWeight("bold");
-  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.userId.toString()){
-    sh.getRange(i+2,7).setValue(p.groups||"");
-    return{ok:true};
-  }}
-  return{ok:false,error:"Utilisateur introuvable"};
+  var row=findRowById(sh,p.userId);
+  if(row<0)return{ok:false,error:"Utilisateur introuvable"};
+  sh.getRange(row,7).setValue(p.groups||"");
+  return{ok:true};
 }
 // Sauvegarde la caméra préférée pour le scan (colonne F "CameraPref") — en plus du
 // localStorage sur l'appareil, pour survivre à un vidage de cache et suivre la
@@ -984,12 +953,10 @@ function saveTabGroups(e){
 function saveCameraPref(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), p=e.parameter;
   if(!sh||sh.getLastRow()<=1||!p.userId)return{ok:false,error:"Utilisateur introuvable"};
-  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-  for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.userId.toString()){
-    sh.getRange(i+2,6).setValue(p.cameraId||"");
-    return{ok:true};
-  }}
-  return{ok:false,error:"Utilisateur introuvable"};
+  var row=findRowById(sh,p.userId);
+  if(row<0)return{ok:false,error:"Utilisateur introuvable"};
+  sh.getRange(row,6).setValue(p.cameraId||"");
+  return{ok:true};
 }
 
 function getContainersData(ss){
@@ -1051,13 +1018,10 @@ function closeContainer(e){
       if(remaining>0){
         var prodSh=ss.getSheetByName("Produits"), col=siteColumn(ss,p.site);
         if(col){
-          var pIds=prodSh.getRange(2,1,prodSh.getLastRow()-1,1).getValues();
-          for(var j=0;j<pIds.length;j++){
-            if(pIds[j][0].toString()===p.id.toString()){
-              var cell=prodSh.getRange(j+2,col);
-              cell.setValue(Math.max(0,+cell.getValue()-remaining));
-              break;
-            }
+          var prow=findRowById(prodSh,p.id);
+          if(prow>=0){
+            var cell=prodSh.getRange(prow,col);
+            cell.setValue(Math.max(0,+cell.getValue()-remaining));
           }
         }
       }
@@ -1083,13 +1047,10 @@ function adjustContainer(e){
       if(delta!==0){
         var prodSh=ss.getSheetByName("Produits"), col=siteColumn(ss,p.site);
         if(col){
-          var pIds=prodSh.getRange(2,1,prodSh.getLastRow()-1,1).getValues();
-          for(var j=0;j<pIds.length;j++){
-            if(pIds[j][0].toString()===p.id.toString()){
-              var cell=prodSh.getRange(j+2,col);
-              cell.setValue(Math.max(0,+cell.getValue()+delta));
-              break;
-            }
+          var prow=findRowById(prodSh,p.id);
+          if(prow>=0){
+            var cell=prodSh.getRange(prow,col);
+            cell.setValue(Math.max(0,+cell.getValue()+delta));
           }
         }
       }
@@ -1128,40 +1089,38 @@ function saveProduct(e){
   var happyPrice=+p.happyPrice||0;
   var siteAvailability=(p.siteAvailability||"").toString();
   var showInContainerBar=p.showInContainerBar===undefined?true:(p.showInContainerBar==="true"||p.showInContainerBar===true);
-  if(sh.getLastRow()>1){
-    var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      var conflict=versionConflict(sh,i+2,40,p.baseVersion);
-      if(conflict){
-        var cur=getProductsData(ss).find(function(x){return x.id.toString()===p.id.toString();});
-        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
-      }
-      // "__KEEP__" : la photo n'a pas changé côté appli, on ne l'a donc pas renvoyée
-      // (gain de temps important) — on garde simplement celle déjà enregistrée.
-      var finalPhoto = photo==="__KEEP__" ? sh.getRange(i+2,6).getValue() : photo;
-      // Garde-fou : quelle qu'en soit la cause, la valeur littérale "__KEEP__" ne
-      // doit JAMAIS finir stockée comme si c'était une vraie photo — dans ce cas on
-      // garde la valeur déjà en place plutôt que d'écraser une bonne photo.
-      if(finalPhoto==="__KEEP__")finalPhoto=sh.getRange(i+2,6).getValue();
-      var meta=[p.id,p.name,+p.price,p.cat,p.emoji,finalPhoto,p.barcode||"",
-        p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
-      // Mise à jour : on NE touche PAS aux colonnes de stock (L:O), pour ne jamais écraser
-      // une modification de stock faite entre-temps par un autre appareil/utilisateur.
-      sh.getRange(i+2,7).setNumberFormat("@"); // Codebarres en texte : empêche Sheets de
-      // le convertir en nombre et de supprimer un éventuel zéro de tête (cause du
-      // "produit non trouvé" au rescan d'un code-barres déjà enregistré).
-      sh.getRange(i+2,1,1,11).setValues([meta]);
-      sh.getRange(i+2,16).setValue(costPrice); // P = Prix d'achat TTC
-      sh.getRange(i+2,17).setValue(presets);   // Q = Paliers de vente au volume
-      sh.getRange(i+2,25).setValue(containers);// Y = Tailles de contenant (jauge fûts/bouteilles/cubis)
-      sh.getRange(i+2,26).setValue(color);     // Z = Couleur de la jauge (comme les sites)
-      sh.getRange(i+2,27).setValue(returnFor); // AA = Retour de consigne pour (ID du produit "consigne")
-      sh.getRange(i+2,28).setValue(happyPrice);// AB = Prix Happy Hour
-      sh.getRange(i+2,29).setValue(siteAvailability);// AC = Sites où le produit est vendu (vide = tous)
-      sh.getRange(i+2,30).setValue(showInContainerBar);// AD = Affiché dans la barre de contenants (Caisse)
-      var newVersion=stampVersion(sh,i+2,40,p.modifiedBy);
-      return{ok:true,action:"updated",version:newVersion};
-    }}
+  var row0=findRowById(sh,p.id);
+  if(row0>=0){
+    var conflict=versionConflict(sh,row0,40,p.baseVersion);
+    if(conflict){
+      var cur=getProductsData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+      return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+    }
+    // "__KEEP__" : la photo n'a pas changé côté appli, on ne l'a donc pas renvoyée
+    // (gain de temps important) — on garde simplement celle déjà enregistrée.
+    var finalPhoto = photo==="__KEEP__" ? sh.getRange(row0,6).getValue() : photo;
+    // Garde-fou : quelle qu'en soit la cause, la valeur littérale "__KEEP__" ne
+    // doit JAMAIS finir stockée comme si c'était une vraie photo — dans ce cas on
+    // garde la valeur déjà en place plutôt que d'écraser une bonne photo.
+    if(finalPhoto==="__KEEP__")finalPhoto=sh.getRange(row0,6).getValue();
+    var meta=[p.id,p.name,+p.price,p.cat,p.emoji,finalPhoto,p.barcode||"",
+      p.drink==="true",p.sellByVolume==="true",p.unit||"",+p.baseQty||1];
+    // Mise à jour : on NE touche PAS aux colonnes de stock (L:O), pour ne jamais écraser
+    // une modification de stock faite entre-temps par un autre appareil/utilisateur.
+    sh.getRange(row0,7).setNumberFormat("@"); // Codebarres en texte : empêche Sheets de
+    // le convertir en nombre et de supprimer un éventuel zéro de tête (cause du
+    // "produit non trouvé" au rescan d'un code-barres déjà enregistré).
+    sh.getRange(row0,1,1,11).setValues([meta]);
+    sh.getRange(row0,16).setValue(costPrice); // P = Prix d'achat TTC
+    sh.getRange(row0,17).setValue(presets);   // Q = Paliers de vente au volume
+    sh.getRange(row0,25).setValue(containers);// Y = Tailles de contenant (jauge fûts/bouteilles/cubis)
+    sh.getRange(row0,26).setValue(color);     // Z = Couleur de la jauge (comme les sites)
+    sh.getRange(row0,27).setValue(returnFor); // AA = Retour de consigne pour (ID du produit "consigne")
+    sh.getRange(row0,28).setValue(happyPrice);// AB = Prix Happy Hour
+    sh.getRange(row0,29).setValue(siteAvailability);// AC = Sites où le produit est vendu (vide = tous)
+    sh.getRange(row0,30).setValue(showInContainerBar);// AD = Affiché dans la barre de contenants (Caisse)
+    var newVersion=stampVersion(sh,row0,40,p.modifiedBy);
+    return{ok:true,action:"updated",version:newVersion};
   }
   // Création d'un nouveau produit : "__KEEP__" n'a pas de sens ici (rien à garder), on
   // traite comme une photo vide dans ce cas précis (ne devrait normalement pas arriver).
@@ -1194,16 +1153,11 @@ function saveProduct(e){
 // Reçoit un morceau de photo (base64) et le stocke temporairement (10 min) en attendant
 // que tous les morceaux soient arrivés ; saveProduct les réassemble ensuite via photoChunks.
 function uploadPhotoChunk(e){
-  var p=e.parameter;
-  if(!p.id||p.idx===undefined||!p.chunk)return{ok:false,error:"Paramètres manquants"};
-  CacheService.getScriptCache().put("photo_"+p.id+"_"+p.idx, p.chunk, 600);
-  return{ok:true};
+  return uploadChunkGeneric(e,"photo");
 }
 function deleteProduct(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), id=e.parameter.id;
-  if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}}
-  return{ok:false,error:"Non trouvé"};
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits");
+  return deleteRowById(sh,e.parameter.id);
 }
 function saveSite(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Sites"), p=e.parameter;
@@ -1211,51 +1165,47 @@ function saveSite(e){
   var active=p.active===undefined?true:(p.active==="true"||p.active===true);
   var isSalesPoint=p.isSalesPoint===undefined?true:(p.isSalesPoint==="true"||p.isSalesPoint===true);
   var row=[p.id,p.name,p.village||"",p.color||"#CC0000",active,isSalesPoint];
-  if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      var conflict=versionConflict(sh,i+2,7,p.baseVersion);
-      if(conflict){
-        var cur=getSitesData(ss).find(function(x){return x.id.toString()===p.id.toString();});
-        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
-      }
-      sh.getRange(i+2,1,1,6).setValues([row]);
-      var newVersion=stampVersion(sh,i+2,7,p.modifiedBy);
-      return{ok:true,action:"updated",version:newVersion};
-    }}}
+  var rowNum=findRowById(sh,p.id);
+  if(rowNum>=0){
+    var conflict=versionConflict(sh,rowNum,7,p.baseVersion);
+    if(conflict){
+      var cur=getSitesData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+      return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+    }
+    sh.getRange(rowNum,1,1,6).setValues([row]);
+    var newVersion=stampVersion(sh,rowNum,7,p.modifiedBy);
+    return{ok:true,action:"updated",version:newVersion};
+  }
   sh.appendRow(row);
   var newVersion2=stampVersion(sh,sh.getLastRow(),7,p.modifiedBy);
   return{ok:true,action:"created",version:newVersion2};
 }
 function deleteSite(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Sites"), id=e.parameter.id;
-  if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}}
-  return{ok:false,error:"Non trouvé"};
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Sites");
+  return deleteRowById(sh,e.parameter.id);
 }
 function saveCategory(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Categories"), p=e.parameter;
   ensureVersionCols(sh,3);
   var row=[p.id,p.name];
-  if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      var conflict=versionConflict(sh,i+2,3,p.baseVersion);
-      if(conflict){
-        var cur=getCategoriesData(ss).find(function(x){return x.id.toString()===p.id.toString();});
-        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
-      }
-      sh.getRange(i+2,1,1,2).setValues([row]);
-      var newVersion=stampVersion(sh,i+2,3,p.modifiedBy);
-      return{ok:true,action:"updated",version:newVersion};
-    }}}
+  var rowNum=findRowById(sh,p.id);
+  if(rowNum>=0){
+    var conflict=versionConflict(sh,rowNum,3,p.baseVersion);
+    if(conflict){
+      var cur=getCategoriesData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+      return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+    }
+    sh.getRange(rowNum,1,1,2).setValues([row]);
+    var newVersion=stampVersion(sh,rowNum,3,p.modifiedBy);
+    return{ok:true,action:"updated",version:newVersion};
+  }
   sh.appendRow(row);
   var newVersion2=stampVersion(sh,sh.getLastRow(),3,p.modifiedBy);
   return{ok:true,action:"created",version:newVersion2};
 }
 function deleteCategory(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Categories"), id=e.parameter.id;
-  if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}}
-  return{ok:false,error:"Non trouvé"};
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Categories");
+  return deleteRowById(sh,e.parameter.id);
 }
 function saveUser(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), p=e.parameter;
@@ -1273,18 +1223,18 @@ function saveUser(e){
   // déjà été convertie en nombre au moment de l'écriture.
   var pin=(p.pin||"").toString();
   var row=[p.id,p.name,pin,p.role];
-  if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      var conflict=versionConflict(sh,i+2,8,p.baseVersion);
-      if(conflict){
-        var cur=getUsersData(ss).find(function(x){return x.id.toString()===p.id.toString();});
-        return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
-      }
-      sh.getRange(i+2,3).setNumberFormat("@");
-      sh.getRange(i+2,1,1,4).setValues([row]);
-      var newVersion=stampVersion(sh,i+2,8,p.modifiedBy);
-      return{ok:true,action:"updated",version:newVersion};
-    }}}
+  var rowNum=findRowById(sh,p.id);
+  if(rowNum>=0){
+    var conflict=versionConflict(sh,rowNum,8,p.baseVersion);
+    if(conflict){
+      var cur=getUsersData(ss).find(function(x){return x.id.toString()===p.id.toString();});
+      return{ok:false,conflict:true,modifiedBy:conflict.modifiedBy,modifiedAt:conflict.modifiedAt,current:cur};
+    }
+    sh.getRange(rowNum,3).setNumberFormat("@");
+    sh.getRange(rowNum,1,1,4).setValues([row]);
+    var newVersion=stampVersion(sh,rowNum,8,p.modifiedBy);
+    return{ok:true,action:"updated",version:newVersion};
+  }
   var newRow=sh.getLastRow()+1;
   sh.getRange(newRow,3).setNumberFormat("@");
   sh.appendRow(row);
@@ -1292,20 +1242,17 @@ function saveUser(e){
   return{ok:true,action:"created",version:newVersion2};
 }
 function deleteUser(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs"), id=e.parameter.id;
-  if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===id.toString()){sh.deleteRow(i+2);return{ok:true};}}}
-  return{ok:false,error:"Non trouvé"};
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Utilisateurs");
+  return deleteRowById(sh,e.parameter.id);
 }
 function updateStock(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), p=e.parameter;
   var col=siteColumn(ss,p.site); if(!col)return{ok:false,error:"Site invalide"};
-  if(sh.getLastRow()>1){var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-    for(var i=0;i<ids.length;i++){if(ids[i][0].toString()===p.id.toString()){
-      var cell=sh.getRange(i+2,col);
-      cell.setValue(p.mode==="delta"?Math.max(0,+cell.getValue()+(+p.qty)):Math.max(0,+p.qty));
-      return{ok:true,newQty:+cell.getValue()};}}}
-  return{ok:false,error:"Produit non trouvé"};
+  var row=findRowById(sh,p.id);
+  if(row<0)return{ok:false,error:"Produit non trouvé"};
+  var cell=sh.getRange(row,col);
+  cell.setValue(p.mode==="delta"?Math.max(0,+cell.getValue()+(+p.qty)):Math.max(0,+p.qty));
+  return{ok:true,newQty:+cell.getValue()};
 }
 function transferStock(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Produits"), p=e.parameter;
@@ -1355,43 +1302,67 @@ function saveSale(e){
   sh.getRange(lastRow,3).setNumberFormat("@").setValue(heureStr);
   // Décrémenter stock
   var prodSh=ss.getSheetByName("Produits"), col=siteColumn(ss,p.site);
-  var items; try{items=JSON.parse(safeDecodeItems(itemsRaw));}catch(err){items=[];}
+  // AVANT : une erreur de décodage (JSON tronqué/corrompu — ex. coupure réseau en plein
+  // envoi) était avalée en silence et "items" devenait [] : la vente était quand même
+  // enregistrée "ok", encaissée normalement, mais AUCUN stock n'était décompté et rien
+  // ne le signalait — impossible de s'en rendre compte avant de constater l'écart à
+  // l'inventaire. On distingue maintenant ce cas et on le remonte explicitement.
+  var items=[], itemsParseError=null;
+  try{ items=JSON.parse(safeDecodeItems(itemsRaw)); }
+  catch(err){ itemsParseError="Détail des articles illisible ("+err.message+") — stock NON décompté pour cette vente, à corriger manuellement."; }
   // Diagnostic : avant, un article non trouvé (mauvais ID, site invalide...) était
   // ignoré en silence et la vente répondait quand même "ok" — impossible de savoir
   // pourquoi un stock ne bougeait pas. On renvoie maintenant explicitement ce qui a
   // été décompté et ce qui ne l'a pas été.
   var decremented=[], notFound=[];
-  if(col&&prodSh.getLastRow()>1){
-    var pIds=prodSh.getRange(2,1,prodSh.getLastRow()-1,1).getValues();
+  // Décompte en mémoire puis UNE SEULE lecture + UNE SEULE écriture pour tout le
+  // panier (au lieu d'une lecture + une écriture Google Sheets PAR article) : une
+  // vente à 10 articles différents faisait jusqu'ici ~20 allers-retours pendant que le
+  // verrou global (voir WRITE_ACTIONS) bloquait toute autre action — sensible surtout
+  // en période d'affluence (ex. mi-temps). Ça ne change rien au résultat, juste la
+  // façon de l'obtenir.
+  if(col&&prodSh.getLastRow()>1&&items.length){
+    var lastRowP=prodSh.getLastRow();
+    var idRangeP=prodSh.getRange(2,1,lastRowP-1,1).getValues();
+    var idxById={};
+    for(var ip=0;ip<idRangeP.length;ip++)idxById[idRangeP[ip][0].toString()]=ip;
+    var stockRangeP=prodSh.getRange(2,col,lastRowP-1,1);
+    var stockValsP=stockRangeP.getValues();
+    var touchedP=false;
     items.forEach(function(item){
-      var found=false;
-      for(var i=0;i<pIds.length;i++){if(pIds[i][0].toString()===item.id.toString()){
-        var cell=prodSh.getRange(i+2,col);
-        cell.setValue(Math.max(0,+cell.getValue()-item.qty));
-        decremented.push(item.id+":-"+item.qty);
-        found=true; break;}}
-      if(!found)notFound.push(String(item.id));
+      var idx=idxById[item.id.toString()];
+      if(idx===undefined){notFound.push(String(item.id));return;}
+      stockValsP[idx][0]=Math.max(0,(+stockValsP[idx][0]||0)-item.qty);
+      decremented.push(item.id+":-"+item.qty);
+      touchedP=true;
     });
+    if(touchedP)stockRangeP.setValues(stockValsP);
   } else if(items.length){
     notFound=items.map(function(it){return String(it.id);});
   }
   // Décrémenter aussi la jauge du contenant ouvert pour ce produit+site, s'il y en a
   // un (fût/bouteille/cubi entamé) — en plus du stock global, sans jamais aller sous 0.
+  // Même principe : une seule lecture + une seule écriture pour tous les contenants
+  // concernés par ce panier.
   var contSh=ss.getSheetByName("Contenants");
   if(contSh&&contSh.getLastRow()>1&&items.length){
-    var cData=contSh.getRange(2,1,contSh.getLastRow()-1,6).getValues();
+    var cRange=contSh.getRange(2,1,contSh.getLastRow()-1,6);
+    var cData=cRange.getValues();
+    var touchedC=false;
     items.forEach(function(item){
       for(var k=0;k<cData.length;k++){
         if(cData[k][0].toString()===p.site.toString()&&cData[k][1].toString()===item.id.toString()){
-          var rCell=contSh.getRange(k+2,5);
-          rCell.setValue(Math.max(0,+rCell.getValue()-item.qty));
+          cData[k][4]=Math.max(0,(+cData[k][4]||0)-item.qty); // colonne 5 (index 4) = "Restant"
+          touchedC=true;
           break;
         }
       }
     });
+    if(touchedC)cRange.setValues(cData);
   }
   var result={ok:true,saleId:saleId,stockUpdated:decremented};
-  if(notFound.length)result.stockWarning="Stock NON décompté (site="+p.site+", colonne="+col+") pour ID(s): "+notFound.join(", ");
+  if(itemsParseError)result.stockWarning=itemsParseError;
+  else if(notFound.length)result.stockWarning="Stock NON décompté (site="+p.site+", colonne="+col+") pour ID(s): "+notFound.join(", ");
   return result;
 }
 // Modifie une vente déjà enregistrée EN PLACE (même ID, même date/heure/site) — ne
@@ -1401,33 +1372,23 @@ function saveSale(e){
 function updateSale(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), p=e.parameter;
   if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Aucune vente enregistrée"};
-  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-  for(var i=0;i<ids.length;i++){
-    if(ids[i][0].toString()===p.id.toString()){
-      sh.getRange(i+2,6).setValue(+p.total||0);   // F = Total
-      if(p.payment!==undefined)sh.getRange(i+2,7).setValue(p.payment); // G = Paiement (facultatif)
-      sh.getRange(i+2,8).setValue(p.items||"");   // H = Articles
-      sh.getRange(i+2,10).setValue(+p.nbItems||0);// J = NbArticles
-      return{ok:true};
-    }
-  }
-  return{ok:false,error:"Vente introuvable"};
+  var row=findRowById(sh,p.id);
+  if(row<0)return{ok:false,error:"Vente introuvable"};
+  sh.getRange(row,6).setValue(+p.total||0);   // F = Total
+  if(p.payment!==undefined)sh.getRange(row,7).setValue(p.payment); // G = Paiement (facultatif)
+  sh.getRange(row,8).setValue(p.items||"");   // H = Articles
+  sh.getRange(row,10).setValue(+p.nbItems||0);// J = NbArticles
+  return{ok:true};
 }
 // Supprime définitivement une vente. Le stock des articles qu'elle contenait doit
 // être restitué CÔTÉ CLIENT avant cet appel (via updateStock delta), car ce script
 // ne connaît pas le site à recréditer sans reparser les articles ici — le client a
 // déjà cette info sous la main.
 function deleteSale(e){
-  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), id=e.parameter.id;
+  var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes");
   if(!sh||sh.getLastRow()<=1)return{ok:false,error:"Aucune vente enregistrée"};
-  var ids=sh.getRange(2,1,sh.getLastRow()-1,1).getValues();
-  for(var i=0;i<ids.length;i++){
-    if(ids[i][0].toString()===id.toString()){
-      sh.deleteRow(i+2);
-      return{ok:true};
-    }
-  }
-  return{ok:false,error:"Vente introuvable"};
+  var r=deleteRowById(sh,e.parameter.id);
+  return r.ok?r:{ok:false,error:"Vente introuvable"};
 }
 function getSales(e){
   var ss=SpreadsheetApp.getActiveSpreadsheet(), sh=ss.getSheetByName("Ventes"), p=e.parameter;
