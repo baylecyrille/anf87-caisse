@@ -7997,6 +7997,14 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
     if(r&&r.ok)LS.set("anf87_sumup_cloud",!!r.readerId);
   };
   useEffect(()=>{loadSoloInfo();},[caisseUrl]);
+  const [soloTest,setSoloTest]=useState(null); // lignes du diagnostic
+  const testSolo=async()=>{
+    setSoloBusy(true);setSoloTest(["⏳ Test en cours..."]);
+    const r=await api(caisseUrl,{action:"sumupTest"});
+    setSoloBusy(false);
+    if(r&&r.steps)setSoloTest(r.steps);
+    else setSoloTest(["❌ "+((r&&r.error)||"Pas de réponse du script")+(r&&r.networkError?"":" — script non redéployé, ou autorisation Google manquante (voir ci-dessous)")]);
+  };
   const pairSolo=async()=>{
     if(!soloCode.trim()||soloBusy)return;
     setSoloBusy(true);setSoloMsg("⏳ Appairage en cours...");
@@ -8149,6 +8157,8 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
         {!canPairSolo&&!soloInfo.readerId&&<div style={{fontSize:11,color:T.mid}}>L'appairage est réservé aux administrateurs.</div>}
       </>}
       {soloMsg&&<div style={{marginTop:8,fontSize:12,fontWeight:700,textAlign:"center",color:soloMsg.startsWith("✅")?T.green:soloMsg.startsWith("⏳")?T.orange:T.red}}>{soloMsg}</div>}
+      {caisseUrl&&<button onClick={testSolo} disabled={soloBusy} style={{width:"100%",marginTop:8,padding:"10px",background:"white",border:"1px solid #5856D6",borderRadius:9,cursor:"pointer",fontWeight:600,fontSize:12,color:"#3C3AA8"}}>🔎 Tester la connexion SumUp</button>}
+      {soloTest&&<div style={{marginTop:8,background:"white",borderRadius:8,padding:"8px 10px",fontSize:11,lineHeight:1.7,color:T.dark}}>{soloTest.map((l,i)=><div key={i}>{l}</div>)}</div>}
       <div style={{fontSize:11,color:"#3C3AA8",marginTop:8,lineHeight:1.5}}>Pas de lecteur appairé ? Le bouton "Carte Bleue" utilise l'ancien mode ci-dessous (appli SumUp du téléphone).</div>
     </div>
     <div style={{background:"#E8F5E9",borderRadius:12,padding:14,border:"1px solid #A5D6A7",marginBottom:14}}>

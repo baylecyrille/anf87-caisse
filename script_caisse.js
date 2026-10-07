@@ -85,6 +85,7 @@ function doGet(e) {
       case "sumupCheckout":       result = sumupCheckout(e); break;
       case "sumupStatus":         result = sumupStatus(e); break;
       case "sumupCancel":         result = sumupCancel(); break;
+      case "sumupTest":           result = sumupTest(); break;
       case "sumupWebhook":        result = sumupWebhook(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
@@ -1502,7 +1503,8 @@ function sumupCheckout(e){
   var cents=Math.round(+p.cents||0);
   if(cents<=0)return{ok:false,error:"Montant invalide."};
   var body={total_amount:{currency:"EUR",minor_unit:2,value:cents},description:(p.desc||"Caisse ANF87").toString().slice(0,200)};
-  if(p.key){ body.affiliate={key:p.key.toString(),foreign_transaction_id:(p.txId||"").toString()}; if(p.appId)body.affiliate.app_id=p.appId.toString(); }
+  // Affiliate : seulement si clé ET App ID sont renseignés (une clé seule peut faire rejeter la demande).
+  if(p.key&&p.appId){ body.affiliate={key:p.key.toString(),app_id:p.appId.toString(),foreign_transaction_id:(p.txId||"").toString()}; }
   // Résultat renvoyé par SumUp vers ce même script (rapide) ; l'appli interroge aussi
   // l'API en parallèle, donc rien n'est perdu si ce retour n'arrive pas.
   try{ body.return_url=ScriptApp.getService().getUrl()+"?action=sumupWebhook"; }catch(e2){}
@@ -1555,3 +1557,34 @@ function sumupCancel(){
   var r=sumupCall("post","/v0.1/merchants/"+encodeURIComponent(m)+"/readers/"+encodeURIComponent(id)+"/terminate");
   return r.ok?{ok:true}:{ok:false,error:r.error};
 }
+
+// Diagnostic complet de la connexion SumUp (bouton "Tester" des Réglages, ou à lancer
+// depuis l'éditeur via testerSumUp()) : clé valide ? code marchand correct ? lecteur
+// appairé et en ligne ? Renvoie les erreurs brutes de SumUp pour comprendre un échec.
+function sumupTest(){
+  var out={ok:true,hasKey:!!sumupProp("SUMUP_API_KEY"),merchant:sumupMerchant(),readerId:sumupProp("SUMUP_READER_ID"),steps:[]};
+  if(!out.hasKey){out.ok=false;out.steps.push("❌ SUMUP_API_KEY absente des propriétés du script");return out;}
+  var me=sumupCall("get","/v0/me");
+  if(!me.ok){out.ok=false;out.steps.push("❌ Clé API refusée par SumUp (HTTP "+me.status+") : "+me.error);return out;}
+  var d=me.data||{}, mp=d.merchant_profile||{}, real=mp.merchant_code||"";
+  out.steps.push("✅ Clé API valide"+(real?" — compte "+real:""));
+  if(!out.merchant)out.steps.push("❌ SUMUP_MERCHANT_CODE absent"+(real?" (le vôtre semble être "+real+")":""));
+  else if(real&&real!==out.merchant){out.ok=false;out.steps.push("❌ Code marchand saisi ("+out.merchant+") différent de celui du compte ("+real+")");}
+  else out.steps.push("✅ Code marchand "+out.merchant);
+  var m=out.merchant||real; if(!m)return out;
+  var rd=sumupCall("get","/v0.1/merchants/"+encodeURIComponent(m)+"/readers");
+  if(!rd.ok){out.ok=false;out.steps.push("❌ Liste des lecteurs refusée (HTTP "+rd.status+") : "+rd.error);return out;}
+  var arr=(rd.data&&(rd.data.items||rd.data.data||rd.data))||[]; if(!Array.isArray(arr))arr=[];
+  out.readers=arr.map(function(r){return{id:r.id,name:r.name||"",status:r.status||""};});
+  out.steps.push(out.readers.length?("✅ "+out.readers.length+" lecteur(s) chez SumUp : "+out.readers.map(function(r){return (r.name||r.id)+" ["+(r.status||"?")+"]";}).join(", ")):"❌ Aucun lecteur appairé chez SumUp");
+  if(out.readerId){
+    var known=out.readers.some(function(r){return r.id===out.readerId;});
+    out.steps.push(known?"✅ Le lecteur utilisé par la caisse est bien dans cette liste":"❌ Le lecteur enregistré dans la caisse n'existe plus chez SumUp : dissociez puis ré-appairez");
+    if(!known)out.ok=false;
+  }else out.steps.push("❌ Aucun lecteur enregistré dans la caisse (appairage à faire dans Réglages)");
+  return out;
+}
+// À lancer UNE FOIS depuis l'éditeur Apps Script (▶ Exécuter) : déclenche la demande
+// d'autorisation d'accès aux services externes, indispensable avant que l'appli puisse
+// contacter SumUp. Le résultat s'affiche dans le journal d'exécution.
+function testerSumUp(){ var r=sumupTest(); Logger.log(r.steps.join("\n")); return r; }
