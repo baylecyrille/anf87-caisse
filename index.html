@@ -2043,6 +2043,15 @@ function App(){
           <div style={{fontSize:13,color:T.mid,marginBottom:18}}>
             Un paiement de <b>{fmt(+pendingCb.amount)}</b> ({pendingCb.site}) a été lancé sur le TPE SumUp, mais l'appli n'a pas pu confirmer le résultat (probablement à cause d'un plantage de l'appli SumUp). Le client a-t-il réellement payé ?
           </div>
+          {pendingCb.clientTxId&&caisseUrl&&<button onClick={async()=>{
+              const s=await api(caisseUrl,{action:"sumupStatus",clientTxId:pendingCb.clientTxId});
+              if(s&&s.ok&&s.state==="successful"){LS.set("anf87_pending_cb",null);setPendingCb(null);finalizeSale({type:"cb"});}
+              else if(s&&s.ok&&s.state==="failed"){LS.set("anf87_pending_cb",null);setPendingCb(null);await customAlert("Paiement non abouti côté SumUp : rien n'a été enregistré.");}
+              else await customAlert(s&&s.ok?"SumUp n'a pas (encore) de paiement abouti pour cette vente.":"Vérification impossible : "+((s&&s.error)||"réseau"));
+            }}
+            style={{width:"100%",padding:"12px",background:"#5856D6",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13,marginBottom:8}}>
+              🔎 Vérifier auprès de SumUp
+            </button>}
           <div style={{display:"flex",gap:8}}>
             <button onClick={()=>{LS.set("anf87_pending_cb",null);setPendingCb(null);}}
               style={{flex:1,padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,fontSize:13}}>
@@ -2096,7 +2105,7 @@ function App(){
 
       {/* ── MODALS ── */}
       {modal==="payment"&&<PaymentModal cart={cart} total={cartTotal} site={site} boissonsUrl={boissonsUrl}
-        onClose={()=>setModal(null)} onDone={finalizeSale} setCart={setCart} sumupKey={sumupKey} sumupAppId={sumupAppId}
+        onClose={()=>setModal(null)} onDone={finalizeSale} setCart={setCart} sumupKey={sumupKey} sumupAppId={sumupAppId} caisseUrl={caisseUrl}
         initialStep={paymentInitialStep}
         openBoissons={()=>setModal("boissons")} openSplit={()=>setModal("split")}/>}
       {modal==="scanner"&&<ScannerModal products={products} siteId={siteId} onFound={addToCart} onClose={()=>setModal(null)}/>}
@@ -3047,7 +3056,7 @@ function PaymentOptionButton({e,l,s,c,onClick,disabled}){
 }
 
 // ═══ PAYMENT MODAL ═══
-function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupKey,sumupAppId,initialStep,openBoissons,openSplit}){
+function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupKey,sumupAppId,caisseUrl,initialStep,openBoissons,openSplit}){
   const [step,setStep]=useState(initialStep==="cb"?"select":(initialStep||"select")); // "cb" déclenche SumUp directement (voir plus bas), pas un vrai écran
   const drinkItems=cart.filter(i=>i.drink);const freeItems=cart.filter(i=>i.free);
   const paidTotal=cart.reduce((s,i)=>s+(i.free?0:i.price*i.qty),0);
@@ -3062,8 +3071,64 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
   // le premier clic. onDone déclenche ensuite finalizeSale (async) qui referme cette
   // fenêtre une fois terminé — pas besoin de réarmer submitting après coup.
   const submit=payment=>{ if(submitting)return; setSubmitting(true); onDone(payment); };
+  // ── Paiement CB via la Cloud API SumUp (lecteur Solo appairé) ──
+  // La caisse envoie le montant au lecteur (via le script Google, qui détient la clé API),
+  // puis interroge régulièrement le résultat. Jamais mis en file hors-ligne : un paiement
+  // exige le réseau. Si aucun lecteur n'est appairé, on retombe sur l'ancien mode
+  // sumupmerchant:// (appli SumUp du téléphone) ci-dessous.
+  const [cb,setCb]=useState(null); // null | {phase:"starting"|"waiting"|"failed",msg,clientTxId}
+  const [cbSlow,setCbSlow]=useState(false);
+  const runCloudPayment=async()=>{
+    setCbSlow(false);
+    setCb({phase:"starting"});
+    const r=await api(caisseUrl,{action:"sumupCheckout",cents:Math.round(paidTotal*100),txId:uid(),desc:"ANF87 "+site.name,key:sumupKey||"",appId:sumupAppId||""});
+    if(!r||!r.ok||!r.clientTxId){
+      setCb({phase:"failed",msg:r&&r.networkError?"Pas de connexion : le paiement par carte nécessite le réseau.":((r&&r.error)||"Le lecteur n'a pas accepté la demande")});
+      return;
+    }
+    LS.set("anf87_pending_cb",{amount:paidTotal.toFixed(2),site:site.name,timestamp:Date.now(),clientTxId:r.clientTxId});
+    setCb({phase:"waiting",clientTxId:r.clientTxId});
+  };
+  useEffect(()=>{
+    if(!cb||cb.phase!=="waiting")return;
+    let stop=false,busy=false;
+    const slowT=setTimeout(()=>setCbSlow(true),90000);
+    const tick=async()=>{
+      if(stop||busy)return; busy=true;
+      const s=await api(caisseUrl,{action:"sumupStatus",clientTxId:cb.clientTxId});
+      busy=false;
+      if(stop||!s||!s.ok)return;
+      if(s.state==="successful"){stop=true;LS.set("anf87_pending_cb",null);onDone({type:"cb"});}
+      else if(s.state==="failed"){stop=true;LS.set("anf87_pending_cb",null);setCb({phase:"failed",msg:"Paiement refusé ou annulé"+(s.reason?" ("+s.reason+")":"")});}
+    };
+    const iv=setInterval(tick,2500);
+    return()=>{stop=true;clearInterval(iv);clearTimeout(slowT);};
+  },[cb&&cb.phase,cb&&cb.clientTxId]);
+  const cancelCloudPayment=async()=>{
+    const id=cb&&cb.clientTxId;
+    setCb({phase:"starting"});
+    await api(caisseUrl,{action:"sumupCancel"});
+    await new Promise(r=>setTimeout(r,2000));
+    // Dernier contrôle : si le client a eu le temps de payer, on ne le perd pas.
+    const s=id?await api(caisseUrl,{action:"sumupStatus",clientTxId:id}):null;
+    if(s&&s.ok&&s.state==="successful"){LS.set("anf87_pending_cb",null);onDone({type:"cb"});return;}
+    LS.set("anf87_pending_cb",null);setCb(null);setSubmitting(false);
+  };
+  const manualCloudValidate=async()=>{
+    if(!(await customConfirm("Valider la vente SANS confirmation de SumUp ? À ne faire que si le TPE affiche bien « Paiement accepté ».")))return;
+    LS.set("anf87_pending_cb",null);onDone({type:"cb"});
+  };
   const handleSumUp=async()=>{
     if(submitting)return; setSubmitting(true);
+    if(caisseUrl){
+      const info=await api(caisseUrl,{action:"sumupInfo"});
+      if(info&&info.ok&&info.readerId){ LS.set("anf87_sumup_cloud",true); await runCloudPayment(); return; }
+      if(info&&info.ok)LS.set("anf87_sumup_cloud",false);
+      if(info&&info.networkError&&LS.get("anf87_sumup_cloud")){
+        await customAlert("⚠️ Pas de connexion : le paiement par carte (lecteur Solo) nécessite le réseau. Réessayez quand il est revenu, ou encaissez en espèces.");
+        setSubmitting(false);return;
+      }
+    }
     if(!sumupKey){
       await customAlert("⚠️ Aucune clé SumUp (Affiliate Key) configurée. Allez dans ⚙️ Configuration pour la renseigner — sans elle, l'appli SumUp reçoit la demande de paiement mais l'ignore silencieusement (c'est exactement ce qui se passait avant ce correctif).");
       setSubmitting(false);return;
@@ -3102,7 +3167,26 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
   const doCashPayment=g=>{if(submitting)return;if(isNaN(g)||g<paidTotal)return;setSubmitting(true);onDone({type:"cash",given:g,change:+(g-paidTotal).toFixed(2)});};
   const handleCash=()=>{doCashPayment(parseFloat(given.replace(",",".")));};
 
-  return(<div style={ov} onClick={e=>e.target===e.currentTarget&&onClose()}>
+  return(<div style={ov} onClick={e=>e.target===e.currentTarget&&!cb&&onClose()}>
+    {cb&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:260,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{background:"white",borderRadius:18,padding:24,maxWidth:380,width:"100%",textAlign:"center"}}>
+        <div style={{fontSize:13,fontWeight:700,color:T.mid,marginBottom:4}}>Paiement carte — lecteur Solo</div>
+        <div style={{fontSize:34,fontWeight:900,color:T.dark,marginBottom:14,fontVariantNumeric:"tabular-nums"}}>{fmt(paidTotal)}</div>
+        {cb.phase==="starting"&&<><div style={{fontSize:40,marginBottom:8}}>⏳</div>
+          <div style={{fontSize:14,color:T.mid}}>Contact du lecteur…</div></>}
+        {cb.phase==="waiting"&&<><div style={{fontSize:40,marginBottom:8}}>💳</div>
+          <div style={{fontWeight:800,fontSize:16,color:T.dark,marginBottom:6}}>Présentez la carte sur le lecteur</div>
+          <div style={{fontSize:12,color:T.mid,marginBottom:16}}>En attente du paiement… la vente s'enregistre toute seule dès qu'il est accepté.</div>
+          {cbSlow&&<button onClick={manualCloudValidate} style={{width:"100%",padding:"11px",background:"#FFF8E1",border:`1px solid ${T.orange}`,borderRadius:10,cursor:"pointer",fontWeight:600,fontSize:12,color:T.dark,marginBottom:8}}>Le TPE affiche « accepté » : valider quand même</button>}
+          <button onClick={cancelCloudPayment} style={{width:"100%",padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13}}>✕ Annuler le paiement</button></>}
+        {cb.phase==="failed"&&<><div style={{fontSize:40,marginBottom:8}}>⚠️</div>
+          <div style={{fontWeight:800,fontSize:15,color:T.red,marginBottom:14}}>{cb.msg}</div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>{setCb(null);setSubmitting(false);}} style={{flex:1,padding:"12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:600,fontSize:13}}>Retour</button>
+            <button onClick={runCloudPayment} style={{flex:1,padding:"12px",background:"#5856D6",color:"white",border:"none",borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13}}>↻ Réessayer</button>
+          </div></>}
+      </div>
+    </div>}
     <div style={sh}>
       <div style={{width:40,height:4,background:T.border,borderRadius:2,margin:"0 auto 18px"}}/>
       {step==="select"&&<>
@@ -7900,6 +7984,35 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
   // Enregistrés sur Google Sheets (feuille "Config") — partagés automatiquement par
   // tous les appareils du club, contrairement aux URLs ci-dessus qui restent locales.
   const [sumupMsg,setSumupMsg]=useState(""); // message dédié, séparé des autres pour éviter toute confusion
+  // ── Lecteur Solo via Cloud API : état d'appairage lu depuis le script Google ──
+  const canPairSolo=currentUser?.role==="admin"||currentUser?.role==="test";
+  const [soloInfo,setSoloInfo]=useState(null); // null = pas encore lu ; {ok,hasKey,merchant,readerId,readerName} ou {ok:false,error}
+  const [soloCode,setSoloCode]=useState("");
+  const [soloBusy,setSoloBusy]=useState(false);
+  const [soloMsg,setSoloMsg]=useState("");
+  const loadSoloInfo=async()=>{
+    if(!caisseUrl){setSoloInfo(null);return;}
+    const r=await api(caisseUrl,{action:"sumupInfo"});
+    setSoloInfo(r&&r.ok?r:{ok:false,error:(r&&r.error)||"Script Caisse à mettre à jour (action sumupInfo inconnue)"});
+    if(r&&r.ok)LS.set("anf87_sumup_cloud",!!r.readerId);
+  };
+  useEffect(()=>{loadSoloInfo();},[caisseUrl]);
+  const pairSolo=async()=>{
+    if(!soloCode.trim()||soloBusy)return;
+    setSoloBusy(true);setSoloMsg("⏳ Appairage en cours...");
+    const r=await api(caisseUrl,{action:"sumupPair",code:soloCode.trim(),name:"Caisse ANF87"});
+    setSoloBusy(false);
+    if(r&&r.ok){setSoloMsg("✅ Lecteur appairé.");setSoloCode("");await loadSoloInfo();}
+    else setSoloMsg("❌ "+((r&&r.error)||"Échec de l'appairage"));
+  };
+  const unpairSolo=async()=>{
+    if(!(await customConfirm("Dissocier le lecteur Solo de la caisse ? Il faudra aussi faire Connexions → API → Disconnect sur le lecteur pour le réutiliser seul.")))return;
+    setSoloBusy(true);
+    const r=await api(caisseUrl,{action:"sumupUnpair"});
+    setSoloBusy(false);
+    setSoloMsg(r&&r.ok?"✅ Lecteur dissocié."+(r.warning?" (SumUp : "+r.warning+")":""):"❌ "+((r&&r.error)||"Échec"));
+    await loadSoloInfo();
+  };
   const saveSumup=async()=>{
     if(savingConfig||!caisseUrl)return;
     setSavingConfig(true);setSumupMsg("");
@@ -8010,9 +8123,37 @@ function SettingsScreen({caisseUrl,boissonsUrl,onSync,onInit,currentUser,setCU,s
       <button onClick={runMigration} disabled={migrateBusy||!caisseUrl} style={{width:"100%",padding:"12px",background:(migrateBusy||!caisseUrl)?"#ccc":"#00A86B",color:"white",border:"none",borderRadius:10,cursor:(migrateBusy||!caisseUrl)?"default":"pointer",fontWeight:700}}>{migrateBusy?"⏳ Migration...":"🍴 Convertir les menus imbriqués en Plats"}</button>
       {migrateMsg&&<div style={{marginTop:8,fontSize:12,fontWeight:600,textAlign:"center",color:migrateMsg.startsWith("✅")?T.green:migrateMsg.startsWith("⏳")?T.orange:T.red}}>{migrateMsg}</div>}
     </div>
+    <div style={{background:"#EEF0FF",borderRadius:12,padding:14,border:"1px solid #5856D6",marginBottom:14}}>
+      <div style={{fontWeight:700,fontSize:14,color:"#3C3AA8",marginBottom:6}}>💳 Lecteur SumUp Solo — Cloud API</div>
+      <div style={{fontSize:12,color:"#3C3AA8",lineHeight:1.6,marginBottom:10}}>Le montant part directement de la caisse vers le lecteur, sans l'appli SumUp du téléphone : le client paie, la vente s'enregistre toute seule. Nécessite le réseau (caisse et lecteur).</div>
+      {!caisseUrl&&<div style={{fontSize:12,color:T.red}}>Configurez d'abord l'URL Script Caisse ci-dessus.</div>}
+      {caisseUrl&&!soloInfo&&<div style={{fontSize:12,color:T.mid}}>⏳ Lecture de l'état…</div>}
+      {soloInfo&&!soloInfo.ok&&<div style={{fontSize:12,color:T.red}}>⚠ {soloInfo.error}</div>}
+      {soloInfo&&soloInfo.ok&&<>
+        <div style={{fontSize:12,color:"#3C3AA8",marginBottom:8,lineHeight:1.7}}>
+          Clé API (script) : <b>{soloInfo.hasKey?"✅ configurée":"❌ manquante"}</b> • Code marchand : <b>{soloInfo.merchant?"✅ "+soloInfo.merchant:"❌ manquant"}</b><br/>
+          Lecteur : <b>{soloInfo.readerId?("✅ appairé"+(soloInfo.readerName?" ("+soloInfo.readerName+")":"")):"non appairé"}</b>
+        </div>
+        {(!soloInfo.hasKey||!soloInfo.merchant)&&<div style={{fontSize:11,color:"#3C3AA8",background:"white",borderRadius:8,padding:"8px 10px",marginBottom:8,lineHeight:1.6}}>
+          Dans l'éditeur Apps Script : ⚙ Paramètres du projet → Propriétés du script → ajouter <code>SUMUP_API_KEY</code> (clé API secrète SumUp) et <code>SUMUP_MERCHANT_CODE</code> (code marchand).
+        </div>}
+        {canPairSolo&&soloInfo.hasKey&&soloInfo.merchant&&!soloInfo.readerId&&<>
+          <div style={{fontSize:11,color:"#3C3AA8",marginBottom:6,lineHeight:1.6}}>1) Sur le Solo : Paramètres → À propos → Se déconnecter. 2) Menu → Connexions → Wi-Fi → API → Connecter : un code s'affiche (valable 5 min). 3) Saisissez-le ici :</div>
+          <div style={{display:"flex",gap:8}}>
+            <input value={soloCode} onChange={e=>setSoloCode(e.target.value)} placeholder="Code d'appairage" disabled={soloBusy}
+              style={{flex:1,padding:"10px 12px",border:"1px solid #5856D6",borderRadius:8,fontSize:14,outline:"none",background:"white"}}/>
+            <button onClick={pairSolo} disabled={soloBusy||!soloCode.trim()} style={{padding:"10px 16px",background:(soloBusy||!soloCode.trim())?"#ccc":"#5856D6",color:"white",border:"none",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:13}}>Appairer</button>
+          </div>
+        </>}
+        {canPairSolo&&soloInfo.readerId&&<button onClick={unpairSolo} disabled={soloBusy} style={{width:"100%",padding:"10px",background:"white",border:"1px solid #5856D6",borderRadius:9,cursor:"pointer",fontWeight:600,fontSize:12,color:"#3C3AA8"}}>Dissocier le lecteur</button>}
+        {!canPairSolo&&!soloInfo.readerId&&<div style={{fontSize:11,color:T.mid}}>L'appairage est réservé aux administrateurs.</div>}
+      </>}
+      {soloMsg&&<div style={{marginTop:8,fontSize:12,fontWeight:700,textAlign:"center",color:soloMsg.startsWith("✅")?T.green:soloMsg.startsWith("⏳")?T.orange:T.red}}>{soloMsg}</div>}
+      <div style={{fontSize:11,color:"#3C3AA8",marginTop:8,lineHeight:1.5}}>Pas de lecteur appairé ? Le bouton "Carte Bleue" utilise l'ancien mode ci-dessous (appli SumUp du téléphone).</div>
+    </div>
     <div style={{background:"#E8F5E9",borderRadius:12,padding:14,border:"1px solid #A5D6A7",marginBottom:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-        <div style={{fontWeight:700,fontSize:14,color:"#2E7D32"}}>💳 SumUp TPE</div>
+        <div style={{fontWeight:700,fontSize:14,color:"#2E7D32"}}>💳 SumUp TPE (ancien mode)</div>
         {!editingSumup&&<button onClick={()=>setEditingSumup(true)} style={{background:"none",border:"none",color:"#2E7D32",fontWeight:700,fontSize:12,cursor:"pointer",padding:0,textDecoration:"underline"}}>✏️ Modifier</button>}
       </div>
       <div style={{fontSize:12,color:"#2E7D32",lineHeight:1.6,marginBottom:10}}>Le bouton "Carte Bleue" envoie directement la commande au TPE via <code>sumupmerchant://pay</code>. L'app SumUp doit être installée sur l'appareil et le TPE associé.</div>

@@ -76,6 +76,16 @@ function doGet(e) {
       case "uploadPlatItemsChunk": result = uploadPlatItemsChunk(e); break;
       case "adjustReadyPlat":     result = adjustReadyPlat(e); break;
       case "migrateToPlats":      result = migrateToPlats(); break;
+      // SumUp Cloud API (lecteur Solo) — volontairement HORS de WRITE_ACTIONS : aucune
+      // écriture dans le classeur, donc pas de verrou global qui bloquerait les ventes
+      // pendant qu'on attend le client devant le lecteur.
+      case "sumupInfo":           result = sumupInfo(); break;
+      case "sumupPair":           result = sumupPair(e); break;
+      case "sumupUnpair":         result = sumupUnpair(); break;
+      case "sumupCheckout":       result = sumupCheckout(e); break;
+      case "sumupStatus":         result = sumupStatus(e); break;
+      case "sumupCancel":         result = sumupCancel(); break;
+      case "sumupWebhook":        result = sumupWebhook(e); break;
       default: result = {ok:false, error:"Action inconnue: "+action};
     }
   } catch(err) { result = {ok:false, error:err.toString()}; }
@@ -1425,4 +1435,123 @@ function getSales(e){
     return true;
   }).map(function(r){return{id:r[0],date:fmtDate(r[1]),time:fmtTime(r[2]),siteId:r[3],siteName:r[4],total:r[5],payment:r[6],items:r[7],member:r[8],caissier:r[10],readyCombos:r[12]||"",comboLines:r[13]||"",readyPlats:r[14]||""};});
   return{ok:true,sales:sales};
+}
+
+// ═══════════════════════════════════════════════════════
+//  SUMUP CLOUD API (lecteur Solo) — paiement CB piloté depuis la caisse
+// ═══════════════════════════════════════════════════════
+// Réglages à saisir UNE FOIS dans l'éditeur Apps Script : ⚙️ Paramètres du projet →
+// Propriétés du script (jamais dans l'appli, qui est publique) :
+//   SUMUP_API_KEY        clé API secrète SumUp (sup_sk_...), scopes readers + transactions
+//   SUMUP_MERCHANT_CODE  code marchand SumUp (ex: MH4H92C7)
+// SUMUP_READER_ID / SUMUP_READER_NAME sont écrits automatiquement par l'appairage.
+// Aucun paiement n'est jamais mis dans la file hors-ligne : un paiement exige le réseau.
+var SUMUP_API = "https://api.sumup.com";
+function sumupProp(k){ return PropertiesService.getScriptProperties().getProperty(k)||""; }
+function sumupCall(method,path,body){
+  var key=sumupProp("SUMUP_API_KEY");
+  if(!key)return{ok:false,error:"Clé API SumUp non configurée (Propriétés du script : SUMUP_API_KEY)."};
+  var opt={method:method,headers:{Authorization:"Bearer "+key},muteHttpExceptions:true};
+  if(body){opt.contentType="application/json";opt.payload=JSON.stringify(body);}
+  var r=UrlFetchApp.fetch(SUMUP_API+path,opt), code=r.getResponseCode(), txt=r.getContentText(), data=null;
+  try{data=txt?JSON.parse(txt):null;}catch(e){}
+  var msg="";
+  if(code<200||code>=300){
+    msg=(data&&(data.message||data.error_message||data.detail||data.error))||txt.slice(0,200)||("HTTP "+code);
+    if(typeof msg!=="string")msg=JSON.stringify(msg);
+  }
+  return{ok:code>=200&&code<300,status:code,data:data,error:msg};
+}
+function sumupMerchant(){ return sumupProp("SUMUP_MERCHANT_CODE"); }
+// État de la configuration, sans jamais renvoyer la clé API.
+function sumupInfo(){
+  var readerId=sumupProp("SUMUP_READER_ID");
+  var out={ok:true,hasKey:!!sumupProp("SUMUP_API_KEY"),merchant:sumupMerchant(),readerId:readerId,readerName:sumupProp("SUMUP_READER_NAME")};
+  return out;
+}
+// Appairage : le Solo doit être déconnecté de son compte, puis Connexions → Wi-Fi → API
+// → Connect affiche un code valable 5 minutes.
+function sumupPair(e){
+  var m=sumupMerchant(); if(!m)return{ok:false,error:"Code marchand SumUp non configuré (Propriétés du script : SUMUP_MERCHANT_CODE)."};
+  var code=(e.parameter.code||"").toString().trim();
+  if(!code)return{ok:false,error:"Code d'appairage manquant."};
+  var r=sumupCall("post","/v0.1/merchants/"+encodeURIComponent(m)+"/readers",{pairing_code:code,name:(e.parameter.name||"Caisse ANF87").toString()});
+  if(!r.ok)return{ok:false,error:r.error};
+  var d=r.data||{}; var id=d.id||(d.data&&d.data.id)||"";
+  if(!id)return{ok:false,error:"Appairage accepté mais identifiant du lecteur absent de la réponse."};
+  var props=PropertiesService.getScriptProperties();
+  props.setProperty("SUMUP_READER_ID",id);
+  props.setProperty("SUMUP_READER_NAME",d.name||(d.data&&d.data.name)||"");
+  return{ok:true,readerId:id};
+}
+function sumupUnpair(){
+  var props=PropertiesService.getScriptProperties();
+  var m=sumupMerchant(), id=sumupProp("SUMUP_READER_ID"), warn="";
+  if(m&&id){
+    var r=sumupCall("delete","/v0.1/merchants/"+encodeURIComponent(m)+"/readers/"+encodeURIComponent(id));
+    if(!r.ok&&r.status!==404)warn=r.error;
+  }
+  props.deleteProperty("SUMUP_READER_ID"); props.deleteProperty("SUMUP_READER_NAME");
+  return{ok:true,warning:warn};
+}
+// Lance un paiement sur le lecteur. p.cents = montant en centimes, p.txId = identifiant
+// de la caisse (foreign_transaction_id), p.appId/p.key = App ID + clé Affiliate (Config).
+function sumupCheckout(e){
+  var p=e.parameter, m=sumupMerchant(), id=sumupProp("SUMUP_READER_ID");
+  if(!m||!id)return{ok:false,error:"Lecteur SumUp non appairé."};
+  var cents=Math.round(+p.cents||0);
+  if(cents<=0)return{ok:false,error:"Montant invalide."};
+  var body={total_amount:{currency:"EUR",minor_unit:2,value:cents},description:(p.desc||"Caisse ANF87").toString().slice(0,200)};
+  if(p.key){ body.affiliate={key:p.key.toString(),foreign_transaction_id:(p.txId||"").toString()}; if(p.appId)body.affiliate.app_id=p.appId.toString(); }
+  // Résultat renvoyé par SumUp vers ce même script (rapide) ; l'appli interroge aussi
+  // l'API en parallèle, donc rien n'est perdu si ce retour n'arrive pas.
+  try{ body.return_url=ScriptApp.getService().getUrl()+"?action=sumupWebhook"; }catch(e2){}
+  var r=sumupCall("post","/v0.1/merchants/"+encodeURIComponent(m)+"/readers/"+encodeURIComponent(id)+"/checkout",body);
+  if(!r.ok)return{ok:false,error:r.error,status:r.status};
+  var d=r.data||{}; var data=d.data||d;
+  return{ok:true,clientTxId:data.client_transaction_id||"",checkoutId:data.checkout_id||""};
+}
+// Réception du webhook SumUp (solo.transaction.updated) — garde le résultat 6h en cache.
+function sumupWebhook(e){
+  try{
+    var body=JSON.parse((e.postData&&e.postData.contents)||"{}");
+    var pl=body.payload||{};
+    if(pl.client_transaction_id){
+      CacheService.getScriptCache().put("sumup_"+pl.client_transaction_id,JSON.stringify({status:pl.status||"",reason:pl.failure_reason||""}),21600);
+    }
+  }catch(err){}
+  return{ok:true};
+}
+// État d'un paiement : pending | successful | failed. Webhook (cache) d'abord, puis
+// interrogation de l'API Transactions. Une transaction encore introuvable = en attente
+// (le client n'a pas encore présenté sa carte, ou a annulé sur le lecteur).
+function sumupStatus(e){
+  var cid=(e.parameter.clientTxId||"").toString();
+  if(!cid)return{ok:false,error:"Identifiant de transaction manquant."};
+  var hit=CacheService.getScriptCache().get("sumup_"+cid);
+  if(hit){
+    try{
+      var h=JSON.parse(hit), hs=(h.status||"").toLowerCase();
+      if(hs==="successful")return{ok:true,state:"successful"};
+      if(hs==="failed")return{ok:true,state:"failed",reason:h.reason||""};
+    }catch(err){}
+  }
+  var m=sumupMerchant(); if(!m)return{ok:false,error:"Code marchand SumUp non configuré."};
+  var r=sumupCall("get","/v2.1/merchants/"+encodeURIComponent(m)+"/transactions?client_transaction_id="+encodeURIComponent(cid));
+  if(!r.ok){
+    if(r.status===404)return{ok:true,state:"pending"};
+    return{ok:false,error:r.error};
+  }
+  var t=r.data||{}; if(t.data&&!t.status)t=t.data;
+  var st=(t.status||"").toString().toUpperCase();
+  if(st==="SUCCESSFUL")return{ok:true,state:"successful"};
+  if(st==="FAILED"||st==="CANCELLED")return{ok:true,state:"failed",reason:(t.failure_reason||st).toString()};
+  return{ok:true,state:"pending"};
+}
+// Annule le paiement en cours sur le lecteur (peut prendre quelques secondes).
+function sumupCancel(){
+  var m=sumupMerchant(), id=sumupProp("SUMUP_READER_ID");
+  if(!m||!id)return{ok:false,error:"Lecteur SumUp non appairé."};
+  var r=sumupCall("post","/v0.1/merchants/"+encodeURIComponent(m)+"/readers/"+encodeURIComponent(id)+"/terminate");
+  return r.ok?{ok:true}:{ok:false,error:r.error};
 }
