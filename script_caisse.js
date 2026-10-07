@@ -1564,24 +1564,26 @@ function sumupCancel(){
 function sumupTest(){
   var out={ok:true,hasKey:!!sumupProp("SUMUP_API_KEY"),merchant:sumupMerchant(),readerId:sumupProp("SUMUP_READER_ID"),steps:[]};
   if(!out.hasKey){out.ok=false;out.steps.push("❌ SUMUP_API_KEY absente des propriétés du script");return out;}
-  var me=sumupCall("get","/v0/me");
-  if(!me.ok){out.ok=false;out.steps.push("❌ Clé API refusée par SumUp (HTTP "+me.status+") : "+me.error);return out;}
-  var d=me.data||{}, mp=d.merchant_profile||{}, real=mp.merchant_code||"";
-  out.steps.push("✅ Clé API valide"+(real?" — compte "+real:""));
-  if(!out.merchant)out.steps.push("❌ SUMUP_MERCHANT_CODE absent"+(real?" (le vôtre semble être "+real+")":""));
-  else if(real&&real!==out.merchant){out.ok=false;out.steps.push("❌ Code marchand saisi ("+out.merchant+") différent de celui du compte ("+real+")");}
-  else out.steps.push("✅ Code marchand "+out.merchant);
-  var m=out.merchant||real; if(!m)return out;
+  if(!out.merchant){out.ok=false;out.steps.push("❌ SUMUP_MERCHANT_CODE absent des propriétés du script");return out;}
+  var m=out.merchant;
+  // Un 401/403 = clé refusée ; un 404 = code marchand qui n'existe pas (ou n'est pas celui de cette clé).
   var rd=sumupCall("get","/v0.1/merchants/"+encodeURIComponent(m)+"/readers");
-  if(!rd.ok){out.ok=false;out.steps.push("❌ Liste des lecteurs refusée (HTTP "+rd.status+") : "+rd.error);return out;}
-  var arr=(rd.data&&(rd.data.items||rd.data.data||rd.data))||[]; if(!Array.isArray(arr))arr=[];
+  if(!rd.ok){
+    out.ok=false;
+    if(rd.status===401||rd.status===403)out.steps.push("❌ Clé API refusée par SumUp (HTTP "+rd.status+") : "+rd.error);
+    else if(rd.status===404)out.steps.push("❌ Code marchand « "+m+" » introuvable chez SumUp (HTTP 404) : vérifiez-le (sans espace, exactement comme sur votre compte SumUp) et qu'il correspond à la clé API utilisée");
+    else out.steps.push("❌ SumUp a répondu HTTP "+rd.status+" : "+rd.error);
+    return out;
+  }
+  out.steps.push("✅ Clé API acceptée et code marchand "+m+" reconnu");
+  var arr=(rd.data&&(rd.data.items||rd.data.data))||[]; if(!Array.isArray(arr))arr=[];
   out.readers=arr.map(function(r){return{id:r.id,name:r.name||"",status:r.status||""};});
   out.steps.push(out.readers.length?("✅ "+out.readers.length+" lecteur(s) chez SumUp : "+out.readers.map(function(r){return (r.name||r.id)+" ["+(r.status||"?")+"]";}).join(", ")):"❌ Aucun lecteur appairé chez SumUp");
   if(out.readerId){
     var known=out.readers.some(function(r){return r.id===out.readerId;});
     out.steps.push(known?"✅ Le lecteur utilisé par la caisse est bien dans cette liste":"❌ Le lecteur enregistré dans la caisse n'existe plus chez SumUp : dissociez puis ré-appairez");
     if(!known)out.ok=false;
-  }else out.steps.push("❌ Aucun lecteur enregistré dans la caisse (appairage à faire dans Réglages)");
+  }else{out.ok=false;out.steps.push("❌ Aucun lecteur enregistré dans la caisse (appairage à faire dans Réglages)");}
   return out;
 }
 // À lancer UNE FOIS depuis l'éditeur Apps Script (▶ Exécuter) : déclenche la demande
