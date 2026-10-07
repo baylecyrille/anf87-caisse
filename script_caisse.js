@@ -900,7 +900,8 @@ function getProductsData(ss){
   // avec elles.
   // Colonne AD (30) : "AfficherBarreContenants" (vide/TRUE = affiché par défaut dans
   // la barre de contenants en haut de la Caisse ; FALSE = exclu volontairement).
-  var CONTAINERS_COL=25, COLOR_COL=26, RETURNFOR_COL=27, HAPPYPRICE_COL=28, SITESVENDUS_COL=29, SHOWBAR_COL=30;
+  // Colonne AE (31) : "SansSuiviStock" (TRUE = produit sans stock : licences, cotisations...).
+  var CONTAINERS_COL=25, COLOR_COL=26, RETURNFOR_COL=27, HAPPYPRICE_COL=28, SITESVENDUS_COL=29, SHOWBAR_COL=30, NOSTOCK_COL=31;
   // Colonnes 40/41/42 (AN/AO/AP) : Version/ModifiePar/ModifieLe (voir plus haut,
   // ensureAllVersionCols) — volontairement très loin même des colonnes de stock
   // au-delà du 4e site, pour ne jamais risquer de collision avec elles.
@@ -927,6 +928,7 @@ function getProductsData(ss){
         happyPrice:+r[HAPPYPRICE_COL-1]||0,
         siteAvailability:(r[SITESVENDUS_COL-1]||"").toString(),
         showInContainerBar:r[SHOWBAR_COL-1]!==false&&r[SHOWBAR_COL-1]!=="FALSE"&&r[SHOWBAR_COL-1]!=="false",
+        noStockTrack:r[NOSTOCK_COL-1]===true||r[NOSTOCK_COL-1]==="TRUE"||r[NOSTOCK_COL-1]==="true",
         version:(r[VERSION_COL-1]||"").toString(),modifiedBy:(r[VERSION_COL]||"").toString(),modifiedAt:(r[VERSION_COL+1]||"").toString()
       };
     });
@@ -1117,6 +1119,8 @@ function saveProduct(e){
   var happyPrice=+p.happyPrice||0;
   var siteAvailability=(p.siteAvailability||"").toString();
   var showInContainerBar=p.showInContainerBar===undefined?true:(p.showInContainerBar==="true"||p.showInContainerBar===true);
+  // undefined = l'appel ne concerne pas ce champ (import, dispo par site...) : on ne touche à rien.
+  var noStockTrack=p.noStockTrack===undefined?undefined:(p.noStockTrack==="true"||p.noStockTrack===true);
   var row0=findRowById(sh,p.id);
   if(row0>=0){
     var conflict=versionConflict(sh,row0,40,p.baseVersion);
@@ -1147,6 +1151,7 @@ function saveProduct(e){
     sh.getRange(row0,28).setValue(happyPrice);// AB = Prix Happy Hour
     sh.getRange(row0,29).setValue(siteAvailability);// AC = Sites où le produit est vendu (vide = tous)
     sh.getRange(row0,30).setValue(showInContainerBar);// AD = Affiché dans la barre de contenants (Caisse)
+    if(noStockTrack!==undefined)sh.getRange(row0,31).setValue(noStockTrack);// AE = Sans suivi de stock
     var newVersion=stampVersion(sh,row0,40,p.modifiedBy);
     return{ok:true,action:"updated",version:newVersion};
   }
@@ -1166,13 +1171,14 @@ function saveProduct(e){
   row.push(presets);                  // colonne 17 (Q)
   var extra=nbSites>4?nbSites-4:0;
   for(var s=0;s<extra;s++)row.push(0);// colonnes 18+ (R, S...) pour le 5e site et au-delà
-  while(row.length<29)row.push("");   // comble jusqu'à la colonne 29 si besoin
+  while(row.length<31)row.push("");   // comble jusqu'à la colonne 29 si besoin
   row[24]=containers;                 // colonne 25 (Y)
   row[25]=color;                      // colonne 26 (Z)
   row[26]=returnFor;                  // colonne 27 (AA)
   row[27]=happyPrice;                 // colonne 28 (AB)
   row[28]=siteAvailability;           // colonne 29 (AC)
   row[29]=showInContainerBar;         // colonne 30 (AD)
+  row[30]=noStockTrack===true;        // colonne 31 (AE)
   sh.appendRow(row);
   sh.getRange(sh.getLastRow(),7).setNumberFormat("@"); // Codebarres en texte, même raison que ci-dessus
   var newVersion2=stampVersion(sh,sh.getLastRow(),40,p.modifiedBy);

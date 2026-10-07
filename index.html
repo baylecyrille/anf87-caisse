@@ -1563,7 +1563,7 @@ function App(){
       });
   };
   const addToCart=async p=>{
-    const stock=p.stock[siteId]||0;
+    const stock=p.noStockTrack?999999:(p.stock[siteId]||0);
     if(stock<=0)return;
     if(p.sellByVolume){setVolumeProd(p);return;}
     // Empêche de dépasser le stock réel en cliquant plusieurs fois sur la tuile —
@@ -1753,12 +1753,12 @@ function App(){
         await customAlert(`⚠️ Volume insuffisant dans le contenant ouvert : il reste ${available}${item.unit||""}, déjà ${alreadyInCart}${item.unit||""} dans le panier pour ce produit — impossible d'en ajouter davantage.`);
         return;
       }
-    }else if(!item.comboItems){
+    }else if(!item.comboItems&&!item.isCustom){
       // Produit à l'unité (pas au volume, pas un combo) : même logique que pour le
       // volume — empêche de dépasser le stock réel via le "+" du panier.
       const pid=item.pid||item.id;
       const prod=products.find(p=>p.id.toString()===pid.toString());
-      const stock=prod?.stock[siteId]||0;
+      const stock=prod?.noStockTrack?999999:(prod?.stock[siteId]||0);
       const alreadyInCart=cart.filter(i=>(i.pid||i.id)===pid&&!i.comboItems).reduce((s,i)=>s+i.qty,0);
       if(alreadyInCart>=stock){
         await customAlert(`⚠️ Stock insuffisant : il ne reste que ${stock} en stock, déjà ${alreadyInCart} dans le panier.`);
@@ -1768,6 +1768,15 @@ function App(){
     setCart(prev=>prev.map(i=>i.id===id?{...i,qty:i.qty+1}:i));
   };
   const clearCart=()=>setCart([]);
+  // Montant libre saisi au clavier (cotisation, don, article hors catalogue...) : ligne
+  // virtuelle sans produit derrière — jamais de stock, mais bien comptée dans le total
+  // et tracée dans le détail de la vente (comboLines, avec isCustom).
+  const addCustomToCart=(amount,label)=>{
+    const price=Math.round((+amount||0)*100)/100;
+    if(!(price>0))return;
+    setCart(prev=>[...prev,{id:"custom-"+Date.now()+"-"+Math.random().toString(36).slice(2),pid:"custom",isCustom:true,noStock:false,
+      name:(label||"").trim()||"Montant libre",price,emoji:"💶",photo:"",drink:false,qty:1,free:false,unit:"unité"}]);
+  };
 
   const cartTotal=cart.reduce((s,i)=>s+(i.free?0:i.price*i.qty),0);
   const cartCount=cart.reduce((s,i)=>s+i.qty,0);
@@ -1810,6 +1819,8 @@ function App(){
         });
       }else{
         const pid=item.pid||item.id;
+        const prodNS=products.find(p=>p.id.toString()===pid.toString());
+        if(prodNS?.noStockTrack)return; // produit sans suivi de stock (licence...) : rien à décompter
         stockEntries.push({id:pid,qty:stockAmount(item)});
         // Accompagnements GRATUITS uniquement ici (gobelet, sucre, touillette...) :
         // décomptés en plus du produit vendu, sans ligne de panier ni impact sur le
@@ -1841,7 +1852,7 @@ function App(){
     const crossStockDeltas={}; // productId -> quantité à AJOUTER à son stock, en plus du décompte normal
     const depositDeltas={}; // productId du produit CONSIGNE (jamais celui du retour) -> delta du compteur séparé
     cart.forEach(item=>{
-      if(item.comboItems||item.noStock)return; // combos/lignes virtuelles non concernés
+      if(item.comboItems||item.noStock||item.isCustom)return; // combos/lignes virtuelles non concernés
       const pid=item.pid||item.id;
       const prod=products.find(p=>p.id.toString()===pid.toString());
       if(!prod)return;
@@ -1940,7 +1951,7 @@ function App(){
       // plusieurs Ko, et tout passe par une URL (GET) à taille limitée — la photo
       // du menu/plat au moment de l'affichage suffit largement, pas la peine de la
       // dupliquer dans CHAQUE vente.
-      const comboLinesStr=JSON.stringify(cart.filter(i=>i.isCombo).map(i=>({comboId:i.pid,name:i.name,qty:i.qty,price:i.price,isPlat:!!i.isPlat})));
+      const comboLinesStr=JSON.stringify(cart.filter(i=>i.isCombo||i.isCustom).map(i=>({comboId:i.pid,name:i.name,qty:i.qty,price:i.price,isPlat:!!i.isPlat,isCustom:!!i.isCustom})));
       // Découpage en plusieurs morceaux si le panier est chargé (beaucoup de
       // produits différents) — mêmes principe et fonction que pour les menus, avec
       // un identifiant temporaire juste pour relier les morceaux entre eux (la
@@ -2077,7 +2088,7 @@ function App(){
           plats={plats} readyPlats={readyPlats} addPlatToCart={addPlatToCart}
           cartTotal={cartTotal} cartCount={cartCount} currentUser={currentUser}
           openPayment={step=>{setPaymentInitialStep(step||"select");setModal("payment");}} openScanner={()=>setModal("scanner")}
-          openCart={()=>setModal("cart")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
+          openCart={()=>setModal("cart")} openCustom={()=>setModal("custom")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
           happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour} readyCombos={readyCombos} tabGroups={tabGroups}/>}
         {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos} plats={plats} readyPlats={readyPlats} setReadyPlats={setReadyPlats}/>}
         {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos} plats={plats} readyPlats={readyPlats} setReadyPlats={setReadyPlats} containers={containers} setContainers={setContainers}/>}
@@ -2113,7 +2124,11 @@ function App(){
         onClose={()=>setModal("payment")} onFinalize={finalizeSale}/>}
       {modal==="split"&&<SplitModal total={cartTotal} boissonsUrl={boissonsUrl} onClose={()=>setModal("payment")} onComplete={(payments)=>{finalizeSale({type:"split",parts:payments});}}/>}
       {modal==="cart"&&<CartModal cart={cart} cartTotal={cartTotal} removeFromCart={removeFromCart} addQtyToCart={addQtyToCart} clearCart={clearCart}
-        onClose={()=>setModal(null)} onEncaisser={step=>{setPaymentInitialStep(step||"select");setModal("payment");}}/>}
+        onClose={()=>setModal(null)} onCustom={()=>setModal("custom")} onEncaisser={step=>{setPaymentInitialStep(step||"select");setModal("payment");}}/>}
+      {modal==="custom"&&<CustomAmountModal cartCount={cartCount} cartTotal={cartTotal} onClose={()=>setModal(null)}
+        onAdd={(amount,label)=>addCustomToCart(amount,label)}
+        onCheckout={(amount,label)=>{if(amount>0)addCustomToCart(amount,label);setPaymentInitialStep("select");setModal("payment");}}
+        onShowCart={()=>setModal("cart")}/>}
       {volumeProd&&<VolumeModal prod={volumeProd} onClose={()=>setVolumeProd(null)} onAdd={addVolumeToCart} portions={portions} happyHourActive={happyHourActive}/>}
     </div>
   );
@@ -2316,7 +2331,7 @@ function ContainerStrip({products,siteId,containers,setContainers,caisseUrl,rese
   </div>);
 }
 
-function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,plats,readyPlats,addPlatToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve,happyHourActive,onToggleHappyHour,readyCombos,tabGroups}){
+function PosScreen({openCustom,products,cart,siteId,categories,addToCart,removeFromCart,addQtyToCart,clearCart,addVolumeToCart,portions,combos,addComboToCart,plats,readyPlats,addPlatToCart,cartTotal,cartCount,currentUser,openPayment,openScanner,openCart,containers,setContainers,caisseUrl,reserve,happyHourActive,onToggleHappyHour,readyCombos,tabGroups}){
   const [cat,setCat]=useState("Tout");
   const [isLandscape,setLandscape]=useState(window.innerWidth>600&&window.orientation!==0);
   // Un smartphone en paysage est "large" (isLandscape=true) mais reste très BAS en
@@ -2480,7 +2495,7 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
         gridTemplateColumns:`repeat(${cols},1fr)`,gap:9,alignContent:"start"}}>
         {(()=>{
         const buildProductTile=(p)=>{
-          const stk=p.stock[siteId]||0;
+          const stk=p.noStockTrack?999999:(p.stock[siteId]||0);
           // Ce qui est déjà dans le panier pour ce produit — pour ne pas laisser la
           // tuile cliquable au-delà du stock réel (avant ce correctif, seul un stock
           // brut à 0 grisait la tuile : avec 10 en stock on pouvait quand même en
@@ -2793,8 +2808,9 @@ function PosScreen({products,cart,siteId,categories,addToCart,removeFromCart,add
     {isLandscape&&<div style={{width:300,borderLeft:`1px solid ${T.border}`,display:"flex",
       flexDirection:"column",background:T.card,flexShrink:0}}>
       <div style={{padding:"14px 16px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div style={{fontWeight:700,fontSize:16,color:T.dark}}>
-          🛒 Panier {cartCount>0&&<span style={{background:T.red,color:"white",borderRadius:12,padding:"1px 8px",fontSize:12,marginLeft:5}}>{cartCount}</span>}
+        <div style={{fontWeight:700,fontSize:16,color:T.dark,display:"flex",alignItems:"center",gap:8}}>
+          <span>🛒 Panier {cartCount>0&&<span style={{background:T.red,color:"white",borderRadius:12,padding:"1px 8px",fontSize:12,marginLeft:5}}>{cartCount}</span>}</span>
+          <button onClick={openCustom} title="Montant personnalisé" aria-label="Montant personnalisé" style={{background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,width:34,height:30,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",color:T.dark}}><KeypadIcon size={18}/></button>
         </div>
         {cart.length>0&&<button onClick={clearCart} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,fontSize:12}}>🗑 Vider</button>}
       </div>
@@ -2931,7 +2947,7 @@ function TabGroupsAdmin({categories,combos,plats,tabGroups,onSave}){
 }
 
 // ═══ CART MODAL (mobile) ═══
-function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose,onEncaisser}){
+function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose,onEncaisser,onCustom}){
   const ov={position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"};
   const sh={background:T.card,borderRadius:"20px 20px 0 0",width:"100%",maxWidth:480,maxHeight:"80vh",display:"flex",flexDirection:"column"};
   return(<div style={ov} onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -2940,6 +2956,7 @@ function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose
         <div style={{width:40,height:4,background:T.border,borderRadius:2,position:"absolute",left:"50%",top:12,transform:"translateX(-50%)"}}/> 
         <div style={{display:"flex",alignItems:"center",gap:14}}>
           <div style={{fontWeight:700,fontSize:16}}>🛒 Panier</div>
+          <button onClick={onCustom} title="Montant personnalisé" aria-label="Montant personnalisé" style={{background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,width:36,height:32,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",color:T.dark}}><KeypadIcon size={18}/></button>
           {cart.length>0&&<button onClick={()=>{clearCart();onClose();}} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,fontSize:12}}>🗑 Vider</button>}
         </div>
         <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:20,color:T.mid,marginLeft:16}}>✕</button>
@@ -2985,6 +3002,66 @@ function CartModal({cart,cartTotal,removeFromCart,addQtyToCart,clearCart,onClose
             🧾 Options
           </button>
         </div>
+      </div>
+    </div>
+  </div>);
+}
+
+const KeypadIcon=({size=22,color="currentColor"})=>(<svg width={size} height={size} viewBox="0 0 24 24" fill={color} aria-hidden="true">{[5,12,19].flatMap(y=>[5,12,19].map(x=><circle key={x+"-"+y} cx={x} cy={y} r="2"/>))}</svg>);
+// ═══ MONTANT PERSONNALISÉ (clavier numérique) ═══
+function CustomAmountModal({cartCount,cartTotal,onClose,onAdd,onCheckout,onShowCart}){
+  const [digits,setDigits]=useState(""); // saisie en centimes : "1250" => 12,50 €
+  const [label,setLabel]=useState("");
+  const [showLabel,setShowLabel]=useState(false);
+  const [flash,setFlash]=useState("");
+  const amount=(parseInt(digits||"0",10))/100;
+  const press=k=>setDigits(d=>{
+    if(k==="del")return d.slice(0,-1);
+    const n=(d+k).replace(/^0+/,"");
+    return n.length>7?d:n;
+  });
+  const reset=()=>{setDigits("");setLabel("");setShowLabel(false);};
+  const addOne=()=>{
+    if(amount<=0)return;
+    onAdd(amount,label);reset();
+    setFlash("✓ Ajouté au panier");setTimeout(()=>setFlash(""),1400);
+  };
+  const keyBtn={height:62,border:"none",background:"transparent",fontSize:28,fontWeight:500,color:T.dark,cursor:"pointer",borderRadius:10};
+  const keys=["1","2","3","4","5","6","7","8","9","00","0","del"];
+  const canPay=amount>0||cartCount>0;
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:210,display:"flex",alignItems:"center",justifyContent:"center"}}
+      onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div style={{background:T.card,width:"100%",maxWidth:420,height:"100%",maxHeight:760,display:"flex",flexDirection:"column",borderRadius:"clamp(0px,2vw,18px)",overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 14px"}}>
+        <button onClick={onClose} aria-label="Fermer" style={{background:"none",border:"none",fontSize:24,cursor:"pointer",color:T.mid,width:40,height:40}}>✕</button>
+        <div style={{fontWeight:700,fontSize:15,color:T.dark}}>Montant personnalisé</div>
+        <button onClick={()=>setShowLabel(v=>!v)} title="Libellé" aria-label="Libellé personnalisé"
+          style={{background:showLabel||label?"#EEF0FF":"none",border:"none",fontSize:22,cursor:"pointer",width:40,height:40,borderRadius:10}}>🏷️</button>
+      </div>
+      {showLabel&&<div style={{padding:"0 16px 6px"}}>
+        <input autoFocus value={label} maxLength={40} onChange={e=>setLabel(e.target.value)} placeholder="Libellé (ex : Licence, Don, Tombola…)"
+          style={{width:"100%",padding:"10px 12px",border:`1px solid ${T.border}`,borderRadius:10,fontSize:15,outline:"none"}}/>
+      </div>}
+      <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:90,padding:"0 16px"}}>
+        <div style={{fontSize:56,fontWeight:300,color:amount>0?T.dark:T.light,letterSpacing:-1}}>{amount.toFixed(2).replace(".",",")} €</div>
+        <div style={{fontSize:13,color:T.mid,minHeight:18,marginTop:4}}>{flash||(label?("🏷 "+label):"")}</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:2,padding:"0 14px 8px"}}>
+        {keys.map(k=><button key={k} onClick={()=>press(k)} style={keyBtn} aria-label={k==="del"?"Effacer":k}>{k==="del"?"⌫":k}</button>)}
+      </div>
+      <div style={{display:"flex",alignItems:"stretch",gap:8,padding:"6px 14px 14px"}}>
+        <button onClick={addOne} disabled={amount<=0} title="Ajouter au panier" aria-label="Ajouter au panier"
+          style={{width:64,borderRadius:14,border:`1px solid ${T.border}`,background:amount>0?T.bg:"#f2f2f2",cursor:amount>0?"pointer":"not-allowed",fontSize:22,color:T.dark,opacity:amount>0?1:.5}}>
+          🛒<span style={{fontSize:14,fontWeight:900,verticalAlign:"top"}}>+</span>
+        </button>
+        <button onClick={()=>canPay&&onCheckout(amount,label)} disabled={!canPay}
+          style={{flex:1,padding:"16px 8px",borderRadius:14,border:"none",background:canPay?"#5856D6":"#ccc",color:"white",fontSize:17,fontWeight:800,cursor:canPay?"pointer":"not-allowed"}}>
+          Facturer {fmt(amount>0?cartTotal+amount:cartTotal)}
+        </button>
+        <button onClick={onShowCart} title="Voir le panier" aria-label="Voir le panier"
+          style={{width:64,borderRadius:14,border:`1px solid ${T.border}`,background:T.bg,cursor:"pointer",fontSize:20,color:T.dark,position:"relative"}}>
+          🛒{cartCount>0&&<span style={{position:"absolute",top:2,right:4,background:T.red,color:"white",borderRadius:10,fontSize:10,fontWeight:800,padding:"1px 6px"}}>{cartCount}</span>}
+        </button>
       </div>
     </div>
   </div>);
@@ -6661,10 +6738,10 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
         {comboLines.length>0&&<div style={{marginBottom:10}}>
           <div style={{fontSize:10,fontWeight:700,color:T.mid,textTransform:"uppercase",letterSpacing:.5,marginBottom:6}}>🍽 Menus &amp; Plats</div>
           {comboLines.map((c,i)=>{
-            const currentPhoto=(c.isPlat?(plats||[]):combos).find(cb=>cb.id.toString()===c.comboId.toString())?.photo;
+            const currentPhoto=c.isCustom?null:(c.isPlat?(plats||[]):combos).find(cb=>cb.id.toString()===c.comboId.toString())?.photo;
             return(<div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
-              {currentPhoto?<img src={currentPhoto} style={{width:38,height:38,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:24,flexShrink:0}}>{c.isPlat?"🍴":"🍽"}</span>}
-              <div style={{flex:1,fontSize:13,color:T.dark,fontWeight:600}}>{c.name}</div>
+              {currentPhoto?<img src={currentPhoto} style={{width:38,height:38,borderRadius:8,objectFit:"cover",flexShrink:0}}/>:<span style={{fontSize:24,flexShrink:0}}>{c.isCustom?"💶":c.isPlat?"🍴":"🍽"}</span>}
+              <div style={{flex:1,fontSize:13,color:T.dark,fontWeight:600}}>{c.name}{c.isCustom&&c.price!=null?" — "+fmt(+c.price):""}</div>
               <div style={{fontSize:13,fontWeight:700,color:T.dark}}>×{c.qty}</div>
             </div>);
           })}
@@ -6896,6 +6973,11 @@ function ProdForm({data,setData,onSubmit,label,categories,products,sites,handleP
           <input type="checkbox" checked={data.showInContainerBar!==false} onChange={e=>setData({...data,showInContainerBar:e.target.checked})} style={{width:18,height:18}}/>
           <span style={{fontSize:12,color:T.dark}}>Afficher dans la barre de contenants en haut de l'écran Caisse</span>
         </label>
+        <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,cursor:"pointer"}}>
+          <input type="checkbox" checked={!!data.noStockTrack} onChange={e=>setData({...data,noStockTrack:e.target.checked})} style={{width:18,height:18}}/>
+          <span style={{fontSize:12,color:T.dark,fontWeight:600}}>♾ Sans suivi de stock (licences, cotisations, services...)</span>
+        </label>
+        <div style={{fontSize:11,color:T.mid,marginBottom:9}}>Le produit est toujours vendable, jamais « en rupture », et aucun stock n'est décompté à la vente.</div>
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>
           Couleur de la jauge (contenant)
         </label>
@@ -7098,7 +7180,8 @@ const PRODUCT_CONFLICT_FIELDS=[
   {key:"costPrice",label:"Prix d'achat TTC",fmt:v=>fmt(+v||0)},
   {key:"happyPrice",label:"Prix Happy Hour",fmt:v=>fmt(+v||0)},
   {key:"siteAvailability",label:"Sites de vente"},
-  {key:"showInContainerBar",label:"Affiché dans la barre de contenants",fmt:v=>v!==false?"Oui":"Non"}
+  {key:"showInContainerBar",label:"Affiché dans la barre de contenants",fmt:v=>v!==false?"Oui":"Non"},
+  {key:"noStockTrack",label:"Sans suivi de stock",fmt:v=>v?"Oui":"Non"}
 ];
 function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setPortions,accompaniments,setAccompaniments,deposits,containers,setContainers,currentUser}){
   const [edit,setEdit]=useState(null);
@@ -7178,7 +7261,7 @@ function ProductsAdmin({products,categories,sites,onSave,caisseUrl,portions,setP
     }
     onSave(products.filter(p=>p.id!==id));setSaving(false);};
   const flattenProd=(p,sites)=>({name:p.name,price:p.price,costPrice:p.costPrice||0,cat:p.cat,emoji:p.emoji,photo:p.photo||"",barcode:p.barcode||"",
-    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,siteAvailability:p.siteAvailability||"",showInContainerBar:p.showInContainerBar!==false,...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
+    drink:p.drink,sellByVolume:p.sellByVolume,unit:p.unit||"",baseQty:p.baseQty||1,presets:p.presets||"",containers:p.containers||"",color:p.color||"",returnFor:p.returnFor||"",happyPrice:p.happyPrice||0,siteAvailability:p.siteAvailability||"",showInContainerBar:p.showInContainerBar!==false,noStockTrack:p.noStockTrack?"true":"false",...Object.fromEntries(sites.map(s=>["stock_"+s.id,p.stock[s.id]||0]))});
 
   // Le prix d'achat/vente d'un produit au volume est saisi PAR PORTION (ex: 0,90€
   // l'achat d'un verre de 25cl), mais son stock est compté en cl (ex: 3000cl pour un
