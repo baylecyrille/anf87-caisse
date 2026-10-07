@@ -6973,11 +6973,6 @@ function ProdForm({data,setData,onSubmit,label,categories,products,sites,handleP
           <input type="checkbox" checked={data.showInContainerBar!==false} onChange={e=>setData({...data,showInContainerBar:e.target.checked})} style={{width:18,height:18}}/>
           <span style={{fontSize:12,color:T.dark}}>Afficher dans la barre de contenants en haut de l'écran Caisse</span>
         </label>
-        <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,cursor:"pointer"}}>
-          <input type="checkbox" checked={!!data.noStockTrack} onChange={e=>setData({...data,noStockTrack:e.target.checked})} style={{width:18,height:18}}/>
-          <span style={{fontSize:12,color:T.dark,fontWeight:600}}>♾ Sans suivi de stock (licences, cotisations, services...)</span>
-        </label>
-        <div style={{fontSize:11,color:T.mid,marginBottom:9}}>Le produit est toujours vendable, jamais « en rupture », et aucun stock n'est décompté à la vente.</div>
         <label style={{fontSize:12,fontWeight:600,color:T.mid,display:"block",marginBottom:4}}>
           Couleur de la jauge (contenant)
         </label>
@@ -6987,6 +6982,11 @@ function ProdForm({data,setData,onSubmit,label,categories,products,sites,handleP
           <span style={{fontSize:11,color:T.mid}}>Ex : bière → jaune, café → marron, vin rouge → bordeaux…</span>
         </div>
       </>}
+      <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,cursor:"pointer"}}>
+        <input type="checkbox" checked={!!data.noStockTrack} onChange={e=>setData({...data,noStockTrack:e.target.checked})} style={{width:18,height:18}}/>
+        <span style={{fontSize:12,color:T.dark,fontWeight:600}}>♾ Sans suivi de stock (licences, cotisations, services...)</span>
+      </label>
+      <div style={{fontSize:11,color:T.mid,marginBottom:9}}>Le produit est toujours vendable, jamais « en rupture », et aucun stock n'est décompté à la vente.</div>
       <button onClick={onSubmit} disabled={busy} style={{width:"100%",padding:"11px",background:busy?"#ccc":T.red,color:"white",border:"none",borderRadius:10,cursor:busy?"default":"pointer",fontWeight:700}}>
         {busy?"⏳ Enregistrement...":(label.startsWith("+")?label:"💾 Enregistrer")}
       </button>
