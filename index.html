@@ -6322,6 +6322,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
     :period==="all"?sales:[];
   const totalCA=filtered.reduce((a,s)=>a+(+s.total||0),0);
   const [showProductSummary,setShowProductSummary]=useState(false);
+  const [listLimit,setListLimit]=useState(200); // nb de ventes affichées dans la liste (le CA et les totaux, eux, comptent TOUTES les ventes)
   // Résumé produit par produit (toutes ventes de la période affichée confondues),
   // trié du plus vendu au moins vendu — pour "combien de X ai-je vendu aujourd'hui".
   const productSummary=(()=>{
@@ -6464,7 +6465,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
           <div style={{fontSize:11,color:T.mid}}>{s.nb} vente(s)</div>
         </div>)}
       </div>
-      {filtered.slice(0,50).map(tx=>{
+      {filtered.slice().reverse().slice(0,listLimit).map(tx=>{
         let payType=null; try{payType=JSON.parse(tx.payment||"{}").type;}catch{}
         const isMatchOffert=payType==="matchOffert";
         return(<button key={tx.id} onClick={()=>setOpenSale(tx)} style={{width:"100%",textAlign:"left",background:isMatchOffert?"#E8F5E9":T.card,borderRadius:10,padding:"10px 14px",marginBottom:6,border:`1px solid ${isMatchOffert?"#A5D6A7":T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
@@ -6472,6 +6473,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
           <div style={{fontSize:11,color:T.mid}}>{tx.caissier&&"👤 "+tx.caissier}{tx.member&&" • 🍺 "+tx.member}{isMatchOffert&&" • ⚽ Offert match"}</div></div>
         <div style={{fontWeight:800,color:isMatchOffert?T.green:T.red,fontSize:15}}>{isMatchOffert?"Offert":fmt(+tx.total)}</div>
       </button>);})}
+      {filtered.length>listLimit&&<button onClick={()=>setListLimit(l=>l+200)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13,marginBottom:10}}>Afficher plus ({filtered.length-listLimit} autres ventes)</button>}
     </>}
 
     {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} caisseUrl={caisseUrl} onSaveProducts={onSaveProducts} containers={containers} setContainers={setContainers}
