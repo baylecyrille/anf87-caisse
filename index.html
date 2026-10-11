@@ -6317,11 +6317,45 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
     return map;
   })();
 
-  const filtered=period==="today"?sales.filter(s=>s.date===today)
+  const periodSales=period==="today"?sales.filter(s=>s.date===today)
     :period==="calendar"&&selectedDay?sales.filter(s=>s.date===selectedDay)
     :period==="all"?sales:[];
+  // ── Filtres & tri de la liste (le CA, le détail produits et les totaux par site suivent le filtre) ──
+  const [showFilters,setShowFilters]=useState(false);
+  const [fPay,setFPay]=useState("all");
+  const [fCat,setFCat]=useState("all");
+  const [fSite,setFSite]=useState("all");
+  const [fCaissier,setFCaissier]=useState("all");
+  const [sortBy,setSortBy]=useState("date_desc");
+  const salePayType=s=>{ try{return JSON.parse(s.payment||"{}").type||"?";}catch{return "?";} };
+  const CAT_CUSTOM="💶 Montants libres",CAT_MENUS="🍽 Menus & Plats";
+  const saleCats=s=>{
+    const set=new Set();
+    let its=[]; try{its=JSON.parse(s.items||"[]");}catch{}
+    its.forEach(it=>{const p=products.find(x=>x.id.toString()===it.id.toString()); if(p?.cat)set.add(p.cat);});
+    let cl=[]; try{cl=JSON.parse(s.comboLines||"[]");}catch{}
+    cl.forEach(c=>set.add(c.isCustom?CAT_CUSTOM:CAT_MENUS));
+    return set;
+  };
+  const PAY_LABELS={cash:"💵 Espèces",cb:"💳 Carte Bleue",check:"📝 Chèque",split:"🔢 Note divisée",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes"};
+  const payOptions=[...new Set(periodSales.map(salePayType))];
+  const catOptions=[...new Set([...periodSales.flatMap(s=>[...saleCats(s)])])].sort();
+  const caissierOptions=[...new Set(periodSales.map(s=>s.caissier).filter(Boolean))].sort();
+  const filterCount=[fPay,fCat,fSite,fCaissier].filter(v=>v!=="all").length;
+  const filtered=(()=>{
+    let arr=periodSales.filter(s=>
+      (fPay==="all"||salePayType(s)===fPay)
+      &&(fSite==="all"||s.siteId===fSite)
+      &&(fCaissier==="all"||s.caissier===fCaissier)
+      &&(fCat==="all"||saleCats(s).has(fCat)));
+    // L'identifiant d'une vente est son horodatage en millisecondes : tri chronologique exact.
+    const t=s=>+s.id||0, m=s=>+s.total||0;
+    const cmp={date_desc:(a,b)=>t(b)-t(a),date_asc:(a,b)=>t(a)-t(b),amount_desc:(a,b)=>m(b)-m(a),amount_asc:(a,b)=>m(a)-m(b)}[sortBy];
+    return arr.slice().sort(cmp);
+  })();
   const totalCA=filtered.reduce((a,s)=>a+(+s.total||0),0);
   const [showProductSummary,setShowProductSummary]=useState(false);
+  useEffect(()=>{setListLimit(50);},[fPay,fCat,fSite,fCaissier,sortBy,period,selectedDay]);
   const [listLimit,setListLimit]=useState(50); // nb de ventes affichées dans la liste (le CA et les totaux, eux, comptent TOUTES les ventes)
   // Résumé produit par produit (toutes ventes de la période affichée confondues),
   // trié du plus vendu au moins vendu — pour "combien de X ai-je vendu aujourd'hui".
@@ -6450,8 +6484,35 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
     </>}
 
     {(period!=="calendar"||selectedDay)&&<>
+      <div style={{marginBottom:12}}>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <button onClick={()=>setShowFilters(v=>!v)} style={{flex:1,padding:"9px 12px",background:filterCount>0?"#FFF3E0":T.card,border:`1px solid ${filterCount>0?T.orange:T.border}`,borderRadius:10,cursor:"pointer",fontSize:13,fontWeight:700,color:T.dark,textAlign:"left"}}>
+            🔎 Filtres &amp; tri{filterCount>0&&<span style={{background:T.orange,color:"white",borderRadius:10,padding:"1px 7px",fontSize:11,marginLeft:6}}>{filterCount}</span>}
+            <span style={{float:"right",color:T.mid}}>{showFilters?"▲":"▼"}</span>
+          </button>
+          <select value={sortBy} onChange={e=>setSortBy(e.target.value)} aria-label="Tri" style={{padding:"9px 8px",border:`1px solid ${T.border}`,borderRadius:10,fontSize:12,fontWeight:600,background:T.card,color:T.dark,maxWidth:150}}>
+            <option value="date_desc">🕐 Récentes d'abord</option>
+            <option value="date_asc">🕐 Anciennes d'abord</option>
+            <option value="amount_desc">💶 Montant ↓</option>
+            <option value="amount_asc">💶 Montant ↑</option>
+          </select>
+        </div>
+        {showFilters&&<div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:12,padding:12,marginTop:8,display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          {[["Paiement",fPay,setFPay,payOptions.map(p=>[p,PAY_LABELS[p]||p])],
+            ["Catégorie",fCat,setFCat,catOptions.map(c=>[c,c])],
+            ["Site",fSite,setFSite,sites.map(x=>[x.id,x.name])],
+            ["Caissier",fCaissier,setFCaissier,caissierOptions.map(c=>[c,c])]].map(([lab,val,set,opts])=>(
+            <label key={lab} style={{fontSize:11,fontWeight:700,color:T.mid}}>{lab}
+              <select value={val} onChange={e=>set(e.target.value)} style={{width:"100%",marginTop:3,padding:"8px 6px",border:`1px solid ${T.border}`,borderRadius:8,fontSize:13,background:T.bg,color:T.dark}}>
+                <option value="all">Tous</option>
+                {opts.map(([v,l])=><option key={v} value={v}>{l}</option>)}
+              </select>
+            </label>))}
+          {filterCount>0&&<button onClick={()=>{setFPay("all");setFCat("all");setFSite("all");setFCaissier("all");}} style={{gridColumn:"1 / -1",padding:"8px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700,color:T.red}}>✕ Réinitialiser les filtres</button>}
+        </div>}
+      </div>
       <button onClick={()=>filtered.length>0&&setShowProductSummary(true)} style={{width:"100%",textAlign:"left",background:T.red,borderRadius:14,padding:"18px 16px",marginBottom:14,color:"white",border:"none",cursor:filtered.length>0?"pointer":"default"}}>
-        <div style={{fontSize:11,opacity:.75,marginBottom:2}}>{period==="calendar"?selectedDay:"CHIFFRE D'AFFAIRES"}</div>
+        <div style={{fontSize:11,opacity:.75,marginBottom:2}}>{period==="calendar"?selectedDay:"CHIFFRE D'AFFAIRES"}{filterCount>0?" (filtré)":""}</div>
         <div style={{fontSize:36,fontWeight:900}}>{fmt(totalCA)}</div>
         <div style={{fontSize:12,opacity:.65}}>{filtered.length} vente(s){filtered.length>0?" • toucher pour le détail produits":""}</div>
       </button>
@@ -6465,7 +6526,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
           <div style={{fontSize:11,color:T.mid}}>{s.nb} vente(s)</div>
         </div>)}
       </div>
-      {filtered.slice().reverse().slice(0,listLimit).map(tx=>{
+      {filtered.slice(0,listLimit).map(tx=>{
         let payType=null; try{payType=JSON.parse(tx.payment||"{}").type;}catch{}
         const isMatchOffert=payType==="matchOffert";
         return(<button key={tx.id} onClick={()=>setOpenSale(tx)} style={{width:"100%",textAlign:"left",background:isMatchOffert?"#E8F5E9":T.card,borderRadius:10,padding:"10px 14px",marginBottom:6,border:`1px solid ${isMatchOffert?"#A5D6A7":T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
