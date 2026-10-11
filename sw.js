@@ -1,4 +1,4 @@
-const VER='caisse-v6'; // v6 : installation résiliente (voir plus bas) — corrige le cas où
+const VER='caisse-v7'; // v7 : la page de l'appli est TOUJOURS cherchée sur le réseau d'abord (voir plus bas) ; v6 : installation résiliente (voir plus bas) — corrige le cas où
 // l'appli devenait TOTALEMENT indisponible hors connexion ("Vous êtes hors connexion"
 // affiché par le navigateur lui-même à la place de l'appli).
 const CDN=[
@@ -38,7 +38,13 @@ self.addEventListener('fetch',e=>{
   const isGoogleApi = url.hostname.endsWith('script.google.com') || url.hostname.endsWith('googleusercontent.com');
   if(isGoogleApi){ e.respondWith(fetch(e.request)); return; }
 
-  if(url.pathname.endsWith('index.html')||url.pathname==='/'){
-    e.respondWith(fetch(e.request).then(r=>{const c=r.clone();caches.open(VER).then(ca=>ca.put(e.request,c));return r;}).catch(()=>caches.match(e.request)));return;}
+  // La page elle-même (index.html, ou l'adresse du dossier "/Caisse/" sur GitHub Pages,
+  // qui ne se termine PAS par index.html et n'est pas non plus "/") : réseau d'abord, cache
+  // seulement si hors connexion. Avant, seule l'adresse exacte "/" ou "…index.html" était
+  // reconnue : une appli publiée dans un sous-dossier était servie depuis le cache À VIE,
+  // donc les mises à jour de index.html n'apparaissaient jamais.
+  const isPage=e.request.mode==='navigate'||url.pathname.endsWith('index.html')||url.pathname.endsWith('/');
+  if(isPage&&url.origin===self.location.origin){
+    e.respondWith(fetch(e.request).then(r=>{const c=r.clone();caches.open(VER).then(ca=>ca.put(e.request,c));return r;}).catch(()=>caches.match(e.request,{ignoreSearch:true}).then(r=>r||caches.match('./index.html')).then(r=>r||caches.match('./'))));return;}
   e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request).then(res=>{const c=res.clone();caches.open(VER).then(ca=>ca.put(e.request,c));return res;})));
 });
