@@ -1364,6 +1364,7 @@ function saveSale(e){
     var stockValsP=stockRangeP.getValues();
     var touchedP=false;
     items.forEach(function(item){
+      if(item.ns)return; // produit sans suivi de stock : tracé dans la vente, jamais décompté
       var idx=idxById[item.id.toString()];
       if(idx===undefined){notFound.push(String(item.id));return;}
       stockValsP[idx][0]=Math.max(0,(+stockValsP[idx][0]||0)-item.qty);
@@ -1372,7 +1373,7 @@ function saveSale(e){
     });
     if(touchedP)stockRangeP.setValues(stockValsP);
   } else if(items.length){
-    notFound=items.map(function(it){return String(it.id);});
+    notFound=items.filter(function(it){return !it.ns;}).map(function(it){return String(it.id);});
   }
   // Décrémenter aussi la jauge du contenant ouvert pour ce produit+site, s'il y en a
   // un (fût/bouteille/cubi entamé) — en plus du stock global, sans jamais aller sous 0.
@@ -1384,6 +1385,7 @@ function saveSale(e){
     var cData=cRange.getValues();
     var touchedC=false;
     items.forEach(function(item){
+      if(item.ns)return;
       for(var k=0;k<cData.length;k++){
         if(cData[k][0].toString()===p.site.toString()&&cData[k][1].toString()===item.id.toString()){
           cData[k][4]=Math.max(0,(+cData[k][4]||0)-item.qty); // colonne 5 (index 4) = "Restant"

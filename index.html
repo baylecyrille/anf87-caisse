@@ -1108,6 +1108,7 @@ async function adjustContainerApi(caisseUrl,siteId,prod,newRemaining,setContaine
 // classique. Centralise ce choix pour ne jamais avoir à le refaire à chaque endroit
 // qui touche au stock — et donc ne plus jamais l'oublier.
 async function applyStockDelta(caisseUrl,siteId,prod,delta,containers,setContainers){
+  if(prod&&prod.noStockTrack)return; // produit sans suivi de stock : aucun mouvement à enregistrer
   if(!delta)return;
   const cont=(containers||[]).find(c=>c.site===siteId&&c.productId.toString()===prod.id.toString());
   if(cont){
@@ -1821,7 +1822,9 @@ function App(){
       }else{
         const pid=item.pid||item.id;
         const prodNS=products.find(p=>p.id.toString()===pid.toString());
-        if(prodNS?.noStockTrack)return; // produit sans suivi de stock (licence...) : rien à décompter
+        // Produit sans suivi de stock (licence...) : la vente est tout de même tracée dans le
+        // détail (rapports, résumé produits) avec ns:1 = « ne pas décompter le stock ».
+        if(prodNS?.noStockTrack){stockEntries.push({id:pid,qty:stockAmount(item),ns:1});return;}
         stockEntries.push({id:pid,qty:stockAmount(item)});
         // Accompagnements GRATUITS uniquement ici (gobelet, sucre, touillette...) :
         // décomptés en plus du produit vendu, sans ligne de panier ni impact sur le
@@ -1876,7 +1879,7 @@ function App(){
     // plusieurs lignes (plusieurs services au verre, une ligne scindée par la carte
     // boissons, ou inclus dans plusieurs combos différents à la fois).
     const upd=products.map(p=>{
-      const qtyTotal=stockEntries.filter(e=>e.id.toString()===p.id.toString()).reduce((s,e)=>s+e.qty,0);
+      const qtyTotal=stockEntries.filter(e=>!e.ns&&e.id.toString()===p.id.toString()).reduce((s,e)=>s+e.qty,0);
       const crossDelta=crossStockDeltas[p.id]||0;
       if(qtyTotal<=0&&crossDelta===0)return p;
       return{...p,stock:{...p.stock,[siteId]:Math.max(0,(p.stock[siteId]||0)-qtyTotal+crossDelta)}};
@@ -1888,7 +1891,7 @@ function App(){
     // voyait qu'après une resynchronisation, pas tout de suite sur son propre écran.
     if(stockEntries.length){
       const soldByProduct={};
-      stockEntries.forEach(e=>{ soldByProduct[e.id]=(soldByProduct[e.id]||0)+e.qty; });
+      stockEntries.filter(e=>!e.ns).forEach(e=>{ soldByProduct[e.id]=(soldByProduct[e.id]||0)+e.qty; });
       setContainers(prev=>prev.map(c=>{
         if(c.site!==siteId)return c;
         const sold=soldByProduct[c.productId];
