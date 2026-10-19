@@ -6534,7 +6534,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
         const isMatchOffert=payType==="matchOffert";
         return(<button key={tx.id} onClick={()=>setOpenSale(tx)} style={{width:"100%",textAlign:"left",background:isMatchOffert?"#E8F5E9":T.card,borderRadius:10,padding:"10px 14px",marginBottom:6,border:`1px solid ${isMatchOffert?"#A5D6A7":T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
         <div><div style={{fontSize:13,fontWeight:600,color:T.dark}}>{tx.time} • {sites.find(s=>s.id===tx.siteId)?.name||tx.siteId}</div>
-          <div style={{fontSize:11,color:T.mid}}>{tx.caissier&&"👤 "+tx.caissier}{tx.member&&" • 🍺 "+tx.member}{isMatchOffert&&" • ⚽ Offert match"}</div></div>
+          <div style={{fontSize:11,color:T.mid}}>{tx.caissier&&"👤 "+tx.caissier}{!isMatchOffert&&<>{tx.caissier?" • ":""}<b style={{color:T.dark,fontWeight:700}}>{PAY_LABELS[payType]||(payType?"❔ "+payType:"❔ Paiement ?")}</b></>}{tx.member&&" • 🍺 "+tx.member}{isMatchOffert&&" • ⚽ Offert match"}</div></div>
         <div style={{fontWeight:800,color:isMatchOffert?T.green:T.red,fontSize:15}}>{isMatchOffert?"Offert":fmt(+tx.total)}</div>
       </button>);})}
       {filtered.length>listLimit&&<button onClick={()=>setListLimit(l=>l+50)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13,marginBottom:10}}>Afficher plus ({filtered.length-listLimit} autres ventes)</button>}
