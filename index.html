@@ -7,6 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Caisse ANF">
 <link rel="manifest" href="manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&display=swap" rel="stylesheet">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>ANF 87 — Caisse</title>
 <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
@@ -1975,6 +1977,16 @@ function App(){
       const saleResult=itemsJson.length>=1500
         ? await apiWrite(caisseUrl,null,{chunkAction:"uploadSaleItemsChunk",chunkId:tempSaleId,chunkField:"items",chunksField:"itemsChunks",text:itemsJson,restParams:saleRestParams})
         : await apiWrite(caisseUrl,{...saleRestParams,items:itemsJson,itemsChunks:0});
+      if(payment?.type==="ardoise"){
+        // Une ligne par vente à régler plus tard (feuille "Ardoises") — voir ArdoisesModal.
+        const nd=new Date(),p2=n=>String(n).padStart(2,"0");
+        const entry={id:uid(),client:payment.name,amount:+total.toFixed(2),date:`${p2(nd.getDate())}/${p2(nd.getMonth()+1)}/${nd.getFullYear()}`,
+          time:`${p2(nd.getHours())}:${p2(nd.getMinutes())}:${p2(nd.getSeconds())}`,siteId,siteName:site.name,caissier:currentUser?.name||"",
+          saleId:saleResult?.saleId||"",paid:0,status:"due",paidDate:"",payments:"",note:payment.note||""};
+        LS.set("anf87_ardoises",[...(LS.get("anf87_ardoises")||[]),entry]);
+        await apiWrite(caisseUrl,{action:"saveArdoise",id:entry.id,client:entry.client,amount:entry.amount.toFixed(2),site:siteId,siteName:site.name,
+          caissier:entry.caissier,saleId:entry.saleId,note:entry.note});
+      }
       if(saleResult?.stockWarning){
         await customAlert("⚠️ La vente est enregistrée, mais le stock n'a pas pu être décompté pour au moins un article :\n\n"+saleResult.stockWarning+"\n\nVérifiez l'ID du produit et le site dans Google Sheets.");
       }
@@ -2095,7 +2107,7 @@ function App(){
           openCart={()=>setModal("cart")} openCustom={()=>setModal("custom")} containers={containers} setContainers={setContainers} caisseUrl={caisseUrl} reserve={reserve}
           happyHourActive={happyHourActive} onToggleHappyHour={toggleHappyHour} readyCombos={readyCombos} tabGroups={tabGroups}/>}
         {tab==="stock"&&<StockScreen products={products} sites={activeSites} siteId={siteId} caisseUrl={caisseUrl} onSave={saveProd} containers={containers} setContainers={setContainers} reserve={reserve} setReserve={setReserve} deposits={deposits} setDeposits={setDeposits} readOnly={!isAdmin&&!isManager} categories={categories} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos} plats={plats} readyPlats={readyPlats} setReadyPlats={setReadyPlats}/>}
-        {tab==="reports"&&<ReportsScreen sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos} plats={plats} readyPlats={readyPlats} setReadyPlats={setReadyPlats} containers={containers} setContainers={setContainers}/>}
+        {tab==="reports"&&<ReportsScreen currentUser={currentUser} sites={sites} caisseUrl={caisseUrl} products={products} setCart={setCart} setTab={setTab} onSaveProducts={saveProd} isAdmin={isAdmin} isManager={isManager} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos} plats={plats} readyPlats={readyPlats} setReadyPlats={setReadyPlats} containers={containers} setContainers={setContainers}/>}
         {tab==="admin"&&(isAdmin||isManager)&&<AdminScreen products={products} sites={sites} categories={categories} users={users}
           onSaveProd={saveProd} onSaveSites={saveSites} onSaveCats={saveCats} onSaveUsers={saveUsers} caisseUrl={caisseUrl} boissonsUrl={boissonsUrl}
           portions={portions} setPortions={setPortions} combos={combos} setCombos={setCombos} plats={plats} setPlats={setPlats}
@@ -2122,7 +2134,8 @@ function App(){
       {modal==="payment"&&<PaymentModal cart={cart} total={cartTotal} site={site} boissonsUrl={boissonsUrl}
         onClose={()=>setModal(null)} onDone={finalizeSale} setCart={setCart} sumupKey={sumupKey} sumupAppId={sumupAppId} caisseUrl={caisseUrl}
         initialStep={paymentInitialStep}
-        openBoissons={()=>setModal("boissons")} openSplit={()=>setModal("split")}/>}
+        openBoissons={()=>setModal("boissons")} openSplit={()=>setModal("split")} openArdoises={()=>setModal("ardoises")}/>}
+      {modal==="ardoises"&&<ArdoisesModal caisseUrl={caisseUrl} currentUser={currentUser} canDelete={isAdmin||isManager} onClose={()=>setModal(cart.length>0?"payment":null)}/>}
       {modal==="scanner"&&<ScannerModal products={products} siteId={siteId} onFound={addToCart} onClose={()=>setModal(null)}/>}
       {modal==="boissons"&&<FreeDrinksModal cart={cart} setCart={setCart} boissonsUrl={boissonsUrl}
         onClose={()=>setModal("payment")} onFinalize={finalizeSale}/>}
@@ -3137,8 +3150,11 @@ function PaymentOptionButton({e,l,s,c,onClick,disabled}){
 }
 
 // ═══ PAYMENT MODAL ═══
-function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupKey,sumupAppId,caisseUrl,initialStep,openBoissons,openSplit}){
+function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupKey,sumupAppId,caisseUrl,initialStep,openBoissons,openSplit,openArdoises}){
+  const [ardName,setArdName]=useState("");const [ardNote,setArdNote]=useState("");
+  const [ardList,setArdList]=useState(()=>LS.get("anf87_ardoises")||[]);
   const [step,setStep]=useState(initialStep==="cb"?"select":(initialStep||"select")); // "cb" déclenche SumUp directement (voir plus bas), pas un vrai écran
+  useEffect(()=>{ if(step!=="ardoise"||!caisseUrl)return; api(caisseUrl,{action:"getArdoises"}).then(r=>{ if(r&&r.ok){setArdList(r.ardoises||[]);LS.set("anf87_ardoises",r.ardoises||[]);} }); },[step]);
   const drinkItems=cart.filter(i=>i.drink);const freeItems=cart.filter(i=>i.free);
   const paidTotal=cart.reduce((s,i)=>s+(i.free?0:i.price*i.qty),0);
   // Montant remis pré-rempli avec le total exact (cas le plus fréquent) — modifiable
@@ -3324,6 +3340,14 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
           {freeItems.length>0&&<span style={{background:T.green,color:"white",borderRadius:8,padding:"2px 8px",fontSize:12,fontWeight:700}}>{freeItems.length} offertes</span>}
         </button>}
         <PaymentOptionButton e="📝" l="Chèque" s="Saisir numéro de chèque et banque" c={T.blue} onClick={()=>setStep("check")}/>
+        {/* Ardoise : note en attente pour une personne de confiance */}
+        <button onClick={()=>setStep("ardoise")} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",
+          background:"#2b3f33",border:"2px dashed #f3efe2",borderRadius:13,cursor:"pointer",marginBottom:12,textAlign:"left"}}>
+          <div style={{width:46,height:46,borderRadius:12,background:"#f3efe2",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>📒</div>
+          <div><div style={{fontWeight:700,fontSize:15,color:"#f3efe2"}}>Mettre sur l'ardoise</div>
+            <div style={{fontSize:12,color:"#cfd8cf"}}>Personne de confiance — à régler plus tard</div></div>
+        </button>
+        <button onClick={openArdoises} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:12,cursor:"pointer",marginBottom:12,fontWeight:700,fontSize:13,color:T.dark}}>📒 Voir la liste des ardoises</button>
         {/* Diviser la note */}
         <button onClick={openSplit} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"14px",
           background:"#F0F4FF",border:`2px dashed ${T.blue}`,borderRadius:13,cursor:"pointer",marginBottom:12,textAlign:"left"}}>
@@ -3332,6 +3356,33 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
             <div style={{fontSize:12,color:T.mid}}>Parts égales ou montants personnalisés</div></div>
         </button>
       </>}
+      {step==="ardoise"&&(()=>{
+        const known=groupArdoises(ardList).sort((a,b)=>b.last-a.last);
+        const q=ardKey(ardName);
+        const sugg=known.filter(g=>!q||g.key.includes(q)).slice(0,8);
+        const exact=known.find(g=>g.key===q);
+        return<>
+        <button onClick={()=>setStep("others")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
+        <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:4}}>📒 Mettre sur l'ardoise</div>
+        <div style={{fontSize:13,color:T.mid,marginBottom:12}}>La vente est enregistrée (stock décompté) et le montant reste dû jusqu'à son règlement.</div>
+        <div style={{background:"#2b3f33",borderRadius:12,padding:14,marginBottom:14}}>
+          <div style={{fontSize:12,color:"#cfd8cf"}}>À METTRE SUR L'ARDOISE</div>
+          <div style={{fontSize:30,fontWeight:900,color:"#ffe27a"}}>{fmt(paidTotal)}</div>
+        </div>
+        <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Nom de la personne</label>
+        <input value={ardName} onChange={e=>setArdName(e.target.value)} placeholder="Ex: Michel Dupont" maxLength={40}
+          style={{width:"100%",padding:"13px",fontSize:16,border:`2px solid ${T.border}`,borderRadius:12,marginBottom:8,outline:"none"}}/>
+        {sugg.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+          {sugg.map(g=><button key={g.key} onClick={()=>setArdName(g.name)} style={{padding:"6px 10px",borderRadius:16,border:`1px solid ${T.border}`,background:g.key===q?"#FFF3E0":T.bg,cursor:"pointer",fontSize:12,fontWeight:700,color:T.dark}}>
+            {g.name}{g.due>0.004&&<span style={{color:T.red,marginLeft:5}}>{fmt(g.due)}</span>}</button>)}
+        </div>}
+        {ardName.trim()&&!exact&&known.length>0&&<div style={{fontSize:12,color:T.orange,marginBottom:8}}>Nouveau nom : une nouvelle ardoise sera ouverte.</div>}
+        <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Note (optionnel)</label>
+        <input value={ardNote} onChange={e=>setArdNote(e.target.value)} placeholder="Ex: après le match, paie vendredi" maxLength={60}
+          style={{width:"100%",padding:"13px",fontSize:15,border:`2px solid ${T.border}`,borderRadius:12,marginBottom:14,outline:"none"}}/>
+        <button onClick={()=>ardName.trim()&&submit({type:"ardoise",name:ardName.trim(),note:ardNote.trim()})} disabled={submitting||!ardName.trim()}
+          style={{width:"100%",padding:15,background:submitting||!ardName.trim()?"#ccc":"#2b3f33",color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:submitting||!ardName.trim()?"default":"pointer"}}>{submitting?"⏳ Validation...":"✓ Confirmer — Mettre sur l'ardoise"}</button>
+      </>;})()}
       {step==="matchOffert"&&<>
         <button onClick={()=>setStep("others")} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
         <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:4}}>⚽ Consos offertes match</div>
@@ -3386,6 +3437,148 @@ function PaymentModal({cart,total,site,boissonsUrl,onClose,onDone,setCart,sumupK
         <button onClick={()=>submit({type:"check",num:checkN,bank:checkBank})} disabled={submitting}
           style={{width:"100%",padding:15,background:submitting?"#ccc":T.blue,color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:submitting?"default":"pointer"}}>{submitting?"⏳ Validation...":"✓ Valider"}</button>
       </>}
+    </div>
+  </div>);
+}
+
+// ═══ ARDOISES (notes en attente pour des personnes de confiance) ═══
+// Une vente "sur l'ardoise" est enregistrée normalement (stock décompté, comptée dans le
+// CA, paiement "ardoise") et une ligne est ajoutée à la feuille "Ardoises". Le règlement
+// plus tard met à jour cette feuille ; il ne crée pas de nouvelle vente.
+const ardKey=n=>(n||"").toString().trim().toLowerCase();
+const ardLeft=a=>Math.max(0,Math.round(((+a.amount||0)-(+a.paid||0))*100)/100);
+function groupArdoises(list){
+  const map={};
+  (list||[]).forEach(a=>{
+    const k=ardKey(a.client); if(!k)return;
+    const g=map[k]||(map[k]={key:k,name:(a.client||"").toString().trim(),entries:[],due:0,total:0});
+    g.entries.push(a); g.due=Math.round((g.due+ardLeft(a))*100)/100; g.total+=+a.amount||0;
+  });
+  return Object.values(map).map(g=>({...g,entries:g.entries.slice().sort((x,y)=>(+x.id||0)-(+y.id||0)),
+    last:Math.max(...g.entries.map(e=>+e.id||0))}));
+}
+// Même règle que le serveur (payArdoise) : on solde d'abord les ardoises les plus anciennes.
+function applyArdoisePayLocal(list,client,amount,mode,by){
+  let left=Math.round(amount*100)/100; const key=ardKey(client);
+  const today=(()=>{const d=new Date();const p=n=>String(n).padStart(2,"0");return `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()}`;})();
+  return list.slice().sort((a,b)=>(+a.id||0)-(+b.id||0)).map(a=>{
+    if(left<=0.004||ardKey(a.client)!==key||a.status==="paid")return a;
+    const due=ardLeft(a); if(due<=0)return a;
+    const part=Math.min(due,left); left=Math.round((left-part)*100)/100;
+    const paid=Math.round(((+a.paid||0)+part)*100)/100;
+    return{...a,paid,status:paid>=(+a.amount||0)-0.004?"paid":"due",paidDate:paid>=(+a.amount||0)-0.004?today:a.paidDate};
+  });
+}
+const CHALK_FONT="'Caveat','Segoe Print','Bradley Hand','Comic Sans MS',cursive";
+function ArdoisesModal({caisseUrl,currentUser,canDelete,onClose}){
+  const [list,setList]=useState(()=>LS.get("anf87_ardoises")||[]);
+  const [loading,setLoading]=useState(false);
+  const [offline,setOffline]=useState(false);
+  const [openKey,setOpenKey]=useState(null);
+  const [amount,setAmount]=useState("");
+  const [mode,setMode]=useState("cash");
+  const [busy,setBusy]=useState(false);
+  const [showPaid,setShowPaid]=useState(false);
+  const save=l=>{setList(l);LS.set("anf87_ardoises",l);};
+  const load=async()=>{
+    if(!caisseUrl)return; setLoading(true);
+    const r=await api(caisseUrl,{action:"getArdoises"});
+    if(r&&r.ok){save(r.ardoises||[]);setOffline(false);}else setOffline(true);
+    setLoading(false);
+  };
+  useEffect(()=>{load();},[]);
+  const groups=groupArdoises(list);
+  const open=groups.filter(g=>g.due>0.004).sort((a,b)=>a.name.localeCompare(b.name,"fr"));
+  const settled=groups.filter(g=>g.due<=0.004).sort((a,b)=>b.last-a.last);
+  const totalDue=Math.round(open.reduce((s,g)=>s+g.due,0)*100)/100;
+  const cur=openKey?groups.find(g=>g.key===openKey):null;
+  const chalk={color:"#f3efe2",fontFamily:CHALK_FONT,textShadow:"0 0 1px rgba(255,255,255,.65),0 0 7px rgba(255,255,255,.12)"};
+  const yellow="#ffe27a";
+  const modes=[["cash","💵","Espèces"],["cb","💳","CB"],["check","📝","Chèque"]];
+  const settle=async g=>{
+    const a=Math.round((parseFloat(String(amount).replace(",","."))||0)*100)/100;
+    if(!(a>0)||busy)return;
+    if(a>g.due+0.004){await customAlert(`⚠️ ${g.name} ne doit que ${fmt(g.due)}.`);return;}
+    const lbl=modes.find(m=>m[0]===mode)[2];
+    if(!(await customConfirm(`Encaisser ${fmt(a)} (${lbl}) de ${g.name} ?`)))return;
+    setBusy(true);
+    const r=await apiWrite(caisseUrl,{action:"payArdoise",client:g.name,amount:a.toFixed(2),mode,by:currentUser?.name||""});
+    if(r&&r.ok){save(applyArdoisePayLocal(list,g.name,a,mode,currentUser?.name));setAmount("");}
+    setBusy(false);
+  };
+  const del=async e=>{
+    if(!(await customConfirm(`Supprimer cette ardoise de ${e.client} (${fmt(e.amount)}) ?\n\nLa vente correspondante reste dans les rapports.`)))return;
+    const r=await apiWrite(caisseUrl,{action:"deleteArdoise",id:e.id});
+    if(r&&r.ok)save(list.filter(x=>x.id!==e.id));
+  };
+  const btn={background:"transparent",border:"2px dashed rgba(243,239,226,.55)",borderRadius:12,cursor:"pointer",...chalk,fontSize:24,padding:"6px 14px"};
+  const rowLine=(left,right,color,key,extra)=>(
+    <div key={key} style={{display:"flex",alignItems:"baseline",gap:8,...extra}}>
+      <span style={{...chalk,fontSize:28,color:color||chalk.color}}>{left}</span>
+      <span style={{flex:1,borderBottom:"2px dotted rgba(243,239,226,.35)",transform:"translateY(-6px)"}}/>
+      <span style={{...chalk,fontSize:30,fontWeight:700,color:color||yellow}}>{right}</span>
+    </div>);
+  return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.72)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:"max(8px,env(safe-area-inset-top)) 8px 8px"}}
+      onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div style={{width:"100%",maxWidth:540,height:"100%",maxHeight:820,display:"flex",flexDirection:"column",
+        border:"14px solid #8a5a2b",borderImage:"linear-gradient(135deg,#a6743a,#6e4520 45%,#9b6a35) 1",
+        boxShadow:"0 10px 40px rgba(0,0,0,.6), inset 0 0 50px rgba(0,0,0,.65)",
+        background:"radial-gradient(ellipse at 18% 8%,rgba(255,255,255,.09),transparent 55%),radial-gradient(ellipse at 85% 92%,rgba(255,255,255,.06),transparent 60%),linear-gradient(160deg,#325142,#243a2e 55%,#1b2b22)"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px 4px"}}>
+        {cur?<button onClick={()=>{setOpenKey(null);setAmount("");}} style={{...btn,fontSize:22,padding:"2px 12px"}}>← retour</button>
+          :<div style={{...chalk,fontSize:40,fontWeight:700,textDecoration:"underline wavy",textDecorationColor:"rgba(243,239,226,.45)",textUnderlineOffset:6,transform:"rotate(-1.5deg)"}}>Les Ardoises</div>}
+        <button onClick={onClose} aria-label="Fermer" style={{...btn,fontSize:26,padding:"0 12px",border:"none"}}>✕</button>
+      </div>
+      {offline&&<div style={{...chalk,fontSize:18,textAlign:"center",color:"#ffb3a0"}}>📡 hors connexion — dernière liste connue</div>}
+      <div style={{flex:1,overflowY:"auto",padding:"6px 18px 10px"}}>
+        {!cur&&<>
+          {loading&&open.length===0&&<div style={{...chalk,fontSize:24,textAlign:"center",marginTop:30}}>⏳ chargement…</div>}
+          {!loading&&open.length===0&&<div style={{...chalk,fontSize:28,textAlign:"center",marginTop:40,opacity:.85}}>Aucune ardoise en cours 🎉<br/><span style={{fontSize:20,opacity:.7}}>(tout le monde a payé !)</span></div>}
+          {open.map((g,i)=>(
+            <button key={g.key} onClick={()=>{setOpenKey(g.key);setAmount(g.due.toFixed(2));}}
+              style={{display:"block",width:"100%",background:"none",border:"none",cursor:"pointer",padding:"2px 0",textAlign:"left",transform:`rotate(${i%2?0.5:-0.5}deg)`}}>
+              {rowLine(g.name,fmt(g.due),null,g.key)}
+              <div style={{...chalk,fontSize:16,opacity:.55,marginTop:-4}}>{g.entries.filter(e=>ardLeft(e)>0).length} note(s) • depuis le {g.entries.filter(e=>ardLeft(e)>0)[0]?.date}</div>
+            </button>))}
+          {settled.length>0&&<div style={{marginTop:18}}>
+            <button onClick={()=>setShowPaid(v=>!v)} style={{...btn,fontSize:18,padding:"2px 10px",opacity:.7}}>{showPaid?"▲ masquer":"▼ voir"} les ardoises réglées ({settled.length})</button>
+            {showPaid&&settled.map(g=>(<div key={g.key} style={{opacity:.55,marginTop:4}}>{rowLine(g.name,fmt(g.total)+" ✓","#a8d5a2",g.key)}</div>))}
+          </div>}
+        </>}
+        {cur&&<>
+          <div style={{...chalk,fontSize:44,fontWeight:700,transform:"rotate(-1deg)",marginBottom:2}}>{cur.name}</div>
+          {cur.entries.map(e=>(
+            <div key={e.id} style={{borderBottom:"1px dashed rgba(243,239,226,.18)",paddingBottom:3,marginBottom:3}}>
+              {rowLine(`${(e.date||"").slice(0,5)} · ${e.siteName||""}`,fmt(e.amount),ardLeft(e)>0?null:"#a8d5a2",e.id)}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",...chalk,fontSize:17,opacity:.7}}>
+                <span>{e.note?("« "+e.note+" » "):""}{e.caissier?("par "+e.caissier):""}{(+e.paid||0)>0&&ardLeft(e)>0?` • déjà réglé ${fmt(e.paid)}`:""}{ardLeft(e)<=0?" • réglée ✓":""}</span>
+                {canDelete&&<button onClick={()=>del(e)} aria-label="Supprimer" style={{background:"none",border:"none",cursor:"pointer",fontSize:16,opacity:.6}}>🗑</button>}
+              </div>
+            </div>))}
+          {cur.due>0.004&&<>
+            <div style={{marginTop:10,borderTop:"3px double rgba(243,239,226,.5)",paddingTop:6}}>{rowLine("Reste dû",fmt(cur.due),yellow,"due")}</div>
+            <div style={{...chalk,fontSize:24,marginTop:14,marginBottom:4}}>Règlement :</div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <input value={amount} onChange={e=>setAmount(e.target.value)} inputMode="decimal" placeholder="montant"
+                style={{width:130,background:"transparent",border:"2px dashed rgba(243,239,226,.55)",borderRadius:10,padding:"4px 10px",fontSize:32,textAlign:"right",outline:"none",caretColor:"#f3efe2",...chalk}}/>
+              <span style={{...chalk,fontSize:30}}>€</span>
+              <button onClick={()=>setAmount(cur.due.toFixed(2))} style={{...btn,fontSize:20,padding:"2px 10px"}}>tout</button>
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+              {modes.map(([v,ic,l])=>(<button key={v} onClick={()=>setMode(v)} style={{...btn,fontSize:22,padding:"4px 12px",borderStyle:mode===v?"solid":"dashed",borderColor:mode===v?yellow:"rgba(243,239,226,.4)",color:mode===v?yellow:"#f3efe2",opacity:mode===v?1:.7}}>{ic} {l}</button>))}
+            </div>
+            <button onClick={()=>settle(cur)} disabled={busy} style={{...btn,display:"block",width:"100%",marginTop:16,fontSize:30,fontWeight:700,padding:"8px 14px",borderColor:yellow,color:yellow,opacity:busy?.5:1,transform:"rotate(-0.6deg)"}}>
+              {busy?"⏳ …":"✓ Encaisser"}
+            </button>
+          </>}
+        </>}
+      </div>
+      {!cur&&<div style={{padding:"4px 18px 8px",borderTop:"3px double rgba(243,239,226,.4)"}}>
+        {rowLine("Total dû",fmt(totalDue),yellow,"tot")}
+      </div>}
+      <div style={{height:14,background:"linear-gradient(#a6743a,#6e4520)",boxShadow:"0 -3px 8px rgba(0,0,0,.4)",position:"relative"}}>
+        <div style={{position:"absolute",left:24,top:-6,width:34,height:9,background:"#f3efe2",borderRadius:3,transform:"rotate(-4deg)",opacity:.9}}/>
+      </div>
     </div>
   </div>);
 }
@@ -6300,12 +6493,13 @@ function StockTransfer({products,sites,caisseUrl,onSave,reserve,setReserve,conta
 }
 
 // ═══ REPORTS ═══
-function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,isAdmin,isManager,portions,combos,readyCombos,setReadyCombos,plats,readyPlats,setReadyPlats,containers,setContainers}){
+function ReportsScreen({currentUser,sites,caisseUrl,products,setCart,setTab,onSaveProducts,isAdmin,isManager,portions,combos,readyCombos,setReadyCombos,plats,readyPlats,setReadyPlats,containers,setContainers}){
   const canSeeAllPeriods=isAdmin||isManager; // Caissier : uniquement "Aujourd'hui"
   const [sales,setSales]=useState([]);const [loading,setLoading]=useState(false);const [period,setPeriod]=useState("today");
   const [viewMonth,setViewMonth]=useState(()=>{const d=new Date();return{y:d.getFullYear(),m:d.getMonth()};});
   const [selectedDay,setSelectedDay]=useState(null); // "dd/mm/yyyy" sélectionné dans le calendrier
   const [openSale,setOpenSale]=useState(null); // vente dont on affiche le détail
+  const [showArdoises,setShowArdoises]=useState(false);
   const pad2=n=>String(n).padStart(2,"0");
   const todayD=new Date();
   const today=`${pad2(todayD.getDate())}/${pad2(todayD.getMonth()+1)}/${todayD.getFullYear()}`;
@@ -6340,7 +6534,7 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
     cl.forEach(c=>set.add(c.isCustom?CAT_CUSTOM:CAT_MENUS));
     return set;
   };
-  const PAY_LABELS={cash:"💵 Espèces",cb:"💳 Carte Bleue",check:"📝 Chèque",split:"🔢 Note divisée",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes"};
+  const PAY_LABELS={cash:"💵 Espèces",cb:"💳 Carte Bleue",check:"📝 Chèque",split:"🔢 Note divisée",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes",ardoise:"📒 Ardoise"};
   const payOptions=[...new Set(periodSales.map(salePayType))];
   const catOptions=[...new Set([...periodSales.flatMap(s=>[...saleCats(s)])])].sort();
   const caissierOptions=[...new Set(periodSales.map(s=>s.caissier).filter(Boolean))].sort();
@@ -6454,7 +6648,10 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
           </button>
         ))}
       </div>
-      <button onClick={loadSales} style={{padding:"6px 12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600}}>{loading?"⏳":"↻"}</button>
+      <div style={{display:"flex",gap:6}}>
+        <button onClick={()=>setShowArdoises(true)} style={{padding:"6px 12px",background:"#2b3f33",color:"#f3efe2",border:"none",borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:700}}>📒 Ardoises</button>
+        <button onClick={loadSales} style={{padding:"6px 12px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,cursor:"pointer",fontSize:12,fontWeight:600}}>{loading?"⏳":"↻"}</button>
+      </div>
     </div>
     {!caisseUrl&&<div style={{background:"#FFF3E0",borderRadius:10,padding:14,fontSize:13,marginBottom:12}}>⚙️ Configurez l'URL Apps Script dans Config.</div>}
 
@@ -6530,16 +6727,17 @@ function ReportsScreen({sites,caisseUrl,products,setCart,setTab,onSaveProducts,i
         </div>)}
       </div>
       {filtered.slice(0,listLimit).map(tx=>{
-        let payType=null; try{payType=JSON.parse(tx.payment||"{}").type;}catch{}
+        let payType=null,payName=""; try{const pj=JSON.parse(tx.payment||"{}");payType=pj.type;payName=pj.name||"";}catch{}
         const isMatchOffert=payType==="matchOffert";
         return(<button key={tx.id} onClick={()=>setOpenSale(tx)} style={{width:"100%",textAlign:"left",background:isMatchOffert?"#E8F5E9":T.card,borderRadius:10,padding:"10px 14px",marginBottom:6,border:`1px solid ${isMatchOffert?"#A5D6A7":T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}}>
         <div><div style={{fontSize:13,fontWeight:600,color:T.dark}}>{tx.time} • {sites.find(s=>s.id===tx.siteId)?.name||tx.siteId}</div>
-          <div style={{fontSize:11,color:T.mid}}>{tx.caissier&&"👤 "+tx.caissier}{!isMatchOffert&&<>{tx.caissier?" • ":""}<b style={{color:T.dark,fontWeight:700}}>{PAY_LABELS[payType]||(payType?"❔ "+payType:"❔ Paiement ?")}</b></>}{tx.member&&" • 🍺 "+tx.member}{isMatchOffert&&" • ⚽ Offert match"}</div></div>
+          <div style={{fontSize:11,color:T.mid}}>{tx.caissier&&"👤 "+tx.caissier}{!isMatchOffert&&<>{tx.caissier?" • ":""}<b style={{color:T.dark,fontWeight:700}}>{PAY_LABELS[payType]||(payType?"❔ "+payType:"❔ Paiement ?")}{payType==="ardoise"&&payName?" — "+payName:""}</b></>}{tx.member&&" • 🍺 "+tx.member}{isMatchOffert&&" • ⚽ Offert match"}</div></div>
         <div style={{fontWeight:800,color:isMatchOffert?T.green:T.red,fontSize:15}}>{isMatchOffert?"Offert":fmt(+tx.total)}</div>
       </button>);})}
       {filtered.length>listLimit&&<button onClick={()=>setListLimit(l=>l+50)} style={{width:"100%",padding:"11px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:10,cursor:"pointer",fontWeight:700,fontSize:13,marginBottom:10}}>Afficher plus ({filtered.length-listLimit} autres ventes)</button>}
     </>}
 
+    {showArdoises&&<ArdoisesModal caisseUrl={caisseUrl} currentUser={currentUser} canDelete={isAdmin||isManager} onClose={()=>setShowArdoises(false)}/>}
     {openSale&&<SaleDetailModal sale={openSale} sites={sites} products={products} caisseUrl={caisseUrl} onSaveProducts={onSaveProducts} containers={containers} setContainers={setContainers}
       isAdmin={isAdmin} isManager={isManager} today={today} portions={portions} combos={combos} readyCombos={readyCombos} setReadyCombos={setReadyCombos} plats={plats} readyPlats={readyPlats} setReadyPlats={setReadyPlats}
       onClose={()=>setOpenSale(null)} onReorder={reorder}
@@ -6611,7 +6809,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
   const [editedQtys,setEditedQtys]=useState(()=>Object.fromEntries(lines.map((l,i)=>[i,l.qty])));
   let payType=null,payDetail=null; try{const pj=JSON.parse(sale.payment||"{}");payType=pj.type;payDetail=pj;}catch{}
   const [editedPayment,setEditedPayment]=useState(payType||"cash");
-  const payLabel={cash:"💵 Espèces",cb:"💳 Carte Bleue",check:"📝 Chèque",split:"🔢 Note divisée",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes"}[payType]||"—";
+  const payLabel=({cash:"💵 Espèces",cb:"💳 Carte Bleue",check:"📝 Chèque",split:"🔢 Note divisée",matchOffert:"⚽ Offert match",free_drinks:"🍺 Boissons offertes",ardoise:"📒 Ardoise"}[payType]||"—")+(payType==="ardoise"&&payDetail?.name?" — "+payDetail.name:"");
   const paySimpleOptions=[["cash","💵 Espèces"],["cb","💳 Carte Bleue"],["matchOffert","⚽ Offert match"],["check","📝 Chèque"]];
 
   // Prix d'une ligne au tarif ACTUEL du catalogue : pour un produit au volume, qty
@@ -6643,7 +6841,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
     const deltaEntries=Object.entries(deltaByProduct).filter(([_,d])=>d!==0);
 
     if(caisseUrl){
-      const newPayment=JSON.stringify(editedPayment==="matchOffert"?{type:"matchOffert"}:{type:editedPayment});
+      const newPayment=JSON.stringify(editedPayment==="matchOffert"?{type:"matchOffert"}:(editedPayment===payType&&payDetail?payDetail:{type:editedPayment}));
       const r=await apiWrite(caisseUrl,{action:"updateSale",id:sale.id,total:newTotal,items:JSON.stringify(newItems),nbItems,payment:newPayment});
       if(!r.ok){await customAlert("⚠️ Échec de l'enregistrement : "+(r.error||"connexion")+". Rien n'a été modifié.");setSaving(false);return;}
       for(const[pid,delta]of deltaEntries){
@@ -6661,7 +6859,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
       onSaveProducts(upd);
     }
     setSaving(false);setEditMode(false);
-    onSaleUpdated&&onSaleUpdated({id:sale.id,total:newTotal,items:JSON.stringify(newItems),payment:JSON.stringify(editedPayment==="matchOffert"?{type:"matchOffert"}:{type:editedPayment})});
+    onSaleUpdated&&onSaleUpdated({id:sale.id,total:newTotal,items:JSON.stringify(newItems),payment:JSON.stringify(editedPayment==="matchOffert"?{type:"matchOffert"}:(editedPayment===payType&&payDetail?payDetail:{type:editedPayment}))});
   };
 
   // Restitue le stock de menus "prêts" consommé par cette vente (directement ou via
