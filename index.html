@@ -6928,12 +6928,35 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
     }
   };
 
+  // Vente sur l'ardoise : retrouve la note liée (par identifiant de vente, sinon par nom +
+  // montant + date) et laisse choisir quoi en faire avant de supprimer la vente.
+  // Renvoie {abort:true} si l'utilisateur annule, sinon {entry|null,remove:bool}.
+  const resolveArdoiseOnDelete=async()=>{
+    if(payType!=="ardoise"||!caisseUrl)return{entry:null,remove:false};
+    let all=LS.get("anf87_ardoises")||[];
+    const r=await api(caisseUrl,{action:"getArdoises"});
+    if(r&&r.ok){all=r.ardoises||[];LS.set("anf87_ardoises",all);}
+    let entry=all.find(a=>a.saleId&&a.saleId.toString()===sale.id.toString());
+    if(!entry&&payDetail?.name)entry=all.find(a=>ardKey(a.client)===ardKey(payDetail.name)&&Math.abs((+a.amount||0)-(+sale.total||0))<0.01&&a.date===sale.date);
+    if(!entry)return{entry:null,remove:false};
+    const paidTxt=(+entry.paid||0)>0?`\n\n⚠️ ${entry.client} en a déjà réglé ${fmt(+entry.paid)} : ce règlement ne sera plus tracé nulle part si la note est supprimée.`:"";
+    if(await customConfirm(`Cette vente était sur l'ardoise de ${entry.client} (${fmt(+entry.amount)}).${paidTxt}\n\nSupprimer AUSSI cette note d'ardoise ?`))return{entry,remove:true};
+    if(await customConfirm(`Supprimer la vente en GARDANT la note d'ardoise de ${entry.client} (reste dû : ${fmt(ardLeft(entry))}) ?`))return{entry,remove:false};
+    return{abort:true};
+  };
+  const dropArdoise=async res=>{
+    if(!res||!res.entry||!res.remove)return;
+    const r=await apiWrite(caisseUrl,{action:"deleteArdoise",id:res.entry.id});
+    if(r&&r.ok)LS.set("anf87_ardoises",(LS.get("anf87_ardoises")||[]).filter(a=>a.id!==res.entry.id));
+  };
+
   // Suppression complète de la vente : tous les articles qu'elle contenait sont
   // remis en stock (site d'origine) avant de supprimer la ligne — sinon le stock
   // resterait décompté pour une vente qui n'existe plus.
   const deleteSale=async()=>{
     if(saving)return;
     if(!(await customConfirm(`Supprimer définitivement cette vente du ${sale.date} ${sale.time} (${fmt(+sale.total)}) ?\n\nLe stock des articles qu'elle contenait sera remis en stock sur ${sites.find(s=>s.id===sale.siteId)?.name||sale.siteId}.`)))return;
+    const ardRes=await resolveArdoiseOnDelete(); if(ardRes.abort)return;
     setSaving(true);
     if(caisseUrl){
       for(const it of items){
@@ -6945,6 +6968,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
       await restoreReadyPlats();
       const r=await apiWrite(caisseUrl,{action:"deleteSale",id:sale.id});
       if(!r.ok){await customAlert("⚠️ Échec de la suppression : "+(r.error||"connexion"));setSaving(false);return;}
+      await dropArdoise(ardRes);
     }
     if(onSaveProducts){
       const deltaByProduct={};
@@ -6968,6 +6992,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
   const restartToday=async()=>{
     if(saving)return;
     if(!(await customConfirm(`Recommencer cette commande ? Elle sera supprimée (stock remis en place), puis reconstruite dans le panier pour être encaissée à nouveau.`)))return;
+    const ardRes=await resolveArdoiseOnDelete(); if(ardRes.abort)return;
     setSaving(true);
     if(caisseUrl){
       for(const it of items){
@@ -6979,6 +7004,7 @@ function SaleDetailModal({sale,sites,products,caisseUrl,onSaveProducts,isAdmin,i
       await restoreReadyPlats();
       const r=await apiWrite(caisseUrl,{action:"deleteSale",id:sale.id});
       if(!r.ok){await customAlert("⚠️ Échec : "+(r.error||"connexion")+". Rien n'a été modifié.");setSaving(false);return;}
+      await dropArdoise(ardRes);
     }
     if(onSaveProducts){
       const deltaByProduct={};
