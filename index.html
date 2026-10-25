@@ -3478,6 +3478,7 @@ function ArdoisesModal({caisseUrl,currentUser,canDelete,onClose}){
   const [amount,setAmount]=useState("");
   const [mode,setMode]=useState("cash");
   const [busy,setBusy]=useState(false);
+  const [cashGiven,setCashGiven]=useState("");
   const [showPaid,setShowPaid]=useState(false);
   const save=l=>{setList(l);LS.set("anf87_ardoises",l);};
   const load=async()=>{
@@ -3503,7 +3504,7 @@ function ArdoisesModal({caisseUrl,currentUser,canDelete,onClose}){
     if(!(await customConfirm(`Encaisser ${fmt(a)} (${lbl}) de ${g.name} ?`)))return;
     setBusy(true);
     const r=await apiWrite(caisseUrl,{action:"payArdoise",client:g.name,amount:a.toFixed(2),mode,by:currentUser?.name||""});
-    if(r&&r.ok){save(applyArdoisePayLocal(list,g.name,a,mode,currentUser?.name));setAmount("");}
+    if(r&&r.ok){save(applyArdoisePayLocal(list,g.name,a,mode,currentUser?.name));setAmount("");setCashGiven("");setOpenKey(null);}
     setBusy(false);
   };
   const del=async e=>{
@@ -3518,6 +3519,56 @@ function ArdoisesModal({caisseUrl,currentUser,canDelete,onClose}){
       <span style={{flex:1,borderBottom:"2px dotted rgba(243,239,226,.35)",transform:"translateY(-6px)"}}/>
       <span style={{...chalk,fontSize:30,fontWeight:700,color:color||yellow}}>{right}</span>
     </div>);
+  if(cur){
+    // Écran de règlement : même style que les autres écrans de paiement de la caisse.
+    const a=Math.round((parseFloat(String(amount).replace(",","."))||0)*100)/100;
+    const given=parseFloat(String(cashGiven).replace(",","."));
+    const change=mode==="cash"&&!isNaN(given)&&given>a?Math.round((given-a)*100)/100:0;
+    const valid=a>0&&a<=cur.due+0.004;
+    const modeBtns=[["cash","💵","Espèces",T.green],["cb","💳","Carte Bleue","#5856D6"],["check","📝","Chèque",T.blue]];
+    return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",zIndex:220,display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{background:T.card,borderRadius:"20px 20px 0 0",width:"100%",maxWidth:500,padding:"20px 18px 34px",maxHeight:"92vh",overflowY:"auto"}}>
+        <button onClick={()=>{setOpenKey(null);setAmount("");setCashGiven("");}} style={{background:"none",border:"none",cursor:"pointer",color:T.mid,display:"flex",alignItems:"center",gap:4,marginBottom:14,fontSize:14}}>← Retour</button>
+        <div style={{fontWeight:800,fontSize:18,color:T.dark,marginBottom:12}}>📒 Régler l'ardoise de {cur.name}</div>
+        <div style={{background:T.bg,borderRadius:12,padding:"8px 12px",marginBottom:12,maxHeight:150,overflowY:"auto"}}>
+          {cur.entries.filter(e=>ardLeft(e)>0).map(e=>(
+            <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:13,color:T.dark,padding:"4px 0",borderBottom:`1px solid ${T.border}`}}>
+              <span>{(e.date||"").slice(0,5)} • {e.siteName||""}{e.note?" • « "+e.note+" »":""}</span>
+              <span style={{fontWeight:700}}>{fmt(ardLeft(e))}{canDelete&&<button onClick={()=>del(e)} aria-label="Supprimer" style={{background:"none",border:"none",cursor:"pointer",fontSize:13,marginLeft:6}}>🗑</button>}</span>
+            </div>))}
+        </div>
+        <div style={{background:T.bg,borderRadius:12,padding:14,marginBottom:12}}>
+          <div style={{fontSize:12,color:T.mid}}>RESTE DÛ</div>
+          <div style={{fontSize:30,fontWeight:900,color:T.red}}>{fmt(cur.due)}</div>
+        </div>
+        <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Montant réglé (partiel possible)</label>
+        <div style={{display:"flex",gap:8,marginBottom:12}}>
+          <input value={amount} onChange={e=>setAmount(e.target.value)} type="number" step="0.50" inputMode="decimal" placeholder="0,00"
+            style={{flex:1,padding:"14px",fontSize:24,fontWeight:700,border:`2px solid ${T.border}`,borderRadius:12,textAlign:"right",outline:"none"}}/>
+          <button onClick={()=>setAmount(cur.due.toFixed(2))} style={{padding:"0 16px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:12,fontWeight:700,cursor:"pointer",color:T.dark}}>Tout</button>
+        </div>
+        <div style={{fontSize:13,fontWeight:600,color:T.dark,marginBottom:7}}>Mode de règlement</div>
+        <div style={{display:"flex",gap:8,marginBottom:12}}>
+          {modeBtns.map(([v,ic,l,c])=>(<button key={v} onClick={()=>setMode(v)} style={{flex:1,padding:"12px 4px",borderRadius:12,cursor:"pointer",textAlign:"center",
+            background:mode===v?c:T.bg,color:mode===v?"white":T.dark,border:`2px solid ${mode===v?c:T.border}`,fontWeight:700,fontSize:13}}>
+            <div style={{fontSize:22,marginBottom:2}}>{ic}</div>{l}</button>))}
+        </div>
+        {mode==="cash"&&<>
+          <label style={{fontSize:13,fontWeight:600,color:T.dark,display:"block",marginBottom:7}}>Montant remis (optionnel)</label>
+          <input value={cashGiven} onChange={e=>setCashGiven(e.target.value)} type="number" step="0.50" inputMode="decimal" placeholder={a>0?a.toFixed(2):"0,00"}
+            style={{width:"100%",padding:"12px",fontSize:20,fontWeight:700,border:`2px solid ${T.border}`,borderRadius:12,textAlign:"right",marginBottom:10,outline:"none"}}/>
+          {change>0&&<div style={{background:"#E8F5E9",borderRadius:12,padding:14,marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{color:"#2E7D32",fontWeight:600,fontSize:15}}>Monnaie à rendre</span>
+            <span style={{color:"#2E7D32",fontWeight:900,fontSize:26}}>{fmt(change)}</span>
+          </div>}
+        </>}
+        <button onClick={()=>settle(cur)} disabled={busy||!valid}
+          style={{width:"100%",padding:15,background:busy||!valid?"#ccc":T.green,color:"white",border:"none",borderRadius:13,fontSize:16,fontWeight:700,cursor:busy||!valid?"default":"pointer"}}>
+          {busy?"⏳ Validation...":`✓ Valider le règlement${a>0?" de "+fmt(a):""}`}
+        </button>
+      </div>
+    </div>);
+  }
   return(<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.72)",zIndex:220,display:"flex",alignItems:"center",justifyContent:"center",padding:"max(8px,env(safe-area-inset-top)) 8px 8px"}}
       onClick={e=>e.target===e.currentTarget&&onClose()}>
     <div style={{width:"100%",maxWidth:540,height:"100%",maxHeight:820,display:"flex",flexDirection:"column",
@@ -3544,33 +3595,6 @@ function ArdoisesModal({caisseUrl,currentUser,canDelete,onClose}){
             <button onClick={()=>setShowPaid(v=>!v)} style={{...btn,fontSize:18,padding:"2px 10px",opacity:.7}}>{showPaid?"▲ masquer":"▼ voir"} les ardoises réglées ({settled.length})</button>
             {showPaid&&settled.map(g=>(<div key={g.key} style={{opacity:.55,marginTop:4}}>{rowLine(g.name,fmt(g.total)+" ✓","#a8d5a2",g.key)}</div>))}
           </div>}
-        </>}
-        {cur&&<>
-          <div style={{...chalk,fontSize:44,fontWeight:700,transform:"rotate(-1deg)",marginBottom:2}}>{cur.name}</div>
-          {cur.entries.map(e=>(
-            <div key={e.id} style={{borderBottom:"1px dashed rgba(243,239,226,.18)",paddingBottom:3,marginBottom:3}}>
-              {rowLine(`${(e.date||"").slice(0,5)} · ${e.siteName||""}`,fmt(e.amount),ardLeft(e)>0?null:"#a8d5a2",e.id)}
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",...chalk,fontSize:17,opacity:.7}}>
-                <span>{e.note?("« "+e.note+" » "):""}{e.caissier?("par "+e.caissier):""}{(+e.paid||0)>0&&ardLeft(e)>0?` • déjà réglé ${fmt(e.paid)}`:""}{ardLeft(e)<=0?" • réglée ✓":""}</span>
-                {canDelete&&<button onClick={()=>del(e)} aria-label="Supprimer" style={{background:"none",border:"none",cursor:"pointer",fontSize:16,opacity:.6}}>🗑</button>}
-              </div>
-            </div>))}
-          {cur.due>0.004&&<>
-            <div style={{marginTop:10,borderTop:"3px double rgba(243,239,226,.5)",paddingTop:6}}>{rowLine("Reste dû",fmt(cur.due),yellow,"due")}</div>
-            <div style={{...chalk,fontSize:24,marginTop:14,marginBottom:4}}>Règlement :</div>
-            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-              <input value={amount} onChange={e=>setAmount(e.target.value)} inputMode="decimal" placeholder="montant"
-                style={{width:130,background:"transparent",border:"2px dashed rgba(243,239,226,.55)",borderRadius:10,padding:"4px 10px",fontSize:32,textAlign:"right",outline:"none",caretColor:"#f3efe2",...chalk}}/>
-              <span style={{...chalk,fontSize:30}}>€</span>
-              <button onClick={()=>setAmount(cur.due.toFixed(2))} style={{...btn,fontSize:20,padding:"2px 10px"}}>tout</button>
-            </div>
-            <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
-              {modes.map(([v,ic,l])=>(<button key={v} onClick={()=>setMode(v)} style={{...btn,fontSize:22,padding:"4px 12px",borderStyle:mode===v?"solid":"dashed",borderColor:mode===v?yellow:"rgba(243,239,226,.4)",color:mode===v?yellow:"#f3efe2",opacity:mode===v?1:.7}}>{ic} {l}</button>))}
-            </div>
-            <button onClick={()=>settle(cur)} disabled={busy} style={{...btn,display:"block",width:"100%",marginTop:16,fontSize:30,fontWeight:700,padding:"8px 14px",borderColor:yellow,color:yellow,opacity:busy?.5:1,transform:"rotate(-0.6deg)"}}>
-              {busy?"⏳ …":"✓ Encaisser"}
-            </button>
-          </>}
         </>}
       </div>
       {!cur&&<div style={{padding:"4px 18px 8px",borderTop:"3px double rgba(243,239,226,.4)"}}>
